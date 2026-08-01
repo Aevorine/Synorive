@@ -159,6 +159,43 @@ async def stats(request: Request) -> dict[str, Any]:
     return _rt(request).repo.stats()
 
 
+@router.get("/similar/{item_id}")
+async def similar(item_id: str, request: Request, limit: int = 20) -> list[dict[str, Any]]:
+    """E1 相似内容 / MCP 的 synorive_similar：用这条内容的正文去搜别的。"""
+    rt = _rt(request)
+    row = rt.repo.get_item(item_id)
+    if row is None:
+        raise HTTPException(404, "没有这条内容")
+
+    conn = rt.db.connect()
+    chunks = conn.execute(
+        "SELECT text FROM chunks WHERE item_id = ? ORDER BY chunk_index LIMIT 3", (item_id,)
+    ).fetchall()
+    seed = " ".join(str(c["text"]) for c in chunks)[:1200] or str(row["title"] or "")
+    if not seed.strip():
+        return []
+
+    r = await asyncio.to_thread(rt.search.search, seed, limit=limit + 1, stage="semantic")
+    # 把自己剔掉 —— 用自己的正文去搜，自己必然排第一
+    return [h for h in r["hits"] if h["item"]["id"] != item_id][:limit]
+
+
+@router.get("/graph")
+async def graph(
+    request: Request, entityId: str | None = None, kind: str | None = None, limit: int = 60
+) -> dict[str, Any]:
+    """E6 知识图谱：实体节点 + 共现边。"""
+    return _rt(request).repo.graph_slice(entity_id=entityId, kind=kind, limit=limit)
+
+
+@router.get("/timeline")
+async def timeline(request: Request, bucket: str = "day", limit: int = 400) -> list[dict[str, Any]]:
+    """E5 语义时间轴：按时间桶统计。"""
+    if bucket not in ("hour", "day", "week", "month", "year"):
+        raise HTTPException(400, f"bucket 只能是 hour/day/week/month/year，收到 {bucket}")
+    return _rt(request).repo.timeline(bucket=bucket, limit=limit)
+
+
 # ── 依赖医生 ────────────────────────────────────────────────
 
 

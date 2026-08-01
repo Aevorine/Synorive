@@ -301,6 +301,160 @@ class Repository:
             (*sets.values(), now_iso(), item_id),
         )
 
+    def write_entities(self, item_id: str, entities: list[tuple[str, str, int]]) -> int:
+        """
+        写入一条内容里抽出的实体，并更新共现边（E6 知识图谱的地基）。
+
+        entities: [(kind, name, count), ...]
+
+        共现边只连**同一条内容里**一起出现的实体，且按名字排序后存单向边，
+        避免 A→B 和 B→A 存两条把权重算重。
+        """
+        if not entities:
+            return 0
+
+        conn = self.db.connect()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # 重新分析同一条内容时，先撤掉它上次贡献的提及
+            old = conn.execute(
+                "SELECT entity_id FROM entity_mentions WHERE item_id = ?", (item_id,)
+            ).fetchall()
+            for r in old:
+                conn.execute(
+                    "UPDATE entities SET mention_count = MAX(0, mention_count - 1) WHERE id = ?",
+                    (r["entity_id"],),
+                )
+            conn.execute("DELETE FROM entity_mentions WHERE item_id = ?", (item_id,))
+
+            ids: list[str] = []
+            for kind, name, count in entities:
+                conn.execute(
+                    "INSERT OR IGNORE INTO entities (id, kind, name, aliases_json, mention_count) "
+                    "VALUES (?,?,?,'[]',0)",
+                    (new_id(), kind, name),
+                )
+                row = conn.execute(
+                    "SELECT id FROM entities WHERE kind = ? AND name = ?", (kind, name)
+                ).fetchone()
+                if row is None:
+                    continue
+                eid = str(row["id"])
+                ids.append(eid)
+                conn.execute(
+                    "UPDATE entities SET mention_count = mention_count + ? WHERE id = ?",
+                    (count, eid),
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO entity_mentions (entity_id, item_id, chunk_id) "
+                    "VALUES (?,?,NULL)",
+                    (eid, item_id),
+                )
+
+            # 共现边。实体多的时候两两组合会爆炸（40 个 → 780 条），
+            # 所以只连最靠前的那些 —— 尾部的低频实体连起来也没有分析价值。
+            top = ids[:12]
+            for i, a in enumerate(top):
+                for b in top[i + 1 :]:
+                    lo, hi = (a, b) if a < b else (b, a)
+                    conn.execute(
+                        "INSERT INTO entity_edges (from_id, to_id, weight) VALUES (?,?,1) "
+                        "ON CONFLICT(from_id, to_id) DO UPDATE SET weight = weight + 1",
+                        (lo, hi),
+                    )
+
+            conn.execute("COMMIT")
+            return len(ids)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    def graph_slice(
+        self, entity_id: str | None = None, kind: str | None = None, limit: int = 60
+    ) -> dict[str, Any]:
+        """取一片子图给 E6 图谱界面。不给 entity_id 就返回全局最热的那些。"""
+        conn = self.db.connect()
+        if entity_id:
+            rows = conn.execute(
+                "SELECT e.* FROM entities e WHERE e.id = ? "
+                "UNION "
+                "SELECT e.* FROM entities e JOIN entity_edges g "
+                "  ON (g.to_id = e.id AND g.from_id = ?) OR (g.from_id = e.id AND g.to_id = ?) "
+                "ORDER BY mention_count DESC LIMIT ?",
+                (entity_id, entity_id, entity_id, limit),
+            ).fetchall()
+        elif kind:
+            rows = conn.execute(
+                "SELECT * FROM entities WHERE kind = ? ORDER BY mention_count DESC LIMIT ?",
+                (kind, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM entities ORDER BY mention_count DESC LIMIT ?", (limit,)
+            ).fetchall()
+
+        ents = [
+            {
+                "id": str(r["id"]),
+                "kind": str(r["kind"]),
+                "name": str(r["name"]),
+                "aliases": [],
+                "mentionCount": int(r["mention_count"]),
+            }
+            for r in rows
+        ]
+        if not ents:
+            return {"entities": [], "edges": []}
+
+        ids = [e["id"] for e in ents]
+        marks = ",".join("?" * len(ids))
+        edges = conn.execute(
+            f"SELECT from_id, to_id, weight, relation FROM entity_edges "
+            f"WHERE from_id IN ({marks}) AND to_id IN ({marks}) ORDER BY weight DESC LIMIT 400",
+            (*ids, *ids),
+        ).fetchall()
+        return {
+            "entities": ents,
+            "edges": [
+                {
+                    "from": str(e["from_id"]),
+                    "to": str(e["to_id"]),
+                    "weight": int(e["weight"]),
+                    "relation": e["relation"],
+                }
+                for e in edges
+            ],
+        }
+
+    def timeline(self, bucket: str = "day", limit: int = 400) -> list[dict[str, Any]]:
+        """E5 语义时间轴：按时间桶统计内容数量与模态分布。"""
+        fmt = {
+            "hour": "%Y-%m-%dT%H:00:00",
+            "day": "%Y-%m-%d",
+            "week": "%Y-W%W",
+            "month": "%Y-%m",
+            "year": "%Y",
+        }.get(bucket, "%Y-%m-%d")
+
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT strftime(?, COALESCE(content_time, created_at)) AS bucket, "
+            "       modality, COUNT(*) AS n "
+            "FROM items WHERE COALESCE(content_time, created_at) IS NOT NULL "
+            "GROUP BY bucket, modality ORDER BY bucket DESC LIMIT ?",
+            (fmt, limit * 6),
+        ).fetchall()
+
+        agg: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            b = str(r["bucket"] or "")
+            if not b:
+                continue
+            slot = agg.setdefault(b, {"at": b, "count": 0, "byModality": {}})
+            slot["count"] += int(r["n"])
+            slot["byModality"][str(r["modality"])] = int(r["n"])
+        return sorted(agg.values(), key=lambda x: str(x["at"]))[-limit:]
+
     def record_open(self, item_id: str) -> None:
         """E11 热度学习：记一次打开。纯本地统计，设置里可一键清空。"""
         conn = self.db.connect()

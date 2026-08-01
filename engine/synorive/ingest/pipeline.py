@@ -27,9 +27,10 @@ from pathlib import Path
 from typing import Any
 
 from ..analyze.embedder import TextEmbedder
+from ..analyze.enrich import enrich
 from ..store.repository import ChunkRow, Repository
 from .chunker import chunk_segments
-from .parsers import ParseError, can_parse, iter_supported, parse
+from .parsers import CODE_EXT, ParseError, can_parse, iter_supported, parse
 
 log = logging.getLogger("synorive.ingest")
 
@@ -207,13 +208,45 @@ class IngestPipeline:
 
             self.repo.set_stage(item_id, "extract", "done")
 
-            snippet = doc.full_text[:400].replace("\n", " ").strip()
+            # ── enrich（C9 摘要关键词 + C10 实体）─────────
+            # 放在 chunk 之前：摘要要基于全文算，而且它会变成 items.snippet，
+            # 决定结果列表里那一行显示什么。
+            full = doc.full_text
+            enrichment = None
+            self.repo.set_stage(item_id, "enrich", "running")
+            try:
+                # 源代码走另一条路：散文那套在代码上产出的是
+                # 「关键词 = return/str/len」「摘要 = return []」这种垃圾
+                enrichment = enrich(
+                    full[:120_000], is_code=path.suffix.lower() in CODE_EXT
+                )
+                self.repo.set_stage(item_id, "enrich", "done")
+            except Exception as e:  # noqa: BLE001
+                # 增强失败不算整体失败：没有摘要和实体，检索照样能用
+                log.debug("%s 内容增强失败：%s", path.name, e)
+                self.repo.set_stage(item_id, "enrich", "failed", error=str(e))
+
+            # 摘要优先于"截前 400 字"——截断出来的往往是版权头、import 语句这类噪声
+            snippet = (enrichment.summary if enrichment and enrichment.summary else "") or full[
+                :400
+            ].replace("\n", " ").strip()
+
             self.repo.update_item_fields(
                 item_id,
                 title=doc.title or path.stem,
                 snippet=snippet,
-                meta_json=_meta_json(doc),
+                meta_json=_meta_json(doc, enrichment),
             )
+            if enrichment:
+                if enrichment.keywords:
+                    self.repo._attach_tags(item_id, enrichment.keywords[:8])
+                if enrichment.entities:
+                    try:
+                        self.repo.write_entities(
+                            item_id, [(e.kind, e.name, e.count) for e in enrichment.entities]
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        log.debug("%s 实体入库失败：%s", path.name, e)
 
             # ── chunk ────────────────────────────────────
             self.repo.set_stage(item_id, "chunk", "running")
@@ -347,16 +380,18 @@ def _physical_cores() -> int:
     return max(1, (os.cpu_count() or 4) // 2)
 
 
-def _meta_json(doc: Any) -> str:
+def _meta_json(doc: Any, enrichment: Any = None) -> str:
     import json
 
-    return json.dumps(
-        {
-            "kind": "document",
-            "pageCount": doc.page_count,
-            "chunkCount": len(doc.segments),
-            "author": doc.author,
-            "warnings": doc.warnings,
-        },
-        ensure_ascii=False,
-    )
+    meta: dict[str, Any] = {
+        "kind": "document",
+        "pageCount": doc.page_count,
+        "chunkCount": len(doc.segments),
+        "author": doc.author,
+        "warnings": doc.warnings,
+    }
+    if enrichment is not None:
+        meta["keywords"] = enrichment.keywords[:12]
+        meta["language"] = enrichment.language
+        meta["entityCount"] = len(enrichment.entities)
+    return json.dumps(meta, ensure_ascii=False)

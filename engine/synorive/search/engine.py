@@ -34,6 +34,7 @@ import sqlite_vec
 from ..store.db import Database
 from ..store.repository import Repository
 from ..store.text import highlight_terms, to_query, to_trigram_query
+from .query_syntax import describe, parse_query
 
 log = logging.getLogger("synorive.search")
 
@@ -90,6 +91,8 @@ class Filters:
     size_max: int | None = None
     scopes: list[str] = field(default_factory=list)
     exclude_scopes: list[str] = field(default_factory=list)
+    #: D10 的 type:pdf 走这里 —— 扩展名不是 modality，库里 pdf 的 modality 是 text
+    extensions: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> Filters:
@@ -104,6 +107,30 @@ class Filters:
             size_max=d.get("sizeMaxBytes"),
             scopes=list(d.get("scopes") or []),
             exclude_scopes=list(d.get("excludeScopes") or []),
+            extensions=list(d.get("extensions") or []),
+        )
+
+    def merged_with(self, other: dict[str, Any] | None) -> Filters:
+        """
+        和另一组筛选合并（列表求并，标量以 other 为准）。
+
+        用于把「查询串里写的 D10 指令」和「界面上点选的筛选」叠加。
+        两边冲突时以查询串为准 —— 用户刚敲进去的东西优先级更高。
+        """
+        if not other:
+            return self
+        o = Filters.from_dict(other)
+        return Filters(
+            modalities=list({*self.modalities, *o.modalities}),
+            sources=list({*self.sources, *o.sources}),
+            tags=list({*self.tags, *o.tags}),
+            time_from=o.time_from or self.time_from,
+            time_to=o.time_to or self.time_to,
+            size_min=o.size_min if o.size_min is not None else self.size_min,
+            size_max=o.size_max if o.size_max is not None else self.size_max,
+            scopes=list({*self.scopes, *o.scopes}),
+            exclude_scopes=list({*self.exclude_scopes, *o.exclude_scopes}),
+            extensions=list({*self.extensions, *o.extensions}),
         )
 
     @property
@@ -112,6 +139,7 @@ class Filters:
             (
                 self.modalities, self.sources, self.tags, self.time_from, self.time_to,
                 self.size_min, self.size_max, self.scopes, self.exclude_scopes,
+                self.extensions,
             )
         )
 
@@ -151,6 +179,11 @@ class Filters:
                 f"JOIN tags t ON t.id = it.tag_id WHERE t.name IN ({marks}))"
             )
             args += self.tags
+        if self.extensions:
+            # 扩展名是 OR 关系（type:pdf,docx 是"这两种都要"不是"两种都是"）
+            ors = " OR ".join(f"LOWER({alias}.locator) LIKE ?" for _ in self.extensions)
+            parts.append(f"({ors})")
+            args += [f"%{e.lower()}" for e in self.extensions]
 
         return (" AND ".join(parts) if parts else ""), args
 
@@ -470,24 +503,36 @@ class SearchEngine:
           semantic → 全跑（150ms 级）
         """
         t0 = time.perf_counter()
-        f = Filters.from_dict(filters)
+
+        # D10：先把查询串里的 type:/date:/size:/in:/tag:/src: 指令拆出来，
+        # 剩下的才是真正要拿去检索的词。解析不了的指令原样留在查询词里，
+        # 不报错也不吞掉整条查询。
+        parsed = parse_query(query)
+        text_query = parsed.text
+        f = Filters.from_dict(parsed.filters).merged_with(filters)
+
         w = PRESETS.get(preset or "", Weights()) if preset else Weights()
         if weights:
             w = Weights.from_dict(weights)
 
         groups: dict[str, list[Candidate]] = {
-            "keyword": self.recall_keyword(query, f),
-            "trigram": self.recall_title(query, f),
+            "keyword": self.recall_keyword(text_query, f),
+            "trigram": self.recall_title(text_query, f),
         }
         if stage == "semantic":
-            groups["vector"] = self.recall_vector(query, f)
+            groups["vector"] = self.recall_vector(text_query, f)
+
+        # 只有筛选没有查询词（比如光敲 `type:pdf date:今天`）→ 直接按筛选列内容，
+        # 否则三路召回全空，用户会以为筛选坏了
+        if not text_query.strip() and not f.empty:
+            groups = {"filter": self.recall_by_filter(f, limit=max(limit * 3, 90))}
 
         fused = self.fuse(groups, w)
-        scored = self.apply_signals(fused, w, query)
+        scored = self.apply_signals(fused, w, text_query)
         page = scored[offset : offset + limit]
 
         rows = self.repo.get_items([c.item_id for c, _, _ in page])
-        terms = highlight_terms(query)
+        terms = highlight_terms(text_query)
 
         hits: list[dict[str, Any]] = []
         for c, score, parts in page:
@@ -524,13 +569,38 @@ class SearchEngine:
                 }
             hits.append(hit)
 
-        return {
+        out: dict[str, Any] = {
             "stage": stage,
             "final": stage == "semantic",
             "hits": hits,
             "totalEstimate": len(scored),
             "elapsedMs": round((time.perf_counter() - t0) * 1000, 1),
         }
+        # 界面把这些渲染成一排可点掉的小标签，让用户看见"我刚才那句话被理解成了什么"
+        if parsed.has_filters or parsed.unknown:
+            out["parsedQuery"] = {
+                "text": text_query,
+                "filters": describe(parsed),
+                "unknown": parsed.unknown,
+            }
+        return out
+
+    def recall_by_filter(self, f: Filters, limit: int = 90) -> list[Candidate]:
+        """光有筛选没有查询词时，按时间倒序列出符合条件的内容。"""
+        conn = self.db.connect()
+        where, args = f.sql("i")
+        rows = conn.execute(
+            f"SELECT i.id AS item_id FROM items i "
+            f"{'WHERE ' + where if where else ''} "
+            f"ORDER BY COALESCE(i.content_time, i.created_at) DESC LIMIT ?",
+            (*args, limit),
+        ).fetchall()
+        out: list[Candidate] = []
+        for rank, r in enumerate(rows, start=1):
+            c = Candidate(item_id=str(r["item_id"]), rank_keyword=rank)
+            c.matched_via.add("filter")
+            out.append(c)
+        return out
 
 
 # ── 辅助 ────────────────────────────────────────────────────
