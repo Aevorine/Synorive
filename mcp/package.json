@@ -1,0 +1,25 @@
+{
+  "name": "@synorive/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Synorive MCP 服务器 —— 让 Claude Code 直接调用本地内容库",
+  "bin": {
+    "synorive-mcp": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node ./dist/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "@synorive/shared-types": "*",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.2"
+  }
+}

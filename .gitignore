@@ -1,0 +1,69 @@
+# ── 数据与模型：绝不进仓库（可能几 GB） ─────────────────────────
+/data/
+/models/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# ── Python ────────────────────────────────────────────────────
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# ── Node ──────────────────────────────────────────────────────
+node_modules/
+.vite/
+out/
+release/
+*.tsbuildinfo
+
+# ── Android ───────────────────────────────────────────────────
+apps/mobile/.gradle/
+apps/mobile/build/
+apps/mobile/**/build/
+apps/mobile/local.properties
+apps/mobile/.idea/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# ── 密钥与本地配置：安全红线 ───────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+config.local.*
+credentials*.json
+
+# ── 系统与编辑器 ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+*.swp
+*~
+
+# ── 构建产物与临时 ─────────────────────────────────────────────
+*.log
+.cache/
+.tmp/
+coverage/
+
+# ── 生成的字体子集（6MB，跑 python scripts/build_fonts.py 可重建）──
+apps/desktop/src/styles/fonts/
+apps/desktop/src/styles/fonts.css
+
+# 注：图标产物（apps/desktop/resources/icons、apps/mobile/.../mipmap-*）
+# 是**要进仓库**的 —— 打包和 Gradle 构建直接读它们，且总共才 1MB 出头。

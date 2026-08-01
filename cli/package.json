@@ -1,0 +1,22 @@
+{
+  "name": "@synorive/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "synorive 命令行 —— 脚本、定时任务、其他 AI 工具都能调",
+  "bin": {
+    "synorive": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@synorive/shared-types": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.2"
+  }
+}
