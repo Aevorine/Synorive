@@ -112,17 +112,27 @@ CREATE INDEX IF NOT EXISTS idx_chunks_channel ON chunks (channel);
 -- 另建一张只对标题的 trigram 表兜底：专治「我只记得文件名里那几个字」
 -- 这类词内子串查询（jieba 分完词之后是匹配不到的）。标题短，索引很小。
 
+-- 用 content='' + contentless_delete=1：
+--   content=''            → FTS 只存索引不存正文（正文在 items/chunks 表里），省一半空间
+--   contentless_delete=1  → 无内容表也支持 DELETE（SQLite 3.43+ 才有，本机 3.50.4）
+-- 不加 contentless_delete 的话删一条内容会留下永久的幽灵索引项，
+-- 搜索命中一个已经不存在的 id，界面上就是"点开报文件不存在"。
+--
+-- FTS 的 rowid 直接复用 items.rowid / chunks.rowid，不另建映射表。
+
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5 (
-    title,      -- 存的是分词后的空格分隔序列，不是原文
+    title,      -- 存的是 jieba 分词后的空格分隔序列，不是原文
     snippet,
     locator,
     content = '',
+    contentless_delete = 1,
     tokenize = 'unicode61 remove_diacritics 2'
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5 (
     text,       -- 同上，分词后的
     content = '',
+    contentless_delete = 1,
     tokenize = 'unicode61 remove_diacritics 2'
 );
 
@@ -131,18 +141,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS items_tri USING fts5 (
     title,
     locator,
     content = '',
+    contentless_delete = 1,
     tokenize = 'trigram'
-);
-
--- FTS 的 rowid 要能映射回业务主键
-CREATE TABLE IF NOT EXISTS fts_item_map (
-    rowid   INTEGER PRIMARY KEY,
-    item_id TEXT NOT NULL UNIQUE REFERENCES items (id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS fts_chunk_map (
-    rowid    INTEGER PRIMARY KEY,
-    chunk_id TEXT NOT NULL UNIQUE REFERENCES chunks (id) ON DELETE CASCADE
 );
 
 -- ── 分析阶段状态 ────────────────────────────────────────────
