@@ -2,8 +2,10 @@
 """
 Synorive 图标流水线
 ====================================================================
-源图：E:\\Pictures\\SoftwarePictures\\SynorivePictures\\ChatGPT Image 2026年8月1日 23_20_07.png
-      1254x1254，Format24bppRgb —— **没有透明通道**，圆角方块外面那圈是白色。
+源图：默认读 assets/icon-source.png，也可以用命令行参数或
+      SYNORIVE_ICON_SOURCE 环境变量指定别的路径。
+      本项目的源图是 1254x1254 / Format24bppRgb —— **没有透明通道**，
+      圆角方块外面那圈是白色。
 
 直接转 .ico 会在深色任务栏上显示成白方块，所以第一步必须把四角抠成透明。
 
@@ -37,14 +39,41 @@ Synorive 图标流水线
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
 # ── 路径 ────────────────────────────────────────────────────────
-SRC = Path(r"E:\Pictures\SoftwarePictures\SynorivePictures\ChatGPT Image 2026年8月1日 23_20_07.png")
 ROOT = Path(__file__).resolve().parent.parent
+
+# 源图位置。优先级：命令行参数 > 环境变量 > 仓库内副本 > 本机原始位置。
+# 不写死是因为：① 换台机器就跑不了 ② 别人的目录结构不该出现在仓库里。
+_DEFAULT_SOURCES = (
+    ROOT / "assets" / "icon-source.png",
+    Path.home() / "Pictures" / "SynorivePictures" / "icon-source.png",
+)
+
+
+def resolve_source() -> Path:
+    if len(sys.argv) > 1:
+        return Path(sys.argv[1]).expanduser().resolve()
+
+    env = os.environ.get("SYNORIVE_ICON_SOURCE")
+    if env:
+        return Path(env).expanduser().resolve()
+
+    for cand in _DEFAULT_SOURCES:
+        if cand.exists():
+            return cand
+
+    raise FileNotFoundError(
+        "找不到图标源图。三种指定方式任选其一：\n"
+        "  ① 命令行：python scripts/build_icons.py <源图路径>\n"
+        "  ② 环境变量：set SYNORIVE_ICON_SOURCE=<源图路径>\n"
+        f"  ③ 放到仓库里：{_DEFAULT_SOURCES[0]}"
+    )
 OUT_DESKTOP = ROOT / "apps" / "desktop" / "resources" / "icons"
 OUT_ASSETS = ROOT / "assets"
 OUT_ANDROID = ROOT / "apps" / "mobile" / "app" / "src" / "main" / "res"
@@ -370,7 +399,9 @@ def main() -> int:
     print("Synorive 图标流水线")
     print("=" * 64)
 
-    master = build_master(SRC)
+    src = resolve_source()
+    print(f"[icons] 源图 ← {src}")
+    master = build_master(src)
     OUT_ASSETS.mkdir(parents=True, exist_ok=True)
     master_path = OUT_ASSETS / "icon-master.png"
     master.save(master_path, "PNG")

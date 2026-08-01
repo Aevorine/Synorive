@@ -1,0 +1,367 @@
+/* ============================================================
+ * 界面外壳布局
+ * ============================================================
+ * 「对于重要的功能显示在界面内重要的位置中」—— 用户原话。
+ * 所以主轴按使用频率排：
+ *   顶栏中央 = 全局搜索框（唯一入口，任何界面按 / 或 Ctrl+K 直达）
+ *   左侧 6 个一级入口，多了就是没想清楚
+ *   中间唯一主舞台
+ *   底部状态栏，后台在忙什么永远可见但不打扰
+ * ============================================================ */
+
+.shell {
+  display: grid;
+  grid-template-rows: var(--syn-layout-top-bar) 1fr var(--syn-layout-status-bar);
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    'topbar topbar'
+    'sidebar main'
+    'statusbar statusbar';
+  height: 100%;
+  background: var(--syn-color-bg);
+}
+
+/* ── 顶栏 ────────────────────────────────────────────────── */
+
+.topbar {
+  grid-area: topbar;
+  display: grid;
+  grid-template-columns: var(--syn-layout-side-bar) 1fr auto;
+  align-items: center;
+  gap: var(--syn-space-lg);
+  padding-inline: var(--syn-space-md);
+  background: var(--syn-color-bg-elevated);
+  border-bottom: 1px solid var(--syn-color-border);
+}
+
+.topbar__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  min-width: 0;
+}
+
+.topbar__logo {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: var(--syn-radius-lg);
+}
+
+.topbar__name {
+  /* 品牌名用 Times New Roman —— Synorive 是拉丁文，正好体现字族回退规则 */
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-semibold);
+  letter-spacing: var(--syn-ls-wide);
+  color: var(--syn-color-text);
+  white-space: nowrap;
+}
+
+.topbar__center {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.topbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+}
+
+/* ── 窗口按钮（自绘标题栏）───────────────────────────────── */
+
+.wincontrols {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.wincontrols__btn {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: var(--syn-layout-top-bar);
+  color: var(--syn-color-text-secondary);
+  transition: background-color var(--syn-dur-instant) var(--syn-ease-standard),
+    color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.wincontrols__btn:hover {
+  background: var(--syn-color-bg-hover);
+  color: var(--syn-color-text);
+}
+
+.wincontrols__btn--close:hover {
+  background: var(--syn-color-danger);
+  color: var(--syn-color-text-inverse);
+}
+
+/* ── 搜索框：全应用最重要的一个控件 ──────────────────────── */
+
+.searchbox {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  width: 100%;
+  max-width: var(--syn-layout-search-max);
+  height: 36px;
+  padding-inline: var(--syn-space-md);
+  background: var(--syn-color-bg-sunken);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+  transition: border-color var(--syn-dur-fast) var(--syn-ease-standard),
+    box-shadow var(--syn-dur-fast) var(--syn-ease-standard),
+    background-color var(--syn-dur-fast) var(--syn-ease-standard);
+}
+
+.searchbox:hover {
+  border-color: var(--syn-color-border-strong);
+}
+
+.searchbox--focused {
+  background: var(--syn-color-bg-elevated);
+  border-color: var(--syn-color-border-focus);
+  box-shadow: var(--syn-shadow-focus);
+}
+
+/* 拖文件到窗口任意位置都会高亮它 —— 「投喂即搜 E1」的视觉提示 */
+.searchbox--dropping {
+  background: var(--syn-color-primary-subtle);
+  border-color: var(--syn-color-primary);
+  border-style: dashed;
+}
+
+.searchbox__icon {
+  flex: none;
+  color: var(--syn-color-text-muted);
+}
+
+.searchbox__input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  /* 四号 —— 用户说「四号与小四是分内容进行设置」，搜索框属于重要内容 */
+  font-size: var(--syn-fs-emphasis);
+}
+
+.searchbox__input::placeholder {
+  color: var(--syn-color-text-muted);
+}
+
+.searchbox__kbd {
+  flex: none;
+  display: flex;
+  gap: var(--syn-space-xxs);
+}
+
+.kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding-inline: var(--syn-space-xs);
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-bottom-width: 2px;
+  border-radius: var(--syn-radius-md);
+}
+
+/* ── 侧栏 ────────────────────────────────────────────────── */
+
+.sidebar {
+  grid-area: sidebar;
+  display: flex;
+  flex-direction: column;
+  width: var(--syn-layout-side-bar);
+  padding: var(--syn-space-sm);
+  gap: var(--syn-space-xxs);
+  background: var(--syn-color-bg-elevated);
+  border-right: 1px solid var(--syn-color-border);
+  transition: width var(--syn-dur-normal) var(--syn-ease-standard);
+}
+
+.sidebar--collapsed {
+  width: var(--syn-layout-side-bar-collapsed);
+}
+
+.sidebar__item {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-md);
+  height: 38px;
+  padding-inline: var(--syn-space-md);
+  border-radius: var(--syn-radius-lg);
+  color: var(--syn-color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background-color var(--syn-dur-instant) var(--syn-ease-standard),
+    color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.sidebar__item:hover {
+  background: var(--syn-color-bg-hover);
+  color: var(--syn-color-text);
+}
+
+.sidebar__item--active {
+  background: var(--syn-color-primary-subtle);
+  color: var(--syn-color-primary);
+  font-weight: var(--syn-fw-medium);
+}
+
+.sidebar__icon {
+  flex: none;
+}
+
+.sidebar__label {
+  font-size: var(--syn-fs-body); /* 小四 */
+}
+
+.sidebar--collapsed .sidebar__label {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sidebar__spacer {
+  flex: 1;
+}
+
+/* ── 主舞台 ──────────────────────────────────────────────── */
+
+.main {
+  grid-area: main;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.page__header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-md);
+  padding: var(--syn-space-xl) var(--syn-layout-content-pad) var(--syn-space-lg);
+}
+
+/* 界面主标题：用户点名「文件管理器」这种要用更大的宋体 */
+.page__title {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-page-title); /* 小二 24px */
+  font-weight: var(--syn-fw-semibold);
+  line-height: var(--syn-lh-tight);
+  letter-spacing: var(--syn-ls-display);
+  color: var(--syn-color-text);
+}
+
+.page__subtitle {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+}
+
+.page__body {
+  flex: 1;
+  min-height: 0;
+  padding-inline: var(--syn-layout-content-pad);
+  overflow: auto;
+}
+
+/* ── 状态栏 ──────────────────────────────────────────────── */
+
+.statusbar {
+  grid-area: statusbar;
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-lg);
+  padding-inline: var(--syn-space-md);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  background: var(--syn-color-bg-elevated);
+  border-top: 1px solid var(--syn-color-border);
+}
+
+.statusbar__group {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  white-space: nowrap;
+}
+
+.statusbar__spacer {
+  flex: 1;
+}
+
+.statusbar__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--syn-radius-pill);
+  flex: none;
+}
+
+.statusbar__dot--ready {
+  background: var(--syn-color-success);
+}
+.statusbar__dot--busy {
+  background: var(--syn-color-warning);
+  animation: syn-pulse 1.6s var(--syn-ease-standard) infinite;
+}
+.statusbar__dot--failed {
+  background: var(--syn-color-danger);
+}
+.statusbar__dot--idle {
+  background: var(--syn-color-border-strong);
+}
+
+@keyframes syn-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ── 空状态：每个空页面都要告诉你下一步做什么 ─────────────── */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--syn-space-md);
+  height: 100%;
+  padding: var(--syn-space-xxxl);
+  text-align: center;
+  color: var(--syn-color-text-muted);
+}
+
+.empty__title {
+  font-size: var(--syn-fs-card-title);
+  color: var(--syn-color-text-secondary);
+}
+
+.empty__hint {
+  font-size: var(--syn-fs-body);
+  /* 汉字是全角，1ch 约等于半个汉字宽 —— 46ch 折算下来一行 40 多个字，
+     太宽，末行会只剩一两个字很难看。28ch ≈ 一行 24 字左右，中文阅读舒适区。 */
+  max-width: 28ch;
+  line-height: var(--syn-lh-relaxed);
+  /* 中文断行不该在标点前后断出孤字 */
+  text-wrap: pretty;
+}

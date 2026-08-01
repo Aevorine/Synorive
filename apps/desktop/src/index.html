@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- 内容安全策略：渲染层不许连任何外部地址。
+         引擎在 127.0.0.1，端口是运行时分配的，所以放开整个本机回环。 -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self';
+               style-src 'self' 'unsafe-inline';
+               font-src 'self' data:;
+               img-src 'self' data: blob: file:;
+               media-src 'self' data: blob: file:;
+               connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*;
+               object-src 'none';
+               base-uri 'none';
+               form-action 'none';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Synorive</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- 相对路径。绝不写 /src/main.tsx —— 打包后页面是 file://，
+         斜杠开头会解析到盘根，开发能跑、装好的应用永远拿不到。 -->
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

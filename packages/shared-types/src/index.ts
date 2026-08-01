@@ -518,14 +518,21 @@ export type EngineEvent =
 // 十一、设置
 // ──────────────────────────────────────────────────────────────
 
+/** 结果列表信息密度 —— 不同任务需要不同密度（F11） */
+export type Density = 'compact' | 'standard' | 'comfortable';
+
+/** F1 字体方案：a=全宋体 b=正文宋体+标题思源（默认）c=全思源 */
+export type FontScheme = 'a' | 'b' | 'c';
+
+/** E16 护眼色温档位 */
+export type EyeComfortLevel = 'off' | 'low' | 'medium' | 'high';
+
 export interface AppSettings {
   theme: 'light' | 'dark' | 'system';
-  /** F1 字体方案：a=全宋体 b=正文宋体+标题思源 c=全思源 */
-  fontScheme: 'a' | 'b' | 'c';
-  /** E16 护眼色温 */
-  eyeComfort: 'off' | 'low' | 'medium' | 'high';
+  fontScheme: FontScheme;
+  eyeComfort: EyeComfortLevel;
   eyeReminderMinutes: number;
-  density: 'compact' | 'standard' | 'comfortable';
+  density: Density;
   /** M5 并发度 1~16 */
   concurrency: number;
   /** 托盘常驻 */

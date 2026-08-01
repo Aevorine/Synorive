@@ -1,0 +1,268 @@
+/* ============================================================
+ * Synorive 全局样式
+ * ============================================================
+ * 字体规范（用户原话，逐条落地）：
+ *   「中文是宋体小四或四号，四号与小四是分内容进行设置」
+ *      → 正文默认小四 16px；重要正文/按钮/搜索框四号 18.67px
+ *   「每个界面的功能名称采取字体更大的宋体，比如文件管理器」
+ *      → 界面主标题小二 24px，用思源宋体（F1-b）
+ *   「英文以及标点符号等采取 Times New Roman」
+ *      → 字族里 Times New Roman 排第一，浏览器逐字符回退：
+ *        拉丁字母/数字/西文标点从它取字形，汉字它没有 → 自动落到宋体
+ *   「界面要统一」
+ *      → 本文件之外禁止出现色值和字号字面量，靠 scripts/check-hardcoded-style.mjs 扫
+ * ============================================================ */
+
+@import '@synorive/design-tokens/tokens.css';
+@import './fonts.css';
+
+/* ── 1. 复位 ────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--syn-ff-body);
+  font-size: var(--syn-fs-body); /* 小四 16px */
+  line-height: var(--syn-lh-normal);
+  color: var(--syn-color-text);
+  background: var(--syn-color-bg);
+
+  /* 中日韩字体绝对不能让浏览器合成粗体/斜体 —— 合成出来的假粗
+     会把宋体的横竖笔画糊成一团，是"看起来很廉价"的头号来源 */
+  font-synthesis: none;
+
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+
+  /* 桌面应用不该能选中界面文字，只有内容区允许 */
+  user-select: none;
+  cursor: default;
+
+  /* E16 护眼模式：整层滤镜，不改任何组件颜色 */
+  filter: var(--syn-eye-filter, none);
+  transition: background-color var(--syn-dur-normal) var(--syn-ease-standard),
+    color var(--syn-dur-normal) var(--syn-ease-standard);
+}
+
+/* 内容文字允许选中复制 */
+.syn-selectable,
+input,
+textarea {
+  user-select: text;
+  cursor: auto;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--syn-color-primary);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+img,
+svg,
+video,
+canvas {
+  display: block;
+  max-width: 100%;
+}
+
+/* ── 2. 字号阶梯 ────────────────────────────────────────── */
+/* 每一级都是一个中文字号，不是随手拍的数字。
+   ≥24px 的两级换思源宋体（--syn-ff-display），因为 Windows 自带的
+   SimSun 是点阵老字体，24px 以上笔画又细又硬，反而不高级。 */
+
+.syn-t-brand {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-brand); /* 二号 29.33px */
+  font-weight: var(--syn-fw-semibold);
+  line-height: var(--syn-lh-tight);
+  letter-spacing: var(--syn-ls-display);
+}
+
+.syn-t-page-title {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-page-title); /* 小二 24px —— 「文件管理器」这类界面主标题 */
+  font-weight: var(--syn-fw-semibold);
+  line-height: var(--syn-lh-tight);
+  letter-spacing: var(--syn-ls-display);
+}
+
+.syn-t-section {
+  font-size: var(--syn-fs-section-title); /* 三号 21.33px */
+  font-weight: var(--syn-fw-semibold);
+  line-height: var(--syn-lh-tight);
+  letter-spacing: var(--syn-ls-wide);
+}
+
+.syn-t-card-title {
+  font-size: var(--syn-fs-card-title); /* 小三 20px */
+  font-weight: var(--syn-fw-medium);
+  line-height: var(--syn-lh-tight);
+}
+
+.syn-t-emphasis {
+  font-size: var(--syn-fs-emphasis); /* 四号 18.67px —— 重要正文/按钮/搜索框 */
+  line-height: var(--syn-lh-normal);
+}
+
+.syn-t-body {
+  font-size: var(--syn-fs-body); /* 小四 16px —— 正文默认 */
+  line-height: var(--syn-lh-normal);
+}
+
+.syn-t-caption {
+  font-size: var(--syn-fs-caption); /* 五号 14px —— 辅助信息/状态栏 */
+  line-height: var(--syn-lh-normal);
+  color: var(--syn-color-text-muted);
+}
+
+.syn-t-mono {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-caption);
+  letter-spacing: var(--syn-ls-tight);
+}
+
+.syn-t-secondary {
+  color: var(--syn-color-text-secondary);
+}
+.syn-t-muted {
+  color: var(--syn-color-text-muted);
+}
+
+/* ── 3. 字体方案切换（设置里 a/b/c 三选一）───────────────── */
+/* a = 全部 SimSun（完全按原话）  b = 正文宋体+标题思源（默认）  c = 全部思源 */
+
+:root[data-font-scheme='a'] .syn-t-brand,
+:root[data-font-scheme='a'] .syn-t-page-title {
+  font-family: var(--syn-ff-body);
+  /* SimSun 在大字号下偏细，靠字重和字距补偿 */
+  font-weight: var(--syn-fw-bold);
+  letter-spacing: var(--syn-ls-display);
+}
+
+:root[data-font-scheme='c'] body {
+  font-family: var(--syn-ff-display);
+}
+
+/* ── 4. 焦点可见性 ──────────────────────────────────────── */
+/* 「全键盘可达」的前提是键盘用户看得见焦点在哪。
+   鼠标点击不该出现焦点环，所以用 :focus-visible 不是 :focus。 */
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--syn-color-border-focus);
+  outline-offset: 2px;
+  border-radius: var(--syn-radius-sm);
+}
+
+/* ── 5. 滚动条：细、低调、不抢注意力 ────────────────────── */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--syn-color-border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--syn-color-border);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--syn-radius-pill);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--syn-color-border-strong);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ── 6. 检索高亮 ────────────────────────────────────────── */
+
+mark,
+.syn-hl {
+  background: var(--syn-color-highlight);
+  color: inherit;
+  padding: 0 var(--syn-space-xxs);
+  border-radius: var(--syn-radius-sm);
+}
+
+.syn-hl-semantic {
+  background: var(--syn-color-highlight-semantic);
+}
+
+/* ── 7. 动效：尊重系统的「减少动态效果」设置 ──────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── 8. 无障碍：只给读屏，不显示 ───────────────────────── */
+
+.syn-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── 9. 可拖动区域（自绘标题栏）────────────────────────── */
+
+.syn-drag {
+  -webkit-app-region: drag;
+}
+.syn-no-drag {
+  -webkit-app-region: no-drag;
+}

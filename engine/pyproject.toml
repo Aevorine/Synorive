@@ -1,0 +1,97 @@
+[project]
+name = "synorive-engine"
+version = "0.1.0"
+description = "Synorive 引擎 —— 多模态并发分析与极速内容检索"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+dependencies = [
+    # ── Web 层 ──────────────────────────────────────────
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "httpx>=0.28",
+
+    # ── 存储 ────────────────────────────────────────────
+    "sqlite-vec>=0.1.9",
+
+    # ── 中文分词（主索引依赖它，不是可选）──────────────
+    # 实测：不预分词的话「搜索」「视频」这类两字词命中率为 0
+    "jieba>=0.42",
+
+    # ── 推理 ────────────────────────────────────────────
+    # 默认 CPU 版。依赖医生里的「启用核显加速」会换成 onnxruntime-directml，
+    # 两者互斥（同一个 onnxruntime 命名空间），不能同时装。
+    "onnxruntime>=1.20",
+    "numpy>=2.0",
+
+    # ── 图像 ────────────────────────────────────────────
+    "pillow>=11.0",
+    "scipy>=1.14",
+
+    # ── 系统 ────────────────────────────────────────────
+    "watchdog>=6.0",
+    "psutil>=6.0",
+]
+
+[project.optional-dependencies]
+# 文档解析（二期）
+docs = [
+    "pymupdf>=1.25",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "python-pptx>=1.0",
+    "ebooklib>=0.18",
+    "trafilatura>=2.0",
+]
+# 多模态（三期）
+media = [
+    "rapidocr-onnxruntime>=1.4",
+    "av>=13.0",
+]
+# 核显加速（依赖医生一键切换，不要和 onnxruntime 同时装）
+gpu = [
+    "onnxruntime-directml>=1.20",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[project.scripts]
+synorive-engine = "synorive.main:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["synorive*"]
+
+[tool.setuptools.package-data]
+synorive = ["store/*.sql"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",   # 行长交给 formatter
+    "RUF001", # 中文注释里的全角标点是有意的
+    "RUF002",
+    "RUF003",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
