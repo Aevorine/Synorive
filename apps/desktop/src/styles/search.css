@@ -1,0 +1,379 @@
+/* ============================================================
+ * 搜索界面
+ * ============================================================ */
+
+.searchlayout {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--syn-space-lg);
+  flex: 1;
+  min-height: 0;
+  padding-inline: var(--syn-layout-content-pad);
+  padding-bottom: var(--syn-space-lg);
+}
+
+.searchlayout__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ── 结果列表（虚拟滚动）───────────────────────────────── */
+
+.results {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  contain: strict; /* 告诉浏览器这块的布局与外界无关，滚动时不用回流整页 */
+}
+
+.results__inner {
+  position: relative;
+  width: 100%;
+}
+
+.results__row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  /* transform 而不是 top：走合成层，滚动时不触发重排 */
+  will-change: transform;
+}
+
+/* ── 结果卡片 ──────────────────────────────────────────── */
+
+.card {
+  display: grid;
+  grid-template-columns: 26px 20px 1fr auto;
+  align-items: start;
+  gap: var(--syn-space-sm);
+  height: 100%;
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  border-bottom: 1px solid var(--syn-color-border);
+  overflow: hidden;
+  transition: background-color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.card:hover {
+  background: var(--syn-color-bg-hover);
+}
+
+.card:focus-visible {
+  background: var(--syn-color-bg-selected);
+  outline-offset: -2px;
+}
+
+.card__rank {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  text-align: right;
+  padding-top: 3px;
+}
+
+.card__icon {
+  color: var(--syn-color-text-muted);
+  margin-top: 2px;
+}
+
+.card__main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.card__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-sm);
+  min-width: 0;
+}
+
+.card__title {
+  /* 四号 —— 结果标题是这个界面里最该被一眼看到的东西 */
+  font-size: var(--syn-fs-emphasis);
+  font-weight: var(--syn-fw-medium);
+  color: var(--syn-color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card__loc {
+  flex: none;
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-primary);
+  background: var(--syn-color-primary-subtle);
+  padding: 0 var(--syn-space-xs);
+  border-radius: var(--syn-radius-md);
+}
+
+.card__snippet {
+  font-size: var(--syn-fs-body); /* 小四 */
+  color: var(--syn-color-text-secondary);
+  line-height: var(--syn-lh-normal);
+  display: -webkit-box;
+  /* 行数跟着密度走：紧凑 1 行、标准 2 行、宽松 3 行。
+     行高是固定的（虚拟滚动要求），所以摘要行数必须和行高对上，
+     对不上就会像之前那样把元信息那一行挤没。 */
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+:root[data-density='compact'] .card__snippet {
+  -webkit-line-clamp: 1;
+}
+
+:root[data-density='comfortable'] .card__snippet {
+  -webkit-line-clamp: 3;
+}
+
+/* 紧凑密度下元信息只留路径，别的挤不下 */
+:root[data-density='compact'] .card__meta > *:not(.card__path) {
+  display: none;
+}
+
+.card__snippet em {
+  background: var(--syn-color-highlight);
+  font-style: normal;
+  font-weight: var(--syn-fw-medium);
+  border-radius: var(--syn-radius-sm);
+  padding: 0 1px;
+}
+
+.card__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-md);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  min-width: 0;
+}
+
+.card__path {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl; /* 路径太长时保留末尾的文件名，砍掉开头 */
+  text-align: left;
+  max-width: 46ch;
+}
+
+.card__path:hover {
+  color: var(--syn-color-primary);
+  text-decoration: underline;
+}
+
+.card__why {
+  color: var(--syn-color-text-muted);
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.card__score {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  padding-top: 3px;
+}
+
+/* ── 排序指标面板（D4）─────────────────────────────────── */
+
+.ranking {
+  width: 232px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-md);
+  padding: var(--syn-space-md);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-xl);
+  align-self: start;
+  max-height: 100%;
+  overflow: auto;
+}
+
+.ranking__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  color: var(--syn-color-text-secondary);
+}
+
+.ranking__title {
+  flex: 1;
+  font-size: var(--syn-fs-body);
+  font-weight: var(--syn-fw-medium);
+  color: var(--syn-color-text);
+}
+
+.ranking__reset {
+  color: var(--syn-color-text-muted);
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--syn-radius-md);
+}
+
+.ranking__reset:hover {
+  background: var(--syn-color-bg-hover);
+  color: var(--syn-color-text);
+}
+
+.ranking__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--syn-space-xs);
+}
+
+.chip {
+  font-size: var(--syn-fs-micro);
+  padding: 3px var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-pill);
+  color: var(--syn-color-text-secondary);
+  transition: all var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.chip:hover {
+  border-color: var(--syn-color-border-strong);
+  color: var(--syn-color-text);
+}
+
+.chip--on {
+  background: var(--syn-color-primary-subtle);
+  border-color: var(--syn-color-primary);
+  color: var(--syn-color-primary);
+}
+
+.ranking__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+
+.slider {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px var(--syn-space-sm);
+  align-items: center;
+}
+
+.slider__label {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-secondary);
+}
+
+.slider__value {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.slider__input {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 3px;
+  appearance: none;
+  background: var(--syn-color-border);
+  border-radius: var(--syn-radius-pill);
+  cursor: pointer;
+}
+
+.slider__input::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-primary);
+  border: 2px solid var(--syn-color-bg-elevated);
+  box-shadow: var(--syn-shadow-sm);
+}
+
+.ranking__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-secondary);
+  cursor: pointer;
+  padding-top: var(--syn-space-xs);
+  border-top: 1px solid var(--syn-color-border);
+}
+
+/* ── 通用小件 ──────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  height: 34px;
+  padding-inline: var(--syn-space-lg);
+  font-size: var(--syn-fs-body);
+  border-radius: var(--syn-radius-lg);
+  border: 1px solid var(--syn-color-border);
+  color: var(--syn-color-text);
+  background: var(--syn-color-bg-elevated);
+  transition: all var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.btn:hover {
+  border-color: var(--syn-color-border-strong);
+  background: var(--syn-color-bg-hover);
+}
+
+.btn--primary {
+  background: var(--syn-color-primary);
+  border-color: var(--syn-color-primary);
+  color: var(--syn-color-text-inverse);
+}
+
+.btn--primary:hover {
+  background: var(--syn-color-primary-hover);
+  border-color: var(--syn-color-primary-hover);
+}
+
+.banner {
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  border-radius: var(--syn-radius-lg);
+  font-size: var(--syn-fs-body);
+  margin-bottom: var(--syn-space-md);
+}
+
+.banner--error {
+  background: var(--syn-color-danger-subtle);
+  color: var(--syn-color-danger);
+  border: 1px solid var(--syn-color-danger);
+}
+
+.empty__glyph {
+  color: var(--syn-color-border-strong);
+}
+
+.page__subtitle--busy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  color: var(--syn-color-warning);
+}
+
+.spin {
+  animation: syn-spin 900ms linear infinite;
+}
+
+@keyframes syn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

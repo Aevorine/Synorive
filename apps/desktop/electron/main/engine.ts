@@ -25,7 +25,7 @@ const isDev = !app.isPackaged;
 /** 启动超时：本机冷启动含模型探测，给足 45 秒 */
 const BOOT_TIMEOUT_MS = 45_000;
 /** 健康检查轮询间隔 */
-const HEALTH_POLL_MS = 250;
+const HEALTH_POLL_MS = 100;
 /** 最多自动重启几次 —— 到顶就停手报错，不无限重试 */
 const MAX_RESTARTS = 5;
 
@@ -277,7 +277,15 @@ export class EngineManager {
 
       ws.addEventListener('message', (ev) => {
         try {
-          const parsed = JSON.parse(String(ev.data)) as unknown;
+          const parsed = JSON.parse(String(ev.data)) as { type?: string; payload?: unknown };
+
+          // 引擎每 2 秒推一次状态，合进 detail 里让状态栏保持实时。
+          // 不这么做的话状态栏永远显示引擎启动那一刻的快照 ——
+          // 索引了 19 条还写着「已索引 1 条」，用户会以为索引没生效。
+          if (parsed?.type === 'engine.status' && parsed.payload) {
+            this.patch({ detail: parsed.payload });
+          }
+
           for (const fn of this.eventListeners) fn(parsed);
         } catch {
           /* 非 JSON 就丢掉，不该发生 */

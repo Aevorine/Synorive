@@ -51,10 +51,17 @@ class Doctor:
 
     # ── 体检 ────────────────────────────────────────────────
 
-    def check(self, dep: Dependency) -> dict[str, Any]:
+    def check(self, dep: Dependency, *, deep: bool = True) -> dict[str, Any]:
         """
         单项体检（给界面用）。正在装的项直接回 "installing"，
         免得进度条和体检结果打架。
+
+        deep=False 是**快速档**：判断 Python 包时只查模块找不找得到
+        （importlib.util.find_spec），不真的 import。
+
+        为什么要分档：真 import 一遍 fitz / trafilatura / rapidocr 要 200~400ms 一个，
+        引擎启动时体检 9 个依赖就要多花半秒多，直接顶破 A1「冷启动 ≤2s」。
+        启动和 /health 用快档，用户打开依赖面板和装完自检用深档。
 
         ⚠️ 装完之后的自检**不能**走这个函数 —— 那时候 id 还在 _installing 里，
         会被这个短路拦下，返回 "installing" 而不是真实状态，
@@ -62,7 +69,7 @@ class Doctor:
         """
         if dep.id in self._installing:
             return {**self._describe(dep), "state": "installing"}
-        return self._check_raw(dep)
+        return self._check_raw(dep, deep=deep)
 
     def _describe(self, dep: Dependency) -> dict[str, Any]:
         return {
@@ -75,8 +82,8 @@ class Doctor:
             "optional": dep.optional,
         }
 
-    def _check_raw(self, dep: Dependency) -> dict[str, Any]:
-        """真体检，不管在不在装。装完的自检用这个。"""
+    def _check_raw(self, dep: Dependency, *, deep: bool = True) -> dict[str, Any]:
+        """真体检，不管在不在装。装完的自检用这个（必须 deep=True）。"""
         base = self._describe(dep)
 
         if dep.kind is DepKind.MODEL:
@@ -84,11 +91,11 @@ class Doctor:
         if dep.kind is DepKind.BINARY:
             return {**base, **self._check_binary(dep)}
         if dep.kind is DepKind.PY_PACKAGE:
-            return {**base, **self._check_package(dep)}
+            return {**base, **(self._check_package(dep) if deep else self._check_package_fast(dep))}
         return {**base, "state": "missing"}
 
-    def check_all(self) -> list[dict[str, Any]]:
-        return [self.check(d) for d in REGISTRY]
+    def check_all(self, *, deep: bool = True) -> list[dict[str, Any]]:
+        return [self.check(d, deep=deep) for d in REGISTRY]
 
     def _check_model(self, dep: Dependency) -> dict[str, Any]:
         d = self.model_dir / dep.subdir
@@ -143,7 +150,43 @@ class Doctor:
             pass
         return {"state": "ok", "error": None, "path": exe, "installedVersion": version}
 
+    def _check_package_fast(self, dep: Dependency) -> dict[str, Any]:
+        """
+        快速档：只查模块找不找得到，不执行它。
+
+        find_spec 只翻文件系统和 sys.path，微秒级；
+        真 import 会执行模块顶层代码，PyMuPDF/trafilatura 那种要几百毫秒。
+
+        代价：查不出"装了但一 import 就炸"的情况。所以这一档只用于
+        启动和 /health 这种要快的地方，用户打开依赖面板时会走深档复查。
+        """
+        import importlib.util
+
+        probes = IMPORT_PROBES.get(dep.id, ())
+        if not probes:
+            return {"state": "missing", "error": None}
+
+        found = 0
+        for mod in probes:
+            try:
+                if importlib.util.find_spec(mod) is not None:
+                    found += 1
+            except (ImportError, ValueError, ModuleNotFoundError):
+                pass
+
+        if found == 0:
+            return {"state": "missing", "error": None}
+        if found < len(probes):
+            return {"state": "failed", "error": f"只找到 {found}/{len(probes)} 个模块，装了一半"}
+
+        if dep.id == "gpu-directml":
+            # DirectML 必须看执行器列表，find_spec 分辨不出 CPU 版和 DML 版
+            return self._check_package(dep)
+
+        return {"state": "ok", "error": None, "installedVersion": None}
+
     def _check_package(self, dep: Dependency) -> dict[str, Any]:
+        """深度档：真的 import 一次。慢但准，能查出"装了但用不了"。"""
         probes = IMPORT_PROBES.get(dep.id, ())
         if not probes:
             return {"state": "missing", "error": "没有登记 import 探针"}

@@ -2,10 +2,13 @@ import { useEffect } from 'react';
 import { SideBar } from './components/SideBar';
 import { StatusBar } from './components/StatusBar';
 import { TopBar } from './components/TopBar';
+import { SearchPage } from './pages/SearchPage';
+import { setEnginePort } from './lib/api';
 import { PAGE_TITLES, useApp, useResolvedTheme } from './lib/store';
 import { applyAll } from './lib/theme';
 import './styles/global.css';
 import './styles/shell.css';
+import './styles/search.css';
 
 export default function App() {
   const settings = useApp((s) => s.settings);
@@ -32,12 +35,17 @@ export default function App() {
       setSettings(s);
       setSystemTheme(sysTheme);
       setEngine(eng);
+      // 引擎端口是启动时动态分配的，不能写死
+      setEnginePort(eng?.port ?? null);
       setReady(true);
     })();
 
     const offSettings = window.synorive.settings.onChanged(setSettings);
     const offTheme = window.synorive.theme.onSystemChanged(setSystemTheme);
-    const offEngine = window.synorive.engine.onStateChanged(setEngine);
+    const offEngine = window.synorive.engine.onStateChanged((s) => {
+      setEngine(s);
+      setEnginePort(s.lifecycle === 'ready' || s.lifecycle === 'degraded' ? s.port : null);
+    });
 
     const offEvent = window.synorive.engine.onEvent((raw) => {
       const ev = raw as { type?: string };
@@ -65,7 +73,7 @@ export default function App() {
       <TopBar />
       <SideBar />
       <main className="main">
-        <Page title={PAGE_TITLES[page]} />
+        {page === 'search' ? <SearchPage /> : <Page title={PAGE_TITLES[page]} />}
       </main>
       <StatusBar />
     </div>

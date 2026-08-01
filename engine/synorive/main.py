@@ -25,6 +25,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
+from .api.routes import router
 from .runtime import EngineConfig, Runtime
 
 log = logging.getLogger("synorive")
@@ -33,11 +34,28 @@ log = logging.getLogger("synorive")
 def build_app(runtime: Runtime) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        runtime.attach_loop(asyncio.get_running_loop())
         log.info("引擎就绪 · 版本 %s · 数据目录 %s", __version__, runtime.config.data_dir)
         log.info("SQLite 能力：%s", runtime.db.capabilities)
         if runtime.db.capabilities.get("degraded"):
             log.warning("降级运行：%s", runtime.db.capabilities["degraded"])
+
+        st = runtime.repo.stats()
+        log.info("库里已有 %d 条内容 / %d 个分块", st["items"], st["chunks"])
+        missing = [
+            d["name"] for d in runtime.doctor.check_all(deep=False)
+            if d["state"] != "ok" and not d["optional"]
+        ]
+        if missing:
+            log.warning("必需依赖还缺：%s —— 界面上会提示一键安装", missing)
+
+        # 模型后台预热，不挡启动（A1 冷启动 ≤2s）
+        runtime.warmup_async()
+        status_task = asyncio.create_task(runtime.status_loop())
+
         yield
+
+        status_task.cancel()
         log.info("引擎关闭，累计运行 %.1fs", runtime.uptime_sec)
         runtime.db.close()
 
@@ -60,10 +78,13 @@ def build_app(runtime: Runtime) -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(router, prefix="/api")
+
     # ── 健康检查：桌面端靠它判断引擎起没起来 ──────────────
     @app.get("/health")
     async def health() -> dict[str, Any]:
         cpu, mem = runtime.resource_usage()
+        deps = runtime.doctor.check_all(deep=False) if runtime.doctor else []
         return {
             "ok": True,
             "version": __version__,
@@ -72,13 +93,13 @@ def build_app(runtime: Runtime) -> FastAPI:
             "cpuPercent": round(cpu, 1),
             "memoryMb": round(mem, 1),
             "queueDepth": 0,
-            "activeJobs": 0,
+            "activeJobs": sum(1 for j in runtime._jobs.values() if j.get("status") == "running"),
             "indexedItems": runtime.db.count_items(),
             "dbSizeMb": round(runtime.db.size_mb(), 2),
             "executionProvider": _execution_provider(),
             "cloudReady": runtime.config.allow_cloud,
-            "modelsReady": [],
-            "modelsMissing": [],
+            "modelsReady": [d["id"] for d in deps if d["state"] == "ok"],
+            "modelsMissing": [d["id"] for d in deps if d["state"] != "ok" and not d["optional"]],
             "capabilities": runtime.db.capabilities,
         }
 

@@ -150,9 +150,22 @@ def _read_text(path: Path) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def display_title(path: Path) -> str:
+    """
+    结果列表里显示的标题。
+
+    代码和纯文本文件**带扩展名**：`text.py` 去掉扩展名就剩 `text`，
+    库里有 db.py / schema.sql / index.ts 一堆，全显示成 db、schema、index，
+    根本分不清是哪个。而 Office 文档的扩展名没有信息量（`年度报告.docx` → `年度报告` 更好看）。
+    """
+    if path.suffix.lower() in CODE_EXT or path.suffix.lower() in PLAIN_EXT:
+        return path.name
+    return path.stem
+
+
 def _parse_plain(path: Path) -> ParsedDoc:
     text = _read_text(path)[:MAX_CHARS]
-    return ParsedDoc(segments=[TextSegment(text=text)], title=path.stem)
+    return ParsedDoc(segments=[TextSegment(text=text)], title=display_title(path))
 
 
 def _parse_json(path: Path) -> ParsedDoc:
@@ -161,12 +174,12 @@ def _parse_json(path: Path) -> ParsedDoc:
         data = json.loads(text)
         # 重新格式化：紧凑的 JSON 一行几万字符，分块时切不出有意义的边界
         pretty = json.dumps(data, ensure_ascii=False, indent=2)[:MAX_CHARS]
-        return ParsedDoc(segments=[TextSegment(text=pretty)], title=path.stem)
+        return ParsedDoc(segments=[TextSegment(text=pretty)], title=display_title(path))
     except json.JSONDecodeError:
         # 不是合法 JSON 就当纯文本，别因为格式错误就整个索引不了
         return ParsedDoc(
             segments=[TextSegment(text=text)],
-            title=path.stem,
+            title=display_title(path),
             warnings=["JSON 格式不合法，按纯文本索引"],
         )
 
