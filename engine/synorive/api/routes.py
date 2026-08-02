@@ -180,6 +180,70 @@ async def similar(item_id: str, request: Request, limit: int = 20) -> list[dict[
     return [h for h in r["hits"] if h["item"]["id"] != item_id][:limit]
 
 
+class ByImageRequest(BaseModel):
+    """D3 以图搜图 / 以图搜镜头。二选一：给库里已有的 itemId，或给一个本机文件路径。"""
+
+    itemId: str | None = None
+    path: str | None = None
+    limit: int = Field(default=30, ge=1, le=100)
+    includeScenes: bool = True
+
+
+@router.post("/search/by-image")
+async def search_by_image(req: ByImageRequest, request: Request) -> dict[str, Any]:
+    """
+    用一张图搜：既搜库里的图片，也搜**视频里的镜头**。
+
+    后者是这个功能最有意思的地方 —— 丢一张截图进来，
+    它能告诉你"这个画面出现在某个视频的第 3 分 24 秒"。
+    """
+    rt = _rt(request)
+    vec = await asyncio.to_thread(rt.image_vector_for, req.itemId, req.path)
+    if vec is None:
+        raise HTTPException(
+            400,
+            "拿不到这张图的向量。可能是：图像模型还没装（依赖医生里装 embed-image）、"
+            "这条内容不是图片、或者路径不存在",
+        )
+    return await asyncio.to_thread(
+        rt.search.search_by_image,
+        vec,
+        limit=req.limit,
+        include_scenes=req.includeScenes,
+        exclude_item=req.itemId or "",
+    )
+
+
+@router.get("/items/{item_id}/scenes")
+async def item_scenes(item_id: str, request: Request) -> list[dict[str, Any]]:
+    """视频的场景列表（含关键帧和台词）—— 界面上的时间轴条靠它。"""
+    return _rt(request).repo.scenes_of(item_id)
+
+
+@router.get("/items/{item_id}/duplicates")
+async def item_duplicates(item_id: str, request: Request) -> list[dict[str, Any]]:
+    """E9 近重复：找出和这张图几乎一样的其它图。"""
+    import json as _json
+
+    rt = _rt(request)
+    row = rt.repo.get_item(item_id)
+    if row is None:
+        raise HTTPException(404, "没有这条内容")
+    try:
+        ph = _json.loads(str(row["meta_json"] or "{}")).get("phash")
+    except _json.JSONDecodeError:
+        ph = None
+    if not ph:
+        return []
+    ids = rt.repo.find_near_duplicates(ph, exclude_item=item_id)
+    from ..search.engine import _row_to_item
+
+    rows = rt.repo.get_items(ids)
+    return [
+        _row_to_item(rows[i], rt.repo.item_tags(i)) for i in ids if i in rows
+    ]
+
+
 @router.get("/graph")
 async def graph(
     request: Request, entityId: str | None = None, kind: str | None = None, limit: int = 60

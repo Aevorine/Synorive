@@ -170,6 +170,48 @@ class Runtime:
         self._embedder = TextEmbedder(d)  # threads 默认取物理核数
         return self._embedder
 
+    def image_vector_for(self, item_id: str | None, path: str | None) -> Any:
+        """
+        拿一张图的 CLIP 向量。优先用库里已经算好的，没有再现算。
+
+        用库里的：向量已经在 vec_items 里，直接读比重算快得多，
+        而且保证和索引时用的是同一个模型版本。
+        """
+        import numpy as np
+
+        if item_id:
+            conn = self.db.connect()
+            row = conn.execute(
+                "SELECT v.embedding FROM vec_items v "
+                "JOIN items i ON i.rowid = v.item_rowid WHERE i.id = ?",
+                (item_id,),
+            ).fetchone()
+            if row is not None and row["embedding"] is not None:
+                return np.frombuffer(row["embedding"], dtype=np.float32)
+            # 库里没有向量，退回按路径现算
+            it = self.repo.get_item(item_id)
+            if it is not None:
+                path = str(it["locator"])
+
+        if not path:
+            return None
+
+        from pathlib import Path as _P
+
+        from .analyze.image import ImageEmbedder, open_image
+
+        p = _P(path)
+        if not p.exists():
+            return None
+        emb = ImageEmbedder(self.config.model_dir / "clip-vit-b32")
+        if not emb.available():
+            return None
+        try:
+            return emb.encode_one(open_image(p))
+        except Exception as e:  # noqa: BLE001
+            log.warning("现算图片向量失败：%s", e)
+            return None
+
     def warmup_async(self) -> None:
         """后台预热向量模型，不阻塞启动。"""
         import threading
@@ -230,6 +272,44 @@ class Runtime:
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """记下事件循环，工作线程要靠它把事件安全地送回来。"""
         self._loop = loop
+
+    # ── 端口发现 ────────────────────────────────────────────
+    #
+    # 端口是每次启动动态挑的，所以 MCP 服务器和 CLI 没法写死地址。
+    # 引擎启动时把端口写进 data 目录下的 engine.json，
+    # 它们读这个文件就能连上**桌面端已经拉起来的那个引擎**，
+    # 不用各自再起一个（各起一个的话会有多个进程抢同一个库文件）。
+
+    @property
+    def endpoint_file(self) -> Path:
+        return self.config.data_dir / "engine.json"
+
+    def write_endpoint(self) -> None:
+        import json
+        import os
+
+        try:
+            self.endpoint_file.write_text(
+                json.dumps(
+                    {
+                        "port": self.config.port,
+                        "host": self.config.host,
+                        "pid": os.getpid(),
+                        "dataDir": str(self.config.data_dir),
+                        "startedAt": time.time(),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            log.warning("写端口文件失败，MCP 和 CLI 将无法自动发现引擎：%s", e)
+
+    def clear_endpoint(self) -> None:
+        try:
+            self.endpoint_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     # ── 摄取任务 ────────────────────────────────────────────
 

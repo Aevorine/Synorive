@@ -49,6 +49,9 @@ def build_app(runtime: Runtime) -> FastAPI:
         if missing:
             log.warning("必需依赖还缺：%s —— 界面上会提示一键安装", missing)
 
+        # 写端口文件，MCP 服务器和 CLI 靠它找到这个引擎
+        runtime.write_endpoint()
+
         # 模型后台预热，不挡启动（A1 冷启动 ≤2s）
         runtime.warmup_async()
         status_task = asyncio.create_task(runtime.status_loop())
@@ -56,6 +59,7 @@ def build_app(runtime: Runtime) -> FastAPI:
         yield
 
         status_task.cancel()
+        runtime.clear_endpoint()
         log.info("引擎关闭，累计运行 %.1fs", runtime.uptime_sec)
         runtime.db.close()
 

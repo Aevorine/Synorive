@@ -250,13 +250,18 @@ REGISTRY: tuple[Dependency, ...] = (
         degrades_to="图片里的文字搜不到",
         optional=True,
     ),
+    # ⚠️ 这一条原来是「PyAV（视频解码）」—— 那是早期规划，
+    #    实际实现走的是 ffmpeg 命令行（scdet 一次解码出全部切换点，
+    #    比 PyAV 逐帧读进 Python 快一个数量级），PyAV 根本没用上。
+    #    清单和实现脱节的后果是：界面提示用户装一个装了也没用的包，
+    #    而真正需要的 sherpa-onnx 反倒不在清单里。
     Dependency(
-        id="pkg-media",
+        id="pkg-asr",
         kind=DepKind.PY_PACKAGE,
-        name="PyAV（视频解码）",
-        purpose="按场景切分视频、抽关键帧",
-        required_by=("C14 视频分析",),
-        degrades_to="视频不做内容分析",
+        name="sherpa-onnx（语音识别运行时）",
+        purpose="跑 SenseVoice 语音模型和 VAD 断句，视频转写靠它",
+        required_by=("C14 视频转写", "音频检索"),
+        degrades_to="视频只能靠画面搜，说了什么搜不到",
         optional=True,
     ),
     Dependency(
@@ -285,17 +290,22 @@ BY_ID: dict[str, Dependency] = {d.id: d for d in REGISTRY}
 #: 装 Python 包时用的实际包名（一个依赖项可能对应多个 pip 包）
 PIP_PACKAGES: dict[str, tuple[str, ...]] = {
     "pkg-docs": ("pymupdf>=1.25", "python-docx>=1.1", "openpyxl>=3.1", "python-pptx>=1.0"),
-    "pkg-ocr": ("rapidocr-onnxruntime>=1.4",),
-    "pkg-media": ("av>=13.0",),
+    # ⚠️ 包名是 `rapidocr` 不是 `rapidocr-onnxruntime`：
+    #    后者所有版本都限制 Python <3.13，本项目跑在 3.13 上装不了。
+    #    这个名字在这里写错的症状是"明明装好了却一直报没装"。
+    "pkg-ocr": ("rapidocr>=3.0",),
+    "pkg-asr": ("sherpa-onnx>=1.12",),
     "pkg-web": ("trafilatura>=2.0",),
     "gpu-directml": ("onnxruntime-directml>=1.20",),
 }
 
-#: 装完之后 import 这些名字来确认真的能用 —— 只看 pip 退出码是不够的
+#: 装完之后 import 这些名字来确认真的能用 —— 只看 pip 退出码是不够的。
+#: 探针名和 PIP_PACKAGES 里的包名往往不一样（pymupdf → fitz、python-docx → docx），
+#: 写错的症状同样是"装好了却报没装"。
 IMPORT_PROBES: dict[str, tuple[str, ...]] = {
     "pkg-docs": ("fitz", "docx", "openpyxl", "pptx"),
-    "pkg-ocr": ("rapidocr_onnxruntime",),
-    "pkg-media": ("av",),
+    "pkg-ocr": ("rapidocr",),
+    "pkg-asr": ("sherpa_onnx",),
     "pkg-web": ("trafilatura",),
     "gpu-directml": ("onnxruntime",),
 }

@@ -585,6 +585,136 @@ class SearchEngine:
             }
         return out
 
+    # ── D3 跨模态互搜 ───────────────────────────────────────
+
+    def search_by_image(
+        self,
+        image_vector: np.ndarray,
+        *,
+        limit: int = 30,
+        include_scenes: bool = True,
+        exclude_item: str = "",
+    ) -> dict[str, Any]:
+        """
+        用一张图去搜：既搜库里的图片，也搜视频里的**镜头**。
+
+        视频那一路是这个功能最有意思的地方 —— 拿一张截图丢进来，
+        它能告诉你"这个画面出现在某个视频的第 3 分 24 秒"。
+        图片向量和场景关键帧向量用的是同一个 CLIP 模型，
+        所以两者在同一个语义空间里，可以直接比距离、直接混排。
+        """
+        t0 = time.perf_counter()
+        conn = self.db.connect()
+        blob = sqlite_vec.serialize_float32(list(image_vector))
+
+        hits: list[dict[str, Any]] = []
+
+        # ① 库里的图片
+        try:
+            rows = conn.execute(
+                "SELECT item_rowid, distance FROM vec_items "
+                "WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+                (blob, limit * 2),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+
+        if rows:
+            rowids = [int(r["item_rowid"]) for r in rows]
+            dist = {int(r["item_rowid"]): float(r["distance"]) for r in rows}
+            marks = ",".join("?" * len(rowids))
+            detail = conn.execute(
+                f"SELECT rowid, id FROM items WHERE rowid IN ({marks})", rowids
+            ).fetchall()
+            by_rowid = {int(r["rowid"]): str(r["id"]) for r in detail}
+            for rid in rowids:
+                iid = by_rowid.get(rid)
+                if not iid or iid == exclude_item:
+                    continue
+                hits.append({"itemId": iid, "distance": dist[rid], "kind": "image"})
+
+        # ② 视频里的镜头
+        if include_scenes:
+            try:
+                srows = conn.execute(
+                    "SELECT vec_rowid, distance FROM vec_scenes "
+                    "WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+                    (blob, limit * 2),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                srows = []
+
+            if srows:
+                vrowids = [int(r["vec_rowid"]) for r in srows]
+                sdist = {int(r["vec_rowid"]): float(r["distance"]) for r in srows}
+                marks = ",".join("?" * len(vrowids))
+                smap = conn.execute(
+                    f"SELECT m.vec_rowid, m.item_id, m.scene_index, "
+                    f"       s.start_sec, s.end_sec, s.keyframe_path, s.transcript "
+                    f"FROM scene_vec_map m "
+                    f"JOIN video_scenes s ON s.item_id = m.item_id "
+                    f"                   AND s.scene_index = m.scene_index "
+                    f"WHERE m.vec_rowid IN ({marks})",
+                    vrowids,
+                ).fetchall()
+                for r in smap:
+                    iid = str(r["item_id"])
+                    if iid == exclude_item:
+                        continue
+                    hits.append({
+                        "itemId": iid,
+                        "distance": sdist[int(r["vec_rowid"])],
+                        "kind": "scene",
+                        "sceneIndex": int(r["scene_index"]),
+                        "startSec": float(r["start_sec"]),
+                        "endSec": float(r["end_sec"]),
+                        "keyframePath": r["keyframe_path"],
+                        "transcript": r["transcript"] or "",
+                    })
+
+        # 混排：图片和镜头在同一个语义空间，直接按距离排
+        hits.sort(key=lambda h: h["distance"])
+
+        # 同一个视频只保留最相似的那一个镜头 ——
+        # 不去重的话一个视频会用它的 20 个镜头霸占整页结果
+        seen_video: set[str] = set()
+        deduped: list[dict[str, Any]] = []
+        for h in hits:
+            if h["kind"] == "scene":
+                if h["itemId"] in seen_video:
+                    continue
+                seen_video.add(h["itemId"])
+            deduped.append(h)
+            if len(deduped) >= limit:
+                break
+
+        rows2 = self.repo.get_items([h["itemId"] for h in deduped])
+        out: list[dict[str, Any]] = []
+        for h in deduped:
+            r = rows2.get(h["itemId"])
+            if r is None:
+                continue
+            # L2 距离转相似度：向量已归一化，距离范围 [0,2]
+            score = max(0.0, 1.0 - h["distance"] / 2.0)
+            item = {
+                "item": _row_to_item(r, self.repo.item_tags(h["itemId"])),
+                "score": round(score, 6),
+            }
+            if h["kind"] == "scene":
+                item["location"] = {"startSec": h["startSec"], "endSec": h["endSec"]}
+                item["highlight"] = (h.get("transcript") or "")[:160]
+                item["sceneKeyframe"] = h.get("keyframePath")
+            out.append(item)
+
+        return {
+            "stage": "semantic",
+            "final": True,
+            "hits": out,
+            "totalEstimate": len(out),
+            "elapsedMs": round((time.perf_counter() - t0) * 1000, 1),
+            "mode": "by-image",
+        }
+
     def recall_by_filter(self, f: Filters, limit: int = 90) -> list[Candidate]:
         """光有筛选没有查询词时，按时间倒序列出符合条件的内容。"""
         conn = self.db.connect()
