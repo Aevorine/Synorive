@@ -109,7 +109,21 @@ _ORG_TAIL = re.compile(
 _ORG_STOP_CHARS = set(
     "的地得在和与及或是了也就都很不我你他她它这那有为以对从向被把等着过"
     "上下里外前后中间时候因为所以但是而且如果虽然然后并且以及由于关于"
+    "请按照可能需要仅靠要让各种大型一个两个三个多个若干"
     "，。、；：！？（）【】「」《》\"'“”‘’ \t\n\r0123456789"
+)
+
+#: 机构名里允许出现的字符。**只有汉字、字母、数字**。
+#:
+#: 只靠停用字集是拦不住的 —— 实测在自己的文档上抽出过
+#: 「检仅靠正则识别密码/银行」「.要让公司」这种东西：
+#: 斜杠、点号、括号这些字符不在停用集里，反向扫描就一路吃过去了。
+#: 改成白名单（只允许构成名字的字符），比黑名单可靠得多。
+_ORG_NAME_CHAR = re.compile(r"[一-龥A-Za-z0-9]")
+
+#: 抽出来的机构名如果以这些字开头，多半是从半句话里截出来的碎片
+_ORG_BAD_PREFIX = (
+    "和", "与", "及", "或", "等", "为", "把", "让", "使", "有", "无", "各", "该", "其",
 )
 
 #: 通用技术词混进 nz（其他专名）的重灾区。词频过滤盖不住这些
@@ -298,17 +312,31 @@ def extract_entities(
             if len(v) >= 4:
                 counters.setdefault(kind, Counter())[v] += 1
 
-    # ② 机构后缀 —— 从后缀**反向**扫，遇到虚词就停。
-    #    不用「前缀正则 + 非贪婪」：实测那样会从半句话的最左边开始匹配，
-    #    抽出「伟和李娜在北京的字节跳动公司」这种东西。
+    # ② 机构后缀 —— 从后缀**反向**扫，双重约束：
+    #    · 白名单：只能是汉字/字母/数字（拦掉 `/`、`.`、括号这类，
+    #      黑名单拦不住，实测抽出过「检仅靠正则识别密码/银行」「.要让公司」）
+    #    · 停用字：遇到虚词就停（拦掉「在…的…公司」这类跨句截取）
     for m in _ORG_TAIL.finditer(head[:100_000]):
         start = m.start()
         i = start
-        while i > 0 and start - i < 10 and head[i - 1] not in _ORG_STOP_CHARS:
+        while i > 0 and start - i < 10:
+            ch = head[i - 1]
+            if ch in _ORG_STOP_CHARS or not _ORG_NAME_CHAR.match(ch):
+                break
             i -= 1
         v = head[i : m.end()].strip()
-        if 3 <= len(v) <= 16 and v not in _STOP_ENTITIES and len(v) > len(m.group(0)):
-            counters.setdefault("org", Counter())[v] += 1
+
+        if not (3 <= len(v) <= 16):
+            continue
+        if v in _STOP_ENTITIES or len(v) <= len(m.group(0)):
+            continue
+        # 只剩后缀本身、或者以虚词开头 = 从半句话里截出来的碎片
+        if v.startswith(_ORG_BAD_PREFIX):
+            continue
+        # 名字里不能有非名字字符（双保险：反向扫万一漏了）
+        if not all(_ORG_NAME_CHAR.match(ch) for ch in v):
+            continue
+        counters.setdefault("org", Counter())[v] += 1
 
     # ③ 词性标注那批 —— 默认不跑，噪声太大
     if pos_ner:

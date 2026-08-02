@@ -7,9 +7,12 @@
 
 import type {
   ContentItem,
+  GraphSlice,
   IngestRequest,
   SearchRequest,
   SearchResponse,
+  TimelineBucket,
+  TimelinePoint,
 } from '@synorive/shared-types';
 
 let basePort: number | null = null;
@@ -63,7 +66,34 @@ export const api = {
 
   installDep: (id: string) =>
     call<{ ok: boolean }>(`/api/doctor/${id}/install`, { method: 'POST' }),
+
+  timeline: (bucket: TimelineBucket, limit = 200) =>
+    call<TimelinePoint[]>(`/api/timeline?bucket=${bucket}&limit=${limit}`),
+
+  graph: (opts: { entityId?: string; kind?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.entityId) q.set('entityId', opts.entityId);
+    if (opts.kind) q.set('kind', opts.kind);
+    q.set('limit', String(opts.limit ?? 60));
+    return call<GraphSlice>(`/api/graph?${q}`);
+  },
+
+  scenes: (itemId: string) =>
+    call<SceneRow[]>(`/api/items/${itemId}/scenes`),
+
+  duplicates: (itemId: string) => call<ContentItem[]>(`/api/items/${itemId}/duplicates`),
+
+  byImage: (req: { itemId?: string; path?: string; limit?: number; includeScenes?: boolean }) =>
+    call<SearchResponse>('/api/search/by-image', { method: 'POST', body: JSON.stringify(req) }),
 };
+
+export interface SceneRow {
+  index: number;
+  startSec: number;
+  endSec: number;
+  keyframePath: string | null;
+  transcript: string;
+}
 
 export interface DoctorEntry {
   id: string;

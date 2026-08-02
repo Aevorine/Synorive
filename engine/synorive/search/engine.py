@@ -522,10 +522,14 @@ class SearchEngine:
         if stage == "semantic":
             groups["vector"] = self.recall_vector(text_query, f)
 
-        # 只有筛选没有查询词（比如光敲 `type:pdf date:今天`）→ 直接按筛选列内容，
-        # 否则三路召回全空，用户会以为筛选坏了
-        if not text_query.strip() and not f.empty:
-            groups = {"filter": self.recall_by_filter(f, limit=max(limit * 3, 90))}
+        # 没有查询词时（不管有没有筛选）都走"按时间列内容"这条路。
+        #
+        # ⚠️ 第一版写的是 `not text_query and not f.empty` —— 只在**有筛选**时才走。
+        #    结果「文件管理器」页面不加任何筛选时三路召回全空，
+        #    界面显示"库里还是空的"，而库里其实有 41 条。
+        #    空查询 + 空筛选的正确语义是"把所有内容列出来"，不是"什么都没有"。
+        if not text_query.strip():
+            groups = {"filter": self.recall_by_filter(f, limit=max(limit * 3, 200))}
 
         fused = self.fuse(groups, w)
         scored = self.apply_signals(fused, w, text_query)

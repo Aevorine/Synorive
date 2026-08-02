@@ -1,14 +1,20 @@
-import { useEffect } from 'react';
+import { useEffect, type ComponentType } from 'react';
 import { SideBar } from './components/SideBar';
 import { StatusBar } from './components/StatusBar';
 import { TopBar } from './components/TopBar';
+import { AnalyzePage } from './pages/AnalyzePage';
+import { GraphPage } from './pages/GraphPage';
+import { LibraryPage } from './pages/LibraryPage';
 import { SearchPage } from './pages/SearchPage';
+import { SettingsPage } from './pages/SettingsPage';
+import { TimelinePage } from './pages/TimelinePage';
 import { setEnginePort } from './lib/api';
-import { PAGE_TITLES, useApp, useResolvedTheme } from './lib/store';
+import { useApp, useResolvedTheme, type PageId } from './lib/store';
 import { applyAll } from './lib/theme';
 import './styles/global.css';
 import './styles/shell.css';
 import './styles/search.css';
+import './styles/pages.css';
 
 export default function App() {
   const settings = useApp((s) => s.settings);
@@ -73,7 +79,7 @@ export default function App() {
       <TopBar />
       <SideBar />
       <main className="main">
-        {page === 'search' ? <SearchPage /> : <Page title={PAGE_TITLES[page]} />}
+        <Router page={page} />
       </main>
       <StatusBar />
     </div>
@@ -81,38 +87,19 @@ export default function App() {
 }
 
 /**
- * 一期只出骨架：每个页面先立好标题与空状态，
- * 二期起往里填真实功能。空状态一定要告诉人下一步做什么，
- * 而不是一片空白。
+ * 路由。没上路由库 —— 五个页面、无嵌套、无 URL 需求，
+ * 引一个库进来只会多一层要维护的东西。
  */
-function Page({ title }: { title: string }) {
-  const page = useApp((s) => s.page);
-  const engine = useApp((s) => s.engine);
+const PAGES: Record<PageId, ComponentType> = {
+  search: SearchPage,
+  library: LibraryPage,
+  analyze: AnalyzePage,
+  timeline: TimelinePage,
+  graph: GraphPage,
+  settings: SettingsPage,
+};
 
-  const HINTS: Record<string, string> = {
-    search: '索引建好之后，在上面的搜索框里敲字就能搜。支持中文语义搜索——描述内容也能搜到，不用记文件名。',
-    library: '这里会列出全部已索引的内容，可以按类型、时间、来源、标签筛选。',
-    analyze: '把文件、图片、视频或链接拖进窗口，就会开始分析。分析全程在独立进程里跑，界面不会卡。',
-    timeline: '所有内容会按时间铺在一条可缩放的轴上，搜索结果会高亮投影上去。',
-    graph: '自动抽取的人物、地点、组织会连成一张网，点任意节点就能顺藤摸瓜。',
-    settings: '主题、字体、护眼、并发度、索引目录、云端接入、隐私围栏都在这里。',
-  };
-
-  return (
-    <div className="page">
-      <div className="page__header">
-        {/* 界面主标题：小二 24px 思源宋体 —— 用户点名的那个 */}
-        <h1 className="page__title">{title}</h1>
-        <span className="page__subtitle">
-          {engine?.lifecycle === 'ready' ? '引擎就绪' : '等待引擎启动…'}
-        </span>
-      </div>
-      <div className="page__body">
-        <div className="empty">
-          <div className="empty__title">一期骨架 · 功能施工中</div>
-          <p className="empty__hint">{HINTS[page] ?? ''}</p>
-        </div>
-      </div>
-    </div>
-  );
+function Router({ page }: { page: PageId }) {
+  const Comp = PAGES[page] ?? SearchPage;
+  return <Comp />;
 }

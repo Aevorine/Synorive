@@ -279,8 +279,15 @@ async def timeline(request: Request, bucket: str = "day", limit: int = 400) -> l
 
 
 @router.get("/doctor")
-async def doctor_status(request: Request) -> list[dict[str, Any]]:
-    return _rt(request).doctor.check_all()
+async def doctor_status(request: Request, deep: bool = False) -> list[dict[str, Any]]:
+    """
+    依赖体检。**默认走快档**（只查模块在不在，微秒级）。
+
+    深档要真 import 一遍 fitz / trafilatura / rapidocr，每个 200~400ms，
+    九个依赖加起来能到两秒 —— 界面打开分析中心要等两秒才出内容，
+    中间一片空白。加 `?deep=true` 才做真导入（点"重新体检"时用）。
+    """
+    return await asyncio.to_thread(_rt(request).doctor.check_all, deep=deep)
 
 
 @router.post("/doctor/{dep_id}/install")

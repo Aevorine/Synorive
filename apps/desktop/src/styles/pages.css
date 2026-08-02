@@ -1,0 +1,535 @@
+/* ============================================================
+ * 文件管理器 / 分析中心 / 时间轴 / 知识图谱 / 设置
+ * ============================================================ */
+
+.page__body--flush {
+  padding-inline: 0;
+}
+
+.page__body--flush .results {
+  padding-inline: var(--syn-layout-content-pad);
+}
+
+/* ── 筛选栏 ──────────────────────────────────────────────── */
+
+.filterbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--syn-space-lg);
+  padding: 0 var(--syn-layout-content-pad) var(--syn-space-md);
+}
+
+.filterbar__group {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+}
+
+.filterbar__label {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  white-space: nowrap;
+}
+
+.filterbar__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--syn-space-xs);
+}
+
+.legend {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+}
+
+.legend__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--syn-radius-pill);
+  display: inline-block;
+}
+
+/* ── 面板 ────────────────────────────────────────────────── */
+
+.panel {
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-xl);
+  padding: var(--syn-space-lg);
+  margin-bottom: var(--syn-space-lg);
+}
+
+.panel__title {
+  /* 三号 —— 区块标题，比界面主标题小一档 */
+  font-size: var(--syn-fs-section-title);
+  font-weight: var(--syn-fw-semibold);
+  letter-spacing: var(--syn-ls-wide);
+  margin-bottom: var(--syn-space-xs);
+}
+
+.panel__subtitle {
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-medium);
+  margin: var(--syn-space-md) 0 var(--syn-space-sm);
+  color: var(--syn-color-text-secondary);
+}
+
+.panel__hint {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  line-height: var(--syn-lh-relaxed);
+  margin-bottom: var(--syn-space-md);
+  max-width: 78ch;
+  text-wrap: pretty;
+}
+
+.panel__row {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  margin-bottom: var(--syn-space-sm);
+  flex-wrap: wrap;
+}
+
+.btn--sm {
+  height: 26px;
+  padding-inline: var(--syn-space-md);
+  font-size: var(--syn-fs-micro);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── 链接输入 ────────────────────────────────────────────── */
+
+.urlbox {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  flex: 1;
+  min-width: 280px;
+  height: 34px;
+  padding-inline: var(--syn-space-md);
+  background: var(--syn-color-bg-sunken);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+}
+
+.urlbox:focus-within {
+  border-color: var(--syn-color-border-focus);
+  box-shadow: var(--syn-shadow-focus);
+}
+
+.urlbox__icon {
+  color: var(--syn-color-text-muted);
+  flex: none;
+}
+
+.urlbox__input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: var(--syn-fs-body);
+}
+
+/* ── 依赖列表（E3 依赖医生）─────────────────────────────── */
+
+.deplist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+}
+
+.dep {
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  gap: var(--syn-space-md);
+  align-items: start;
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+  background: var(--syn-color-bg);
+}
+
+.dep__icon {
+  padding-top: 2px;
+}
+.dep__ok {
+  color: var(--syn-color-success);
+}
+.dep__miss {
+  color: var(--syn-color-text-muted);
+}
+
+.dep__main {
+  min-width: 0;
+}
+
+.dep__name {
+  font-size: var(--syn-fs-body);
+  font-weight: var(--syn-fw-medium);
+}
+
+.dep__purpose {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  line-height: var(--syn-lh-normal);
+  text-wrap: pretty;
+}
+
+.dep__degrade {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-warning);
+  margin-top: 2px;
+}
+
+.dep__error {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-danger);
+  margin-top: 2px;
+}
+
+.dep__progress {
+  position: relative;
+  height: 4px;
+  margin-top: var(--syn-space-sm);
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-pill);
+  overflow: visible;
+}
+
+.dep__bar {
+  height: 100%;
+  background: var(--syn-color-primary);
+  border-radius: var(--syn-radius-pill);
+  transition: width var(--syn-dur-normal) var(--syn-ease-standard);
+}
+
+.dep__pct {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  white-space: nowrap;
+}
+
+.dep__action {
+  padding-top: 2px;
+}
+
+.dep__state {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+}
+
+/* ── 时间轴（E5）─────────────────────────────────────────── */
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-bottom: var(--syn-space-xl);
+}
+
+.timeline__row {
+  display: grid;
+  grid-template-columns: 96px 1fr 56px;
+  align-items: center;
+  gap: var(--syn-space-md);
+  padding: 3px var(--syn-space-sm);
+  border-radius: var(--syn-radius-md);
+  text-align: left;
+  transition: background-color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.timeline__row:hover {
+  background: var(--syn-color-bg-hover);
+}
+
+.timeline__label {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-secondary);
+}
+
+.timeline__bar {
+  display: flex;
+  height: 15px;
+  border-radius: var(--syn-radius-sm);
+  overflow: hidden;
+  background: var(--syn-color-bg-sunken);
+}
+
+.timeline__seg {
+  height: 100%;
+  min-width: 2px;
+}
+
+.timeline__count {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  text-align: right;
+}
+
+/* ── 知识图谱（E6）───────────────────────────────────────── */
+
+.entitygrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: var(--syn-space-xs);
+}
+
+.entity {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+  background: var(--syn-color-bg);
+  text-align: left;
+  min-width: 0;
+  transition: border-color var(--syn-dur-instant) var(--syn-ease-standard),
+    background-color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.entity:hover {
+  border-color: var(--syn-color-primary);
+  background: var(--syn-color-primary-subtle);
+}
+
+.entity__name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--syn-fs-body);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.entity__count {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  flex: none;
+}
+
+.badge {
+  flex: none;
+  font-size: var(--syn-fs-micro);
+  padding: 1px var(--syn-space-xs);
+  border-radius: var(--syn-radius-md);
+  background: var(--syn-color-bg-sunken);
+  color: var(--syn-color-text-muted);
+  white-space: nowrap;
+}
+
+.badge--org,
+.badge--person {
+  background: var(--syn-color-primary-subtle);
+  color: var(--syn-color-primary);
+}
+.badge--contact,
+.badge--link {
+  background: var(--syn-color-info-subtle);
+  color: var(--syn-color-info);
+}
+.badge--money,
+.badge--version {
+  background: var(--syn-color-warning-subtle);
+  color: var(--syn-color-warning);
+}
+.badge--time,
+.badge--place {
+  background: var(--syn-color-success-subtle);
+  color: var(--syn-color-success);
+}
+
+.entitydetail {
+  margin-bottom: var(--syn-space-lg);
+}
+
+.entitydetail__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-md);
+  flex-wrap: wrap;
+  padding: var(--syn-space-md);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-xl);
+  margin-bottom: var(--syn-space-md);
+}
+
+.entitydetail__name {
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-medium);
+}
+
+.entitydetail__count {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  flex: 1;
+}
+
+/* ── 设置 ────────────────────────────────────────────────── */
+
+.field {
+  margin-bottom: var(--syn-space-lg);
+}
+
+.field__label {
+  font-size: var(--syn-fs-body);
+  font-weight: var(--syn-fw-medium);
+}
+
+.field__hint {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  line-height: var(--syn-lh-relaxed);
+  margin: 2px 0 var(--syn-space-sm);
+  max-width: 78ch;
+  text-wrap: pretty;
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+  overflow: hidden;
+}
+
+.segmented__btn {
+  padding: var(--syn-space-xs) var(--syn-space-lg);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  border-right: 1px solid var(--syn-color-border);
+  transition: all var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.segmented__btn:last-child {
+  border-right: none;
+}
+
+.segmented__btn:hover {
+  background: var(--syn-color-bg-hover);
+  color: var(--syn-color-text);
+}
+
+.segmented__btn--on {
+  background: var(--syn-color-primary);
+  color: var(--syn-color-text-inverse);
+}
+
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--syn-space-md);
+  padding: var(--syn-space-sm) 0;
+  cursor: pointer;
+  border-top: 1px solid var(--syn-color-border);
+}
+
+.toggle:first-of-type {
+  border-top: none;
+}
+
+.toggle input {
+  margin-top: 4px;
+  flex: none;
+  accent-color: var(--syn-color-primary);
+}
+
+.toggle--danger input {
+  accent-color: var(--syn-color-danger);
+}
+
+.toggle__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.toggle__label {
+  font-size: var(--syn-fs-body);
+}
+
+.toggle--danger .toggle__label {
+  color: var(--syn-color-danger);
+}
+
+.toggle__hint {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  line-height: var(--syn-lh-relaxed);
+  max-width: 78ch;
+  text-wrap: pretty;
+}
+
+.pathlist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+  margin-bottom: var(--syn-space-md);
+}
+
+.pathlist__item {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-xs) var(--syn-space-md);
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-md);
+}
+
+.pathlist__path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.pathlist__remove {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--syn-radius-md);
+  color: var(--syn-color-text-muted);
+}
+
+.pathlist__remove:hover {
+  background: var(--syn-color-danger-subtle);
+  color: var(--syn-color-danger);
+}
+
+/* ---- 加载态 ---- */
+/* 起因是真实 bug：写成「!loading 且空 -> 空状态」「有数据 -> 内容」，
+   加载中两个条件都不成立，页面一片空白，用户以为坏了。三态必须都有画面。 */
+.loadingstate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-xxxl);
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text-muted);
+}
