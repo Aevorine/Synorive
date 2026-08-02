@@ -6,7 +6,7 @@
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import { IPC } from '../shared/ipc-contract.js';
+import { IPC, type ClipEntry } from '../shared/ipc-contract.js';
 
 type Unsubscribe = () => void;
 
@@ -51,6 +51,17 @@ const api = {
      * 而它只能在 preload 里调 —— 这是「投喂即搜 E1」的地基。
      */
     pathForFile: (file: File): string => webUtils.getPathForFile(file),
+  },
+
+  /** E4 剪贴板哨兵。内容只在主进程内存里，这里拿到的是快照。 */
+  clip: {
+    list: (): Promise<ClipEntry[]> => ipcRenderer.invoke(IPC.clipList),
+    /** 真正入库。返回 false 表示引擎没就绪或写失败。 */
+    archive: (id: string): Promise<boolean> => ipcRenderer.invoke(IPC.clipArchive, id),
+    dismiss: (id: string): Promise<void> => ipcRenderer.invoke(IPC.clipDismiss, id),
+    clear: (): Promise<void> => ipcRenderer.invoke(IPC.clipClear),
+    /** payload 为 null 表示哨兵被关掉、列表已清空 */
+    onCaptured: (cb: (e: ClipEntry | null) => void) => on(IPC.clipCaptured, cb),
   },
 
   theme: {

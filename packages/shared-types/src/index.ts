@@ -538,8 +538,14 @@ export interface AppSettings {
   /** 托盘常驻 */
   runInTray: boolean;
   launchAtLogin: boolean;
-  /** E4 剪贴板哨兵 */
+  /** E4 剪贴板哨兵：盯着剪贴板，攒在内存里等你决定要不要存 */
   clipboardSentinel: boolean;
+  /**
+   * 纯链接自动归档。
+   * 只对「整段内容就是一个 http(s) 链接」生效 —— 链接里不会夹带密码或验证码，
+   * 所以它是唯一一类可以自动落盘还不出事的剪贴板内容。默认关。
+   */
+  clipboardAutoArchiveLinks: boolean;
   /** 监听索引的目录 */
   watchedFolders: string[];
   /** 数据与模型位置 */

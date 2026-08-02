@@ -1,4 +1,5 @@
 import { FolderPlus, Loader2, Search as SearchIcon } from 'lucide-react';
+import { ClipboardTray } from '../components/ClipboardTray';
 import { RankingPanel } from '../components/RankingPanel';
 import { SearchResults } from '../components/SearchResults';
 import { api } from '../lib/api';
@@ -44,6 +45,9 @@ export function SearchPage() {
       <div className="searchlayout">
         <div className="searchlayout__main">
           {error && <div className="banner banner--error">搜索出错：{error}</div>}
+
+          {/* 没搜东西的时候才显示剪贴板 —— 搜索中它会抢走结果的位置 */}
+          {!searched && <ClipboardTray />}
 
           {!searched && (
             <div className="empty">

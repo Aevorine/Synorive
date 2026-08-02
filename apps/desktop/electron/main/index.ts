@@ -4,7 +4,8 @@
 
 import { BrowserWindow, app, dialog, globalShortcut, ipcMain, nativeTheme, shell } from 'electron';
 import type { AppSettings } from '@synorive/shared-types';
-import { IPC, type EngineProcessState } from '../shared/ipc-contract.js';
+import { IPC, type ClipEntry, type EngineProcessState } from '../shared/ipc-contract.js';
+import { ClipboardWatcher } from './clipboard.js';
 import { EngineManager } from './engine.js';
 import { ensureDataDirs, loadSettings, patchSettings } from './settings.js';
 import { TrayController, setLaunchAtLogin } from './tray.js';
@@ -17,6 +18,7 @@ interface AppRef {
 let win: BrowserWindow | null = null;
 let tray: TrayController | null = null;
 let engine: EngineManager | null = null;
+let clip: ClipboardWatcher | null = null;
 let settings: AppSettings = loadSettings();
 
 // ── 单实例：第二次启动就把已有窗口拉到前面 ─────────────────────
@@ -74,6 +76,50 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
+// ── E4 剪贴板哨兵 ────────────────────────────────────────
+
+function startClipboard(): void {
+  clip = new ClipboardWatcher({
+    onEntry: (e) => broadcast(IPC.clipCaptured, e),
+    onAutoArchive: (e) => void archiveClip(e),
+  });
+  clip.setAutoArchiveLinks(settings.clipboardAutoArchiveLinks);
+  applyClipboardSetting();
+}
+
+/** 开关拨到哪就真的启停到哪。关掉时连内存里攒的也清空。 */
+function applyClipboardSetting(): void {
+  if (!clip) return;
+  if (settings.clipboardSentinel) {
+    clip.start();
+  } else {
+    clip.stop();
+    clip.clear();
+    broadcast(IPC.clipCaptured, null);
+  }
+}
+
+/** 把一条剪贴板内容真正送进引擎入库 */
+async function archiveClip(e: ClipEntry): Promise<boolean> {
+  const port = engine?.getState().port;
+  if (!port) return false;
+  const body = e.kind === 'link'
+    ? { targets: [e.content], source: 'link' as const, recursive: false }
+    : { targets: [e.content], source: 'clipboard' as const, recursive: false, inline: true };
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/api/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) return false;
+    clip?.markArchived(e.id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── 引擎 ────────────────────────────────────────────────────
 
 function startEngine(): void {
@@ -115,6 +161,10 @@ function registerIpc(): void {
     }
     if (before.clipboardSentinel !== settings.clipboardSentinel) {
       tray?.setClipboardEnabled(settings.clipboardSentinel);
+      applyClipboardSetting();
+    }
+    if (before.clipboardAutoArchiveLinks !== settings.clipboardAutoArchiveLinks) {
+      clip?.setAutoArchiveLinks(settings.clipboardAutoArchiveLinks);
     }
     // 数据目录 / 并发度变了要重启引擎才生效
     if (
@@ -161,6 +211,21 @@ function registerIpc(): void {
     return shell.openExternal(url);
   });
 
+  // E4 剪贴板哨兵
+  ipcMain.handle(IPC.clipList, () => clip?.list() ?? []);
+  ipcMain.handle(IPC.clipArchive, (_e, id: string) => {
+    const entry = clip?.list().find((x) => x.id === id);
+    return entry ? archiveClip(entry) : false;
+  });
+  ipcMain.handle(IPC.clipDismiss, (_e, id: string) => clip?.remove(id));
+  ipcMain.handle(IPC.clipClear, () => {
+    clip?.clear();
+    // ⚠️ 必须广播，否则界面自己那份状态不会跟着清 —— 用户点了「全部清掉」，
+    //    主进程空了，界面上的条目却还在，而且从此和内存对不上。实测抓到过。
+    //    null 沿用「哨兵被关掉」那条约定：收到就把列表清空。
+    broadcast(IPC.clipCaptured, null);
+  });
+
   // 主题
   ipcMain.handle(IPC.themeGetSystem, () => (nativeTheme.shouldUseDarkColors ? 'dark' : 'light'));
   nativeTheme.on('updated', () => {
@@ -187,6 +252,7 @@ app.whenReady().then(() => {
     onRestartEngine: () => void engine?.restart(),
     onToggleClipboard: (enabled) => {
       settings = patchSettings({ clipboardSentinel: enabled });
+      applyClipboardSetting();
       broadcast(IPC.settingsChanged, settings);
     },
     onOpenSettings: () => {
@@ -199,6 +265,7 @@ app.whenReady().then(() => {
   setLaunchAtLogin(settings.launchAtLogin);
 
   startEngine();
+  startClipboard();
 
   // 全局快捷键：任何时候唤起搜索
   globalShortcut.register('CommandOrControl+Alt+Space', () => {

@@ -671,3 +671,8 @@
   margin-top: var(--syn-space-lg);
   text-wrap: pretty;
 }
+
+/* 依赖别的开关时置灰。不用 opacity 盖整块 —— 说明文字还得看得清，
+   否则用户既不能开、又看不懂为什么不能开。 */
+.toggle--disabled { cursor: not-allowed; }
+.toggle--disabled .toggle__label { color: var(--syn-color-text-muted); }

@@ -377,3 +377,101 @@
     transform: rotate(360deg);
   }
 }
+
+/* ── E4 剪贴板哨兵 ──────────────────────────────────────── */
+
+.cliptray {
+  margin-bottom: var(--syn-space-lg);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-xl);
+  background: var(--syn-color-bg-elevated);
+  overflow: hidden;
+}
+
+.cliptray__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  border-bottom: 1px solid var(--syn-color-border);
+  color: var(--syn-color-text-secondary);
+}
+
+.cliptray__title {
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-medium);
+  color: var(--syn-color-text);
+}
+
+.cliptray__note {
+  flex: 1;
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+}
+
+.cliptray__list {
+  display: flex;
+  flex-direction: column;
+}
+
+.clip {
+  display: grid;
+  grid-template-columns: 22px 1fr auto auto 24px;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  border-top: 1px solid var(--syn-color-border);
+}
+.clip:first-child { border-top: none; }
+
+.clip--archived { opacity: 0.62; }
+
+.clip__icon { color: var(--syn-color-text-muted); }
+
+.clip__text {
+  min-width: 0;
+  font-size: var(--syn-fs-body);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.clip__thumb {
+  max-height: 46px;
+  max-width: 100%;
+  border-radius: var(--syn-radius-md);
+  border: 1px solid var(--syn-color-border);
+  justify-self: start;
+}
+
+.clip__time {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  white-space: nowrap;
+}
+
+.clip__done {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-success);
+  white-space: nowrap;
+}
+
+.clip__x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  border-radius: var(--syn-radius-md);
+  color: var(--syn-color-text-muted);
+  cursor: pointer;
+}
+.clip__x:hover {
+  background: var(--syn-color-bg-hover);
+  color: var(--syn-color-text);
+}

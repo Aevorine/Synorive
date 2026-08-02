@@ -43,6 +43,8 @@ export function defaultSettings(): AppSettings {
     runInTray: true,
     launchAtLogin: true,
     clipboardSentinel: true,
+    // 默认关。自动落盘这件事必须由你明确打开，不能靠默认值替你决定。
+    clipboardAutoArchiveLinks: false,
     watchedFolders: [],
     dataDir,
     modelDir: join(dataDir, 'models'),

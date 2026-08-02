@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 import type { AppSettings } from '@synorive/shared-types';
-import type { EngineProcessState, WindowState } from '../electron/shared/ipc-contract';
+import type { ClipEntry, EngineProcessState, WindowState } from '../electron/shared/ipc-contract';
 
 type Unsubscribe = () => void;
 
@@ -31,6 +31,14 @@ export interface SynoriveApi {
     openPath: (p: string) => Promise<string>;
     openExternal: (url: string) => Promise<void>;
     pathForFile: (file: File) => string;
+  };
+  clip: {
+    list: () => Promise<ClipEntry[]>;
+    archive: (id: string) => Promise<boolean>;
+    dismiss: (id: string) => Promise<void>;
+    clear: () => Promise<void>;
+    /** payload 为 null 表示哨兵被关掉、列表已清空 */
+    onCaptured: (cb: (e: ClipEntry | null) => void) => Unsubscribe;
   };
   theme: {
     getSystem: () => Promise<'light' | 'dark'>;

@@ -153,10 +153,20 @@ export function SettingsPage() {
 
           <Toggle
             label="剪贴板哨兵"
-            hint="后台监听剪贴板，复制的图片和链接自动静默入库——你什么都不用做，库自己在长。
-                  介意的话关掉，需要时手动投喂。"
+            hint="盯着剪贴板，把你复制过的文字、链接、截图攒在搜索页上方，点一下才存进库。
+                  内容只在内存里，关掉哨兵或退出应用就清空——密码、验证码、私钥这类东西
+                  会被识别出来直接丢掉，连预览都不留。"
             checked={settings.clipboardSentinel}
             onChange={(v) => patch({ clipboardSentinel: v })}
+          />
+
+          <Toggle
+            label="自动归档纯链接"
+            hint="只对「复制的整段内容就是一个网址」生效，自动抓正文存档，不用点。
+                  其他内容一律还是要你点一下——链接里不会夹带密码，别的说不准。"
+            checked={settings.clipboardAutoArchiveLinks}
+            onChange={(v) => patch({ clipboardAutoArchiveLinks: v })}
+            disabled={!settings.clipboardSentinel}
           />
         </section>
 
@@ -309,16 +319,24 @@ function Toggle({
   checked,
   onChange,
   danger,
+  disabled,
 }: {
   label: string;
   hint: string;
   checked: boolean;
   onChange: (v: boolean) => void;
   danger?: boolean;
+  /** 依赖别的开关时用它置灰，而不是把整项藏起来 —— 藏起来你会以为没这功能 */
+  disabled?: boolean;
 }) {
   return (
-    <label className={`toggle${danger ? ' toggle--danger' : ''}`}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    <label className={`toggle${danger ? ' toggle--danger' : ''}${disabled ? ' toggle--disabled' : ''}`}>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
       <span className="toggle__body">
         <span className="toggle__label">{label}</span>
         <span className="toggle__hint">{hint}</span>

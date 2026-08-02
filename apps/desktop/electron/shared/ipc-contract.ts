@@ -34,6 +34,14 @@ export const IPC = {
   openPath: 'sys:open-path',
   readDroppedPaths: 'sys:read-dropped-paths',
 
+  // ── E4 剪贴板哨兵 ────────────────────────────────────────
+  clipList: 'clip:list',
+  clipArchive: 'clip:archive',
+  clipDismiss: 'clip:dismiss',
+  clipClear: 'clip:clear',
+  /** 攒到新内容时主进程推过来 */
+  clipCaptured: 'clip:captured',
+
   // ── 主题 ────────────────────────────────────────────────
   themeGetSystem: 'theme:get-system',
   themeSystemChanged: 'theme:system-changed',
@@ -60,6 +68,18 @@ export interface EngineProcessState {
   lastError: string | null;
   /** 引擎自报的详细状态（EngineStatus），未就绪时为 null */
   detail: unknown | null;
+}
+
+/** E4 剪贴板哨兵攒下来的一条 */
+export interface ClipEntry {
+  id: string;
+  kind: 'text' | 'link' | 'image';
+  content: string;
+  preview: string;
+  width?: number;
+  height?: number;
+  capturedAt: string;
+  archived: boolean;
 }
 
 export interface WindowState {
