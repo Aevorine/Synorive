@@ -102,12 +102,27 @@ async def ingest(req: IngestRequest, request: Request) -> dict[str, Any]:
     if rt.pipeline is None:
         raise HTTPException(503, "摄取流水线还没就绪")
 
-    paths = [Path(t) for t in req.targets]
-    missing = [str(p) for p in paths if not p.exists()]
-    if missing:
-        raise HTTPException(400, f"这些路径不存在：{missing[:5]}")
+    from ..ingest.web import is_url
 
-    job_id = rt.start_ingest(paths, recursive=req.recursive, source=req.source, tags=req.tags)
+    # URL 保持字符串，路径转 Path —— URL 包成 Path 在 Windows 上会被折叠双斜杠
+    targets: list[Any] = []
+    missing: list[str] = []
+    for t in req.targets:
+        if is_url(t):
+            targets.append(t)
+            continue
+        p = Path(t)
+        if p.exists():
+            targets.append(p)
+        else:
+            missing.append(t)
+
+    if missing:
+        raise HTTPException(400, f"这些路径不存在（也不是合法链接）：{missing[:5]}")
+    if not targets:
+        raise HTTPException(400, "没有可处理的目标")
+
+    job_id = rt.start_ingest(targets, recursive=req.recursive, source=req.source, tags=req.tags)
     return {"jobId": job_id, "status": "running", "totalItems": 0}
 
 

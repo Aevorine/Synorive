@@ -315,7 +315,7 @@ class Runtime:
 
     def start_ingest(
         self,
-        paths: list[Path],
+        paths: list[Path | str],
         *,
         recursive: bool = True,
         source: str = "file",

@@ -34,7 +34,8 @@ from ..analyze.transcribe import Transcriber
 from ..analyze.video import analyze_video, is_audio, is_video
 from ..store.repository import ChunkRow, Repository
 from .chunker import chunk_segments
-from .parsers import CODE_EXT, ParseError, can_parse, iter_supported, parse
+from .parsers import CODE_EXT, ParseError, TextSegment, can_parse, iter_supported, parse
+from .web import fetch, is_url, url_fingerprint
 
 log = logging.getLogger("synorive.ingest")
 
@@ -487,6 +488,122 @@ class IngestPipeline:
         log.info("后台 OCR 补跑完成 %d 张", done)
         return done
 
+    # ── 网页 C11 ────────────────────────────────────────────
+
+    def ingest_url(self, url: str, *, tags: list[str] | None = None) -> str:
+        """
+        抓一个网页、存档、索引。
+
+        存档是关键：原网页删了、改了、要登录了，你这儿还有当时那一份。
+        技术博客一年后 404 是常态 —— 收藏夹变成一堆死链是最让人恼火的情况之一。
+        """
+        try:
+            fp = url_fingerprint(url)
+            existing = self.repo.find_by_fingerprint(fp)
+            if existing is not None:
+                settled = self.repo.get_settled_stages(str(existing["id"]))
+                if {"extract", "index"} <= settled:
+                    return "skipped"
+
+            archive_dir = self.repo.db.path.parent / "archive"
+            page = fetch(url, archive_dir=archive_dir)
+
+            if not page.text.strip():
+                why = "；".join(page.warnings) or "这个页面没有可提取的正文"
+                item_id, _ = self.repo.upsert_item(
+                    fingerprint=fp, modality="link", source="link",
+                    title=page.title or url, locator=url, status="failed", tags=tags,
+                )
+                self.repo.set_stage(item_id, "extract", "failed", error=why)
+                self.repo.set_item_status(item_id, "failed", why)
+                return "failed"
+
+            item_id, _ = self.repo.upsert_item(
+                fingerprint=fp,
+                modality="link",
+                source="link",
+                title=page.title or page.domain or url,
+                locator=page.final_url or url,
+                mime="text/html",
+                size_bytes=len(page.text),
+                content_time=page.published,
+                status="analyzing",
+                tags=tags,
+            )
+            self.repo.set_stage(item_id, "extract", "done")
+
+            enrichment = None
+            self.repo.set_stage(item_id, "enrich", "running")
+            try:
+                enrichment = enrich(page.text[:120_000])
+                self.repo.set_stage(item_id, "enrich", "done")
+            except Exception as e:  # noqa: BLE001
+                self.repo.set_stage(item_id, "enrich", "failed", error=str(e))
+
+            meta = {
+                "kind": "link",
+                "url": page.final_url or url,
+                "domain": page.domain,
+                "site": page.site,
+                "author": page.author,
+                "fetchedAt": datetime.now(UTC).isoformat(timespec="seconds"),
+                "archivePath": page.archive_path,
+                "httpStatus": page.status,
+                "isDead": page.status >= 400,
+                "warnings": page.warnings or None,
+            }
+            self.repo.update_item_fields(
+                item_id,
+                snippet=(enrichment.summary if enrichment and enrichment.summary
+                         else page.text[:300].replace("\n", " ").strip()),
+                meta_json=json.dumps(meta, ensure_ascii=False),
+            )
+            if enrichment:
+                if enrichment.keywords:
+                    self.repo._attach_tags(item_id, enrichment.keywords[:8])
+                if enrichment.entities:
+                    try:
+                        self.repo.write_entities(
+                            item_id, [(e.kind, e.name, e.count) for e in enrichment.entities]
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            segs = [TextSegment(text=page.title, channel="title")] if page.title else []
+            segs.append(TextSegment(text=page.text))
+            chunks = chunk_segments(segs)
+
+            vectors = None
+            model_id = ""
+            emb = self._embedder()
+            if emb is not None and chunks:
+                self.repo.set_stage(item_id, "embed", "running")
+                try:
+                    vectors = emb.encode([c.text for c in chunks])
+                    model_id = emb.model_id
+                    self.repo.set_stage(item_id, "embed", "done", model_id=model_id)
+                except Exception as e:  # noqa: BLE001
+                    self.repo.set_stage(item_id, "embed", "failed", error=str(e))
+
+            rows = [
+                ChunkRow(text=c.text, channel=c.channel, index=c.index,
+                         token_count=c.token_estimate)
+                for c in chunks
+            ]
+            self.repo.write_chunks(item_id, rows, vectors, model_id=model_id)
+            self.repo.index_item_text(item_id)
+            self.repo.set_stage(item_id, "index", "done")
+            self.repo.set_item_status(
+                item_id,
+                "ready" if vectors is not None else "partial",
+                None if vectors is not None else "只建了关键词索引",
+            )
+            return "done"
+
+        except Exception:  # noqa: BLE001
+            log.exception("抓取 %s 时出错", url)
+            return "failed"
+
     # ── 视频 / 音频 ─────────────────────────────────────────
 
     def ingest_media(
@@ -688,20 +805,47 @@ class IngestPipeline:
 
     def ingest_paths(
         self,
-        targets: list[Path],
+        targets: list[Path | str],
         *,
         recursive: bool = True,
         source: str = "file",
         tags: list[str] | None = None,
     ) -> IngestStats:
+        """
+        混合投喂：路径和 URL 都能进来。
+
+        ⚠️ URL **必须以 str 传，不能包成 Path**。
+           `Path("https://example.com/a")` 在 Windows 上会变成
+           `WindowsPath('https:/example.com/a')` —— 双斜杠被折叠成一个，
+           再转回字符串就已经不是合法 URL 了。所以这里的类型是 `Path | str`。
+        """
+        urls: list[str] = []
         files: list[Path] = []
         for t in targets:
-            if t.is_dir():
-                files.extend(iter_supported(t, recursive))
-            elif t.is_file() and can_parse(t):
-                files.append(t)
+            if isinstance(t, str) and is_url(t):
+                urls.append(t)
+                continue
+            p = t if isinstance(t, Path) else Path(t)
+            if p.is_dir():
+                files.extend(iter_supported(p, recursive))
+            elif p.is_file() and (can_parse(p) or p.suffix.lower() in _MEDIA_EXT):
+                files.append(p)
 
-        stats = IngestStats(total=len(files))
+        stats = IngestStats(total=len(files) + len(urls))
+        if not files and not urls:
+            return stats
+
+        # 网页串行抓：并发抓会对同一个站点形成一小波请求，
+        # 容易被限流甚至封 IP。抓取是 IO 等待为主，串行也不慢。
+        for u in urls:
+            r = self.ingest_url(u, tags=tags)
+            if r == "done":
+                stats.done += 1
+            elif r == "skipped":
+                stats.skipped += 1
+            else:
+                stats.failed += 1
+                stats.errors.append((u, r))
         if not files:
             return stats
 
@@ -744,6 +888,16 @@ class IngestPipeline:
             stats.done, stats.skipped, stats.failed, stats.elapsed, stats.items_per_sec,
         )
         return stats
+
+
+def _media_ext() -> set[str]:
+    from ..analyze.image import SUPPORTED_IMAGE_EXT
+    from ..analyze.video import SUPPORTED_AUDIO_EXT, SUPPORTED_VIDEO_EXT
+
+    return SUPPORTED_IMAGE_EXT | SUPPORTED_VIDEO_EXT | SUPPORTED_AUDIO_EXT
+
+
+_MEDIA_EXT = _media_ext()
 
 
 def _physical_cores() -> int:
