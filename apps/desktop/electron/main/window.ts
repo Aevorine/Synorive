@@ -100,6 +100,13 @@ export function createMainWindow(opts: CreateWindowOptions): BrowserWindow {
       nodeIntegration: false,
       sandbox: false,
       spellcheck: false,
+      // 窗口被挡住或最小化时不要节流渲染进程。
+      //
+      // 默认行为下 Chromium 会把被遮挡窗口的 requestAnimationFrame 和定时器
+      // 降频甚至停掉 —— 对这个应用是错的：状态栏要实时显示后台索引进度，
+      // 用户把窗口切到后面正是"让它慢慢索引"的典型场景，那时候进度停更新
+      // 会让人以为卡死了。
+      backgroundThrottling: false,
     },
   });
 

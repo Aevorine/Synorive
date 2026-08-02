@@ -31,6 +31,13 @@ if (!app.requestSingleInstanceLock()) {
 // 关闭 Windows 上烦人的 GPU 沙箱告警，同时保留硬件加速
 app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling');
 
+// 后台不节流。和 window.ts 里的 backgroundThrottling: false 是一对 ——
+// 那个管渲染进程，这几个管 Chromium 自己的遮挡检测和定时器降频。
+// 少任何一半，窗口被挡住时状态栏就会停止更新。
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+
 function showWindow(): void {
   if (!win || win.isDestroyed()) {
     win = createMainWindow({
