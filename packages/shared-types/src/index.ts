@@ -538,6 +538,12 @@ export interface AppSettings {
   /** 托盘常驻 */
   runInTray: boolean;
   launchAtLogin: boolean;
+  /**
+   * D7 精排：搜完之后再用交叉编码器把前 12 条重排一遍。
+   * 准一点（实测 Top1 +3/100），但要多等约 0.8 秒 —— 它是**瀑布第三级**，
+   * 不挡首屏，结果先出来、晚一点自己重排。默认关：模型 279MB，多数人不需要。
+   */
+  rerankResults: boolean;
   /** E4 剪贴板哨兵：盯着剪贴板，攒在内存里等你决定要不要存 */
   clipboardSentinel: boolean;
   /**

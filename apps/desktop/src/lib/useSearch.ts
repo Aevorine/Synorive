@@ -7,6 +7,7 @@
 
 import { create } from 'zustand';
 import type { RecoveryPlan } from '../components/Recovery';
+import { useApp } from './store';
 import type {
   RankingWeights,
   SearchFilters,
@@ -71,6 +72,8 @@ export const useSearch = create<SearchState>((set, get) => {
         preset: preset === 'custom' ? undefined : preset,
         filters,
         explain,
+        // 从设置里读 —— 精排是全局偏好，不是每次搜索的临时选项
+        rerank: useApp.getState().settings?.rerankResults ?? false,
         limit: 60,
       },
       (r) => {

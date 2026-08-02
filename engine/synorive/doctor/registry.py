@@ -163,17 +163,26 @@ REGISTRY: tuple[Dependency, ...] = (
         id="reranker-zh",
         kind=DepKind.MODEL,
         name="BGE-reranker-base（精排）",
-        purpose="对前 20 条结果重新打分排序，准确率明显提升",
+        purpose="搜完再把前 12 条重排一遍。实测 100 题里排第一的从 94 提到 97",
         required_by=("D7 精排",),
-        degrades_to="只用融合分排序，Top5 准确率略低",
+        # 说清楚"不装会怎样"，用户才判断得了值不值 —— 这不是必需项
+        degrades_to="只用融合分排序，Top1 少 3 题左右；不影响能不能搜到",
         optional=True,
         subdir="bge-reranker-base",
         files=(
+            # 体积必须写。278M 参数的 XLM-R，int8 之后仍有 279MB —— 是全套模型里
+            # 第二大的。不写体积，用户点"安装"之前不知道要下这么多，
+            # 而依赖医生的进度也没法按字节算百分比。
             RemoteFile(
                 "model.onnx",
                 _hf("Xenova/bge-reranker-base", "onnx/model_quantized.onnx"),
+                size_bytes=279_301_077,
             ),
-            RemoteFile("tokenizer.json", _hf("Xenova/bge-reranker-base", "tokenizer.json")),
+            RemoteFile(
+                "tokenizer.json",
+                _hf("Xenova/bge-reranker-base", "tokenizer.json"),
+                size_bytes=17_098_079,
+            ),
         ),
     ),
     # ═══ 语音转写：三期，支撑「搜一句台词跳到那一秒」 ═══

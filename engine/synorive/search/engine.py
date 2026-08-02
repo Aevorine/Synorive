@@ -270,10 +270,18 @@ def _is_strong_match(c: Candidate) -> bool:
 
 
 class SearchEngine:
-    def __init__(self, db: Database, repo: Repository, embedder: Any | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        repo: Repository,
+        embedder: Any | None = None,
+        reranker: Any | None = None,
+    ) -> None:
         self.db = db
         self.repo = repo
         self.embedder = embedder
+        #: D7 精排。可以是 None（没配），或加载失败 —— 两种情况都安静退回融合排序
+        self.reranker = reranker
         # D9 零结果补救。注入自己的"数一下有几条"，避免两个模块互相 import
         self._recovery = RecoveryPlanner(self.db.connect, self._count_for_recovery)
 
@@ -578,6 +586,7 @@ class SearchEngine:
         offset: int = 0,
         explain: bool = False,
         stage: str = "semantic",
+        rerank: bool = False,
     ) -> dict[str, Any]:
         """
         stage 控制跑哪几路 —— D2 三级瀑布靠它分次返回：
@@ -615,6 +624,15 @@ class SearchEngine:
 
         fused = self.fuse(groups, w)
         scored = self.apply_signals(fused, w, text_query)
+
+        # D7 精排：只对**第一页**重排。
+        # 交叉编码器没法预计算，每条都要跑一次前向，对第 50 名重排没有意义 ——
+        # 用户看的是前几条。翻页时 offset 不为 0，那时候重排会让翻页变慢且顺序跳动，
+        # 所以只在首页做。
+        reranked = False
+        if rerank and stage == "semantic" and offset == 0 and self.reranker is not None:
+            scored, reranked = self._rerank(text_query, scored)
+
         page = scored[offset : offset + limit]
 
         rows = self.repo.get_items([c.item_id for c, _, _ in page])
@@ -656,7 +674,7 @@ class SearchEngine:
             hits.append(hit)
 
         out: dict[str, Any] = {
-            "stage": stage,
+            "stage": "reranked" if reranked else stage,
             "final": stage == "semantic",
             "hits": hits,
             "totalEstimate": len(scored),
@@ -687,6 +705,45 @@ class SearchEngine:
                 "unknown": parsed.unknown,
             }
         return out
+
+    # ── D7 精排 ─────────────────────────────────────────────
+
+    def _rerank(
+        self, query: str, scored: list[tuple[Candidate, float, dict[str, float]]]
+    ) -> tuple[list[tuple[Candidate, float, dict[str, float]]], bool]:
+        """
+        用交叉编码器给前 MAX_CANDIDATES 条重打分。
+
+        返回 (新顺序, 是否真的重排了)。模型没装/失败时原样返回，
+        调用方据此决定 stage 报 'semantic' 还是 'reranked' ——
+        **不能谎报 reranked**，界面上那个标签是给用户看"这次用了精排"的。
+        """
+        from ..analyze.reranker import MAX_CANDIDATES, MAX_DOC_CHARS
+
+        head = scored[:MAX_CANDIDATES]
+        tail = scored[MAX_CANDIDATES:]
+        if len(head) < 2:
+            return scored, False   # 一条没得排
+
+        docs: list[str] = []
+        for c, _, _ in head:
+            # 喂给交叉编码器的应该是**命中的那段正文**，不是标题 ——
+            # 标题太短，交叉注意力没东西可看，重排会退化成随机扰动
+            t = (c.best_text or "").strip()
+            docs.append(t[:MAX_DOC_CHARS] if t else "")
+
+        scores = self.reranker.score(query, docs)
+        if scores is None or len(scores) != len(head):
+            return scored, False
+
+        # 保留原来的 parts（可解释面板要用），只把总分换成精排分。
+        # 精排分之间的差距远大于 RRF 分，直接用它排序即可。
+        new_head = [
+            (c, float(s), {**parts, "rerank": round(float(s), 4)})
+            for (c, _, parts), s in zip(head, scores)
+        ]
+        new_head.sort(key=lambda x: -x[1])
+        return new_head + tail, True
 
     # ── D3 跨模态互搜 ───────────────────────────────────────
 

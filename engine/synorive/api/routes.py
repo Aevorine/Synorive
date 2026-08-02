@@ -93,6 +93,7 @@ async def search(req: SearchRequest, request: Request) -> dict[str, Any]:
         offset=req.offset,
         explain=req.explain,
         stage=req.stage,
+        rerank=req.rerank,
     )
 
 

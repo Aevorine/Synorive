@@ -115,6 +115,7 @@ class Runtime:
         self.pipeline: Any = None
         self.doctor: Any = None
         self._embedder: Any = None
+        self._reranker: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._jobs: dict[str, dict[str, Any]] = {}
 
@@ -146,7 +147,9 @@ class Runtime:
             concurrency=self.config.concurrency,
             on_progress=lambda p: self.events.publish("ingest.job", p),
         )
-        self.search = SearchEngine(self.db, self.repo, self._get_query_embedder())
+        self.search = SearchEngine(
+            self.db, self.repo, self._get_query_embedder(), self._get_reranker()
+        )
 
     def _get_query_embedder(self) -> Any:
         """
@@ -169,6 +172,19 @@ class Runtime:
             return None
         self._embedder = TextEmbedder(d)  # threads 默认取物理核数
         return self._embedder
+
+    def _get_reranker(self) -> Any:
+        """
+        D7 精排器。和向量化器一样**只构造不加载** —— 它是可选依赖，
+        模型多半没装；真装了也要等第一次带 rerank 的查询才值得花那 300ms。
+        Reranker.load() 自己是幂等的、失败只返回 False 不抛。
+        """
+        if self._reranker is not None:
+            return self._reranker
+        from .analyze.reranker import Reranker
+
+        self._reranker = Reranker(self.config.model_dir / "bge-reranker-base")
+        return self._reranker
 
     def image_vector_for(self, item_id: str | None, path: str | None) -> Any:
         """

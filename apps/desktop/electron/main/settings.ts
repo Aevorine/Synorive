@@ -42,6 +42,7 @@ export function defaultSettings(): AppSettings {
     concurrency: Math.max(1, Math.min(16, (navigatorHardwareConcurrency() || 8) - 1)),
     runInTray: true,
     launchAtLogin: true,
+    rerankResults: false,
     clipboardSentinel: true,
     // 默认关。自动落盘这件事必须由你明确打开，不能靠默认值替你决定。
     clipboardAutoArchiveLinks: false,

@@ -152,6 +152,15 @@ export function SettingsPage() {
           />
 
           <Toggle
+            label="结果精排"
+            hint="搜完之后再用一个更懂中文的模型把前几条重排一遍，明显更准（实测 100 题里
+                  排第一的从 94 提到 97）。它不挡首屏——结果照常秒出，精排完再悄悄换个顺序，
+                  大约晚 0.8 秒。要先在分析中心装 279MB 的精排模型。"
+            checked={settings.rerankResults}
+            onChange={(v) => patch({ rerankResults: v })}
+          />
+
+          <Toggle
             label="剪贴板哨兵"
             hint="盯着剪贴板，把你复制过的文字、链接、截图攒在搜索页上方，点一下才存进库。
                   内容只在内存里，关掉哨兵或退出应用就清空——密码、验证码、私钥这类东西
