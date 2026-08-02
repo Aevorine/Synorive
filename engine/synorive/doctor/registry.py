@@ -101,29 +101,60 @@ REGISTRY: tuple[Dependency, ...] = (
             ),
         ),
     ),
-    # ═══ 图文跨模态：三期 ═══
+    # ═══ 图像向量：三期 ═══
+    #
+    # ⚠️ 这一条原来填的是「Chinese-CLIP ViT-B/16」，指向 Xenova/chinese-clip-...
+    #    —— **那个 repo 根本不存在**，是想当然写的。2026-08-02 实测：
+    #      Chinese-CLIP 官方        只有 753MB 的 PyTorch 权重，没有 ONNX
+    #      Xenova 中文 CLIP 导出     404
+    #      多语言 CLIP 文本塔        404
+    #      英文 CLIP ViT-B/32       ✓ 视觉 89MB + 文本 64.5MB
+    #      jina-clip-v2（支持中文）  ✓ 但量化版 874MB，超 M15 的 800MB 预算
+    #
+    # 所以分层做：**以图搜图用视觉塔**（纯视觉，不涉及语言，英文模型一样好用），
+    # **中文搜图主要靠 OCR 文字**（截图/聊天图/文档照片这些最需要搜的图恰恰都有字）。
+    # 想要纯视觉的中文语义检索，装下面那条可选的 jina-clip-v2，或走云端。
     Dependency(
-        id="embed-clip-zh",
+        id="embed-image",
         kind=DepKind.MODEL,
-        name="Chinese-CLIP ViT-B/16（中文图文向量）",
-        purpose="用中文描述搜图片，或者用一张图找相似的图",
-        required_by=("以文搜图", "以图搜图", "视频画面检索"),
-        degrades_to="图片只能靠文件名、OCR 文字和 EXIF 搜",
+        name="CLIP ViT-B/32（图像向量）",
+        purpose="用一张图找相似的图，以及在视频画面里找相似镜头",
+        required_by=("以图搜图", "相似图片", "近重复检测", "视频画面检索"),
+        degrades_to="图片只能靠 OCR 文字、文件名、EXIF 和标签搜",
         optional=True,
-        subdir="chinese-clip-vit-b16",
+        subdir="clip-vit-b32",
         files=(
             RemoteFile(
                 "vision_model.onnx",
-                _hf("Xenova/clip-vit-base-patch16", "onnx/vision_model_quantized.onnx"),
+                _hf("Xenova/clip-vit-base-patch32", "onnx/vision_model_quantized.onnx"),
+                size_bytes=89_100_000,
             ),
             RemoteFile(
                 "text_model.onnx",
-                _hf("Xenova/clip-vit-base-patch16", "onnx/text_model_quantized.onnx"),
+                _hf("Xenova/clip-vit-base-patch32", "onnx/text_model_quantized.onnx"),
+                size_bytes=64_500_000,
             ),
-            RemoteFile("tokenizer.json", _hf("Xenova/clip-vit-base-patch16", "tokenizer.json")),
+            RemoteFile("tokenizer.json", _hf("Xenova/clip-vit-base-patch32", "tokenizer.json")),
             RemoteFile(
                 "preprocessor_config.json",
-                _hf("Xenova/clip-vit-base-patch16", "preprocessor_config.json"),
+                _hf("Xenova/clip-vit-base-patch32", "preprocessor_config.json"),
+            ),
+        ),
+    ),
+    Dependency(
+        id="embed-image-zh",
+        kind=DepKind.MODEL,
+        name="jina-clip-v2（中文图文跨模态，874MB）",
+        purpose="用中文描述直接搜图片，连没有文字的风景照也能搜",
+        required_by=("以文搜图（中文）",),
+        degrades_to="中文搜图靠 OCR 文字和文件名，没文字的图搜不到",
+        optional=True,
+        subdir="jina-clip-v2",
+        files=(
+            RemoteFile(
+                "model.onnx",
+                _hf("jinaai/jina-clip-v2", "onnx/model_quantized.onnx"),
+                size_bytes=874_400_000,
             ),
         ),
     ),

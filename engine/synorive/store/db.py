@@ -119,6 +119,10 @@ class Database:
 
     # ── 向量表：维度已知时才建 ────────────────────────────────
 
+    def ensure_text_vector_table(self, dim: int, model_id: str) -> bool:
+        """兼容旧名。文本向量表现在只管 vec_chunks，图像的走 ensure_image_vector_table。"""
+        return self.ensure_vector_tables(dim, model_id)
+
     def ensure_vector_tables(self, dim: int, model_id: str) -> bool:
         """
         按实际嵌入维度建向量表。返回 True 表示这次真的建了（或重建了）。
@@ -141,8 +145,11 @@ class Database:
             if current is not None:
                 # 维度或模型变了，旧向量作废
                 conn.execute("DROP TABLE IF EXISTS vec_chunks")
-                conn.execute("DROP TABLE IF EXISTS vec_items")
 
+            # ⚠️ 这里**只建 vec_chunks**。vec_items 归图像模型管
+            #    （ensure_image_vector_table）。两个模型的维度和语义空间都不一样，
+            #    早期版本在这儿一起建了 vec_items，结果图像向量被文本模型的维度定义，
+            #    写进去直接维度不匹配报错。
             conn.execute(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0("
                 f"  chunk_rowid INTEGER PRIMARY KEY,"
@@ -150,13 +157,41 @@ class Database:
                 f")"
             )
             conn.execute(
+                "INSERT INTO meta_kv (key, value) VALUES ('embed_model', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (want,),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        return True
+
+    def ensure_image_vector_table(self, dim: int, model_id: str) -> bool:
+        """
+        图像向量表。和文本向量表分开建，因为**维度和语义空间都不一样** ——
+        CLIP 的 512 维和 BGE 的 512 维虽然数字一样，但根本不在一个空间里，
+        混在一张表里查出来的"最近邻"毫无意义。
+        """
+        conn = self.connect()
+        row = conn.execute("SELECT value FROM meta_kv WHERE key = 'image_model'").fetchone()
+        current = row["value"] if row else None
+        want = f"{model_id}:{dim}"
+        if current == want:
+            return False
+
+        conn.execute("BEGIN")
+        try:
+            if current is not None:
+                conn.execute("DROP TABLE IF EXISTS vec_items")
+            conn.execute(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0("
                 f"  item_rowid INTEGER PRIMARY KEY,"
                 f"  embedding FLOAT[{dim}]"
                 f")"
             )
             conn.execute(
-                "INSERT INTO meta_kv (key, value) VALUES ('embed_model', ?) "
+                "INSERT INTO meta_kv (key, value) VALUES ('image_model', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (want,),
             )

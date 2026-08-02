@@ -226,6 +226,96 @@ class Repository:
             conn.execute("ROLLBACK")
             raise
 
+    def write_phash(self, item_id: str, phash: str) -> None:
+        """
+        感知哈希按 16 位分段存（E9 近重复检测）。
+
+        分段是为了能先做等值匹配再算汉明距离：
+        64 位哈希切成 4 段，两张相似图至少有一段完全相同的概率很高，
+        先按段命中候选再精算，比全表扫快两个数量级。
+        """
+        if not phash or len(phash) < 16:
+            return
+        conn = self.db.connect()
+        conn.execute("DELETE FROM phash_buckets WHERE item_id = ?", (item_id,))
+        for seg in range(4):
+            chunk = phash[seg * 4 : seg * 4 + 4]
+            try:
+                conn.execute(
+                    "INSERT INTO phash_buckets (item_id, seg, value) VALUES (?,?,?)",
+                    (item_id, seg, int(chunk, 16)),
+                )
+            except (ValueError, sqlite3.IntegrityError):
+                continue
+
+    def find_near_duplicates(self, phash: str, exclude_item: str = "", max_dist: int = 10) -> list[str]:
+        """按分段命中先取候选，再精算汉明距离。"""
+        if not phash or len(phash) < 16:
+            return []
+        conn = self.db.connect()
+        cand: set[str] = set()
+        for seg in range(4):
+            try:
+                v = int(phash[seg * 4 : seg * 4 + 4], 16)
+            except ValueError:
+                continue
+            for r in conn.execute(
+                "SELECT item_id FROM phash_buckets WHERE seg = ? AND value = ? LIMIT 500", (seg, v)
+            ):
+                if str(r["item_id"]) != exclude_item:
+                    cand.add(str(r["item_id"]))
+        if not cand:
+            return []
+
+        from ..analyze.image import hamming
+
+        out: list[tuple[int, str]] = []
+        marks = ",".join("?" * len(cand))
+        rows = conn.execute(
+            f"SELECT id, meta_json FROM items WHERE id IN ({marks})", list(cand)
+        ).fetchall()
+        for r in rows:
+            try:
+                other = json.loads(str(r["meta_json"] or "{}")).get("phash")
+            except json.JSONDecodeError:
+                continue
+            if not other:
+                continue
+            d = hamming(phash, other)
+            if d <= max_dist:
+                out.append((d, str(r["id"])))
+        out.sort()
+        return [i for _, i in out]
+
+    def write_item_vector(self, item_id: str, embedding: Any) -> None:
+        """条目级向量（图片用）。文本走 chunk 级向量，图片一张就是一个整体。"""
+        conn = self.db.connect()
+        row = conn.execute("SELECT rowid FROM items WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            return
+        rid = int(row["rowid"])
+        conn.execute("DELETE FROM vec_items WHERE item_rowid = ?", (rid,))
+        conn.execute(
+            "INSERT INTO vec_items (item_rowid, embedding) VALUES (?,?)",
+            (rid, sqlite_vec.serialize_float32(list(embedding))),
+        )
+
+    def pending_ocr_items(self, limit: int = 200) -> list[tuple[str, str]]:
+        """还没跑 OCR 的图片，按新到旧排 —— 用户最近加的图最可能马上要搜。"""
+        conn = self.db.connect()
+        rows = conn.execute(
+            """
+            SELECT i.id, i.locator FROM items i
+            LEFT JOIN item_stages s ON s.item_id = i.id AND s.stage = 'ocr'
+            WHERE i.modality = 'image'
+              AND (s.status IS NULL OR s.status = 'pending')
+            ORDER BY i.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [(str(r["id"]), str(r["locator"])) for r in rows]
+
     def set_stage(
         self,
         item_id: str,
