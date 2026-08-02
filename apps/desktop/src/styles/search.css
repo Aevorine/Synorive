@@ -475,3 +475,91 @@
   background: var(--syn-color-bg-hover);
   color: var(--syn-color-text);
 }
+
+/* ── D9 零结果补救 ──────────────────────────────────────── */
+
+.recovery {
+  max-width: 62ch;
+  margin: var(--syn-space-2xl) auto;
+  padding: var(--syn-space-lg);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-xl);
+  background: var(--syn-color-bg-elevated);
+}
+
+.recovery__head {
+  display: flex;
+  gap: var(--syn-space-md);
+  align-items: flex-start;
+  margin-bottom: var(--syn-space-md);
+}
+
+.recovery__glyph {
+  color: var(--syn-color-primary);
+  flex: none;
+  margin-top: 2px;
+}
+
+.recovery__title {
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-medium);
+}
+
+.recovery__msg {
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text-secondary);
+  line-height: var(--syn-lh-normal);
+  margin-top: 2px;
+  text-wrap: pretty;
+}
+
+.recovery__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+}
+
+/* 做成整行可点，而不是一个小链接 —— 用户这时候已经受挫了，
+   点击目标要大、要明显，别再让他找。 */
+.recovery__item {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  width: 100%;
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+  background: var(--syn-color-bg);
+  text-align: left;
+  font-size: var(--syn-fs-body);
+  cursor: pointer;
+  transition: border-color var(--syn-dur-instant) var(--syn-ease-standard),
+    background-color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.recovery__item:hover {
+  border-color: var(--syn-color-primary);
+  background: var(--syn-color-primary-subtle);
+}
+
+.recovery__icon { color: var(--syn-color-text-muted); flex: none; }
+.recovery__label { min-width: 0; }
+
+.recovery__note {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  margin-top: var(--syn-space-md);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+}
+
+/* 弱匹配形态：结果还在下面，所以这块要收窄、别喧宾夺主 */
+.recovery--weak {
+  max-width: none;
+  margin: 0 0 var(--syn-space-md);
+  padding: var(--syn-space-md);
+  background: var(--syn-color-warning-subtle);
+  border-color: var(--syn-color-warning);
+}
+.recovery--weak .recovery__glyph { color: var(--syn-color-warning); }

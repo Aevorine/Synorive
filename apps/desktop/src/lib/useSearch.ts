@@ -6,6 +6,7 @@
  */
 
 import { create } from 'zustand';
+import type { RecoveryPlan } from '../components/Recovery';
 import type {
   RankingWeights,
   SearchFilters,
@@ -32,6 +33,10 @@ interface SearchState {
   error: string | null;
   /** 已经搜过一次了吗 —— 用来区分"空库"和"还没搜" */
   searched: boolean;
+  /** D9：搜不到、或只搜到弱匹配时，引擎给的补救方案 */
+  recovery: RecoveryPlan | null;
+  /** 有结果但都只是"最接近的几条"，没有一条真正匹配上 */
+  weakMatch: boolean;
 
   weights: RankingWeights;
   preset: Preset;
@@ -54,7 +59,7 @@ export const useSearch = create<SearchState>((set, get) => {
     const { query, weights, filters, preset, explain } = get();
     if (!query.trim()) {
       waterfall.cancel();
-      set({ hits: [], stage: null, total: 0, loading: false, searched: false, error: null });
+      set({ hits: [], stage: null, total: 0, loading: false, searched: false, error: null, recovery: null, weakMatch: false });
       return;
     }
 
@@ -76,6 +81,10 @@ export const useSearch = create<SearchState>((set, get) => {
           elapsedMs: r.elapsedMs,
           loading: !r.final,
           searched: true,
+          // 引擎只在最终那一轮才给 recovery；首屏没有就置空，
+          // 免得上一次搜索的补救建议残留在这一次的结果上
+          recovery: (r as { recovery?: RecoveryPlan }).recovery ?? null,
+          weakMatch: (r as { weakMatch?: boolean }).weakMatch ?? false,
         });
       },
       (e) => set({ loading: false, error: e.message, searched: true }),
@@ -96,6 +105,8 @@ export const useSearch = create<SearchState>((set, get) => {
     loading: false,
     error: null,
     searched: false,
+    recovery: null,
+    weakMatch: false,
     weights: { ...DEFAULT_WEIGHTS },
     preset: 'balanced',
     filters: {},
@@ -124,7 +135,7 @@ export const useSearch = create<SearchState>((set, get) => {
     rerun: fire,
     clear: () => {
       waterfall.cancel();
-      set({ query: '', hits: [], stage: null, total: 0, searched: false, error: null });
+      set({ query: '', hits: [], stage: null, total: 0, searched: false, error: null, recovery: null, weakMatch: false });
     },
   };
 });

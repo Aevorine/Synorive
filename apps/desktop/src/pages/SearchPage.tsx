@@ -1,5 +1,6 @@
 import { FolderPlus, Loader2, Search as SearchIcon } from 'lucide-react';
 import { ClipboardTray } from '../components/ClipboardTray';
+import { Recovery } from '../components/Recovery';
 import { RankingPanel } from '../components/RankingPanel';
 import { SearchResults } from '../components/SearchResults';
 import { api } from '../lib/api';
@@ -14,7 +15,10 @@ const STAGE_LABEL: Record<string, string> = {
 };
 
 export function SearchPage() {
-  const { query, hits, stage, total, elapsedMs, loading, error, searched } = useSearch();
+  const { query, hits, stage, total, elapsedMs, loading, error, searched, recovery, weakMatch, filters } = useSearch();
+  const setQuery = useSearch((s) => s.setQuery);
+  const setFilters = useSearch((s) => s.setFilters);
+  const rerun = useSearch((s) => s.rerun);
   const engine = useApp((s) => s.engine);
   const ready = engine?.lifecycle === 'ready';
 
@@ -66,14 +70,51 @@ export function SearchPage() {
             </div>
           )}
 
+          {/* D9：引擎算出补救方案就用它，每条都带确切条数、点一下直接重搜。
+              拿不到方案（老引擎 / 补救本身出错）才退回原来那段泛泛的提示 ——
+              退路必须留着，不能因为新功能出问题就让用户对着一片空白。 */}
           {searched && hits.length === 0 && !loading && (
-            <div className="empty">
-              <div className="empty__title">没搜到「{query}」</div>
-              <p className="empty__hint">
-                试试换个说法、去掉筛选条件，或者把「语义相关」的滑块往右拉——
-                语义权重高的时候，说法不一样也能匹配上。
-              </p>
-            </div>
+            recovery ? (
+              <Recovery
+                plan={recovery}
+                onRetry={(next) => {
+                  if (next.drop?.length) {
+                    const f: Record<string, unknown> = { ...filters };
+                    for (const k of next.drop) delete f[k];
+                    setFilters(f as typeof filters);
+                  }
+                  if (next.query !== undefined) setQuery(next.query);
+                  else rerun();
+                }}
+              />
+            ) : (
+              <div className="empty">
+                <div className="empty__title">没搜到「{query}」</div>
+                <p className="empty__hint">
+                  试试换个说法、去掉筛选条件，或者把「语义相关」的滑块往右拉——
+                  语义权重高的时候，说法不一样也能匹配上。
+                </p>
+              </div>
+            )
+          )}
+
+          {/* 弱匹配：结果照给，但先摆一条说明 + 补救建议。
+              把结果删掉是错的 —— 实测正确答案和纯噪声的相似度只差 0.0045，
+              删了会连真答案一起删。说清楚比替用户做决定好。 */}
+          {hits.length > 0 && weakMatch && recovery && (
+            <Recovery
+              plan={recovery}
+              weak
+              onRetry={(next) => {
+                if (next.drop?.length) {
+                  const f: Record<string, unknown> = { ...filters };
+                  for (const k of next.drop) delete f[k];
+                  setFilters(f as typeof filters);
+                }
+                if (next.query !== undefined) setQuery(next.query);
+                else rerun();
+              }}
+            />
           )}
 
           {hits.length > 0 && <SearchResults hits={hits} />}

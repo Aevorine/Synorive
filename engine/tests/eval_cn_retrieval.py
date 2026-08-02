@@ -38,7 +38,22 @@ sys.path.insert(0, str(ROOT))
 from tests.cn_corpus import DISTRACTORS, DOCS, QUERIES  # noqa: E402
 
 TOPK = 5
-PORT = 8932
+def _free_port() -> int:
+    """
+    挑一个真正空闲的端口。
+
+    ⚠️ 别写死端口号。写死时两个评测同时跑，**第二个的请求会全部打到第一个的
+       引擎上**，而且不报错 —— 它会读到别人的库、别人的统计，跑出一份看起来
+       正常的结果；等前一个跑完关掉引擎，后一个才以 ConnectionReset 崩掉，
+       现场已经完全对不上了。栽过一次，排查花的时间比写这个函数多得多。
+    """
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+PORT = _free_port()
 
 
 def write_corpus(dst: Path) -> Path:

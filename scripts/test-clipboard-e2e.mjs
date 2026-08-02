@@ -61,6 +61,28 @@ const line = (n = 74) => '─'.repeat(n);
 console.log('确认哨兵开着：', await js(`window.synorive.settings.get().then(s => s.clipboardSentinel)`));
 await js(`window.synorive.clip.clear()`);
 
+// 剪贴板面板只挂在**搜索页**上，而且**故意**只在没搜东西时才显示
+// （搜索时它会抢走结果的位置）。所以校验界面之前要做两件事：
+//   ① 切回搜索页 —— 上一个测试可能把应用留在设置页，那时候组件压根没挂载
+//   ② 清空搜索框 —— 留着查询词的话面板会隐藏
+// 两条都踩过，报出来都是"面板没渲染"，看着像组件坏了。
+await js(`(() => {
+  const items = [...document.querySelectorAll('.sidebar__item')];
+  items.find(e => e.textContent.trim() === '搜索')?.click();
+  return true;
+})()`);
+await sleep(1000);
+await js(`(() => {
+  const el = document.querySelector('.searchbox__input');
+  if (el) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(el, '');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  return true;
+})()`);
+await sleep(1200);
+
 const CASES = [
   ['普通文字', '明天下午三点和张工对一下多模态检索的进度', true, 'text'],
   ['网址', 'https://github.com/Fusheng201/Synorive/blob/main/README.md', true, 'link'],

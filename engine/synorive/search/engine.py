@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import sqlite3
 import time
@@ -35,6 +36,7 @@ from ..store.db import Database
 from ..store.repository import Repository
 from ..store.text import highlight_terms, to_query, to_trigram_query
 from .query_syntax import describe, parse_query
+from .recovery import RecoveryPlanner
 
 log = logging.getLogger("synorive.search")
 
@@ -42,6 +44,31 @@ log = logging.getLogger("synorive.search")
 RRF_K = 60
 #: 每一路召回多少条送去融合。太少会漏，太多融合和取详情变慢。
 RECALL_LIMIT = 200
+
+#: 判定"这一轮有没有真正匹配上"的语义相似度线。
+#:
+#: 🔴 它**不是过滤线，是标注线**。这个区别是拿召回换来的教训：
+#:
+#: 向量 KNN 永远返回最近的 k 条，不管多不相关 —— 搜一个库里完全没有的东西
+#: 也会给一整页看着像结果的垃圾。第一版据此做了硬过滤（低于 0.50 直接丢），
+#: A20 的 100 题回归立刻从 100% 掉到 94%，"概念组合"那一类掉到 75%。
+#:
+#: 于是把两类分布量了一遍（BGE-small-zh-v1.5，120 篇跨领域语料）：
+#:   正确答案：0.459 0.472 0.479 0.488 0.491 0.493 0.515 0.536 0.558 0.613
+#:   纯噪声  ：0.453 0.455 0.455
+#: **真答案最低 0.4594，噪声最高 0.4549，只差 0.0045。**
+#: 两个分布几乎完全重叠 —— 绝对阈值这个工具本身就不成立，定在哪都会误杀。
+#:
+#: 所以改成：不删结果，只在"没有任何一条够得着这条线"时给整轮结果打
+#: weakMatch 标记，界面据此明说"没有很匹配的，下面是最接近的几条"，
+#: 同时挂上 D9 补救建议。用户真正的困扰是"分不清真结果和凑数的"，
+#: 那就直接告诉他，而不是替他删掉可能有用的东西。
+VECTOR_MATCH_THRESHOLD = float(os.environ.get("SYNORIVE_VECTOR_FLOOR", "0.50"))
+
+
+def _similarity(distance: float | None) -> float | None:
+    """sqlite-vec 给的是 L2 距离（向量已归一化），换算成 0~1 的相似度。"""
+    return None if distance is None else 1 - distance / 2
 
 
 @dataclass
@@ -109,6 +136,27 @@ class Filters:
             exclude_scopes=list(d.get("excludeScopes") or []),
             extensions=list(d.get("extensions") or []),
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        """
+        反向转回 from_dict 认得的形状。
+
+        ⚠️ 键名必须和 from_dict 一一对应（timeFrom 不是 time_from）。
+           对不上的话 D9 里"去掉某个筛选再数一遍"会拿着一组空筛选去跑，
+           每次都返回全库条数 —— 建议看起来正常，其实全是假的。
+        """
+        return {
+            "modalities": self.modalities,
+            "sources": self.sources,
+            "tags": self.tags,
+            "timeFrom": self.time_from,
+            "timeTo": self.time_to,
+            "sizeMinBytes": self.size_min,
+            "sizeMaxBytes": self.size_max,
+            "scopes": self.scopes,
+            "excludeScopes": self.exclude_scopes,
+            "extensions": self.extensions,
+        }
 
     def merged_with(self, other: dict[str, Any] | None) -> Filters:
         """
@@ -205,11 +253,45 @@ class Candidate:
     start_sec: float | None = None
 
 
+def _is_strong_match(c: Candidate) -> bool:
+    """
+    这一条算不算"真的匹配上了"。
+
+    被关键词或标题子串命中 → 用户明确打出了那个词，无条件算；
+    只靠向量捞到的 → 要够得着相似度线才算。
+    **它只用于判定，不用于过滤** —— 理由见 VECTOR_MATCH_THRESHOLD。
+    """
+    if c.matched_via - {"vector"}:
+        return True
+    sim = _similarity(c.distance)
+    if sim is None:
+        return True          # 拿不到距离就不下判断，宁可当成匹配
+    return sim >= VECTOR_MATCH_THRESHOLD
+
+
 class SearchEngine:
     def __init__(self, db: Database, repo: Repository, embedder: Any | None = None) -> None:
         self.db = db
         self.repo = repo
         self.embedder = embedder
+        # D9 零结果补救。注入自己的"数一下有几条"，避免两个模块互相 import
+        self._recovery = RecoveryPlanner(self.db.connect, self._count_for_recovery)
+
+    def _count_for_recovery(self, query: str, filters: dict[str, Any]) -> int:
+        """
+        补救建议专用：按给定条件真跑一次，只要条数。
+
+        stage 固定 keyword —— 补救是在用户已经等过一轮之后才发生的，
+        这时候再花几百毫秒跑向量只为了数个数，用户会觉得"卡住了"。
+        关键词那一路足够回答"换成这样还有没有东西"。
+        """
+        try:
+            f = Filters.from_dict(filters)
+            cands = self.recall_keyword(query, f) if query.strip() else self.recall_by_filter(f)
+            return len({c.item_id for c in cands})
+        except Exception:
+            # 补救本身失败绝不能把整个检索带崩 —— 它只是锦上添花
+            return 0
 
     # ── 各路召回 ────────────────────────────────────────────
 
@@ -580,6 +662,23 @@ class SearchEngine:
             "totalEstimate": len(scored),
             "elapsedMs": round((time.perf_counter() - t0) * 1000, 1),
         }
+
+        # 这一轮有没有"真的匹配上"的东西。全是弱匹配时要如实告诉用户，
+        # 否则他分不清眼前这几条是真结果还是向量凑数凑出来的。
+        weak = bool(hits) and not any(_is_strong_match(c) for c, _, _ in page)
+        if weak:
+            out["weakMatch"] = True
+
+        # D9：搜不到、或者只搜到一堆弱匹配的时候，别让用户自己猜哪儿错了。
+        # 只在**最终那一轮**算 —— keyword 首屏为空是正常的（语义还没跑完），
+        # 那时候弹补救建议会把用户往错误方向带。
+        if (not hits or weak) and stage == "semantic":
+            out["recovery"] = self._recovery.plan(
+                text_query,
+                f.to_dict(),
+                total_items=int(self.repo.stats().get("items", 0)),
+                weak=weak,
+            )
         # 界面把这些渲染成一排可点掉的小标签，让用户看见"我刚才那句话被理解成了什么"
         if parsed.has_filters or parsed.unknown:
             out["parsedQuery"] = {
