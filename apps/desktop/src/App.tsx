@@ -1,6 +1,7 @@
 import { useEffect, type ComponentType } from 'react';
 import { EngineSetup } from './components/EngineSetup';
 import { SideBar } from './components/SideBar';
+import { CommandPalette } from './components/CommandPalette';
 import { StatusBar } from './components/StatusBar';
 import { TopBar } from './components/TopBar';
 import { AnalyzePage } from './pages/AnalyzePage';
@@ -91,6 +92,8 @@ export default function App() {
         )}
       </main>
       <StatusBar />
+      {/* E13：放在最外层，任何页面都能唤起；它自己判断 open 决定渲不渲染 */}
+      <CommandPalette />
     </div>
   );
 }

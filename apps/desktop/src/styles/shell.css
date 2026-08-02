@@ -370,3 +370,126 @@
   /* 中文断行不该在标点前后断出孤字 */
   text-wrap: pretty;
 }
+
+/* ── E13 命令面板 ───────────────────────────────────────── */
+
+.palette__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  justify-content: center;
+  /* 不居中放：面板从上方 12% 落下，视线不用大幅下移，
+     而且下面还能看见一部分界面，知道自己没离开当前页 */
+  align-items: flex-start;
+  padding-top: 12vh;
+  background: var(--syn-color-scrim);
+  backdrop-filter: blur(2px);
+}
+
+.palette {
+  width: min(620px, 88vw);
+  max-height: 62vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border-strong);
+  border-radius: var(--syn-radius-xl);
+  box-shadow: var(--syn-shadow-overlay);
+  overflow: hidden;
+}
+
+.palette__inputrow {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-md);
+  border-bottom: 1px solid var(--syn-color-border);
+}
+
+.palette__glyph { color: var(--syn-color-text-muted); flex: none; }
+
+.palette__input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: var(--syn-fs-emphasis);
+  color: var(--syn-color-text);
+}
+.palette__input::placeholder { color: var(--syn-color-text-muted); }
+
+.palette__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--syn-space-xs) 0;
+}
+
+.palette__group {
+  padding: var(--syn-space-xs) var(--syn-space-md) 2px;
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  letter-spacing: var(--syn-ls-wide);
+}
+
+.palette__item {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  width: 100%;
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text);
+  cursor: pointer;
+}
+
+/* 键盘和鼠标共用同一个高亮，不做两套 —— 两套会出现"看着选中了两条"的情况 */
+.palette__item--sel { background: var(--syn-color-primary-subtle); }
+
+.palette__item--off { cursor: not-allowed; color: var(--syn-color-text-muted); }
+
+.palette__icon { color: var(--syn-color-text-muted); flex: none; }
+.palette__label { flex: none; }
+
+.palette__hint {
+  min-width: 0;
+  margin-left: auto;
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.palette__empty {
+  padding: var(--syn-space-lg);
+  text-align: center;
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text-muted);
+}
+
+.palette__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-xs) var(--syn-space-md);
+  border-top: 1px solid var(--syn-color-border);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+}
+
+.palette__footnote { margin-left: auto; }
+
+.palette__kbd {
+  padding: 1px var(--syn-space-xs);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-sunken);
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+}

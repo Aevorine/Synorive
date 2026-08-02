@@ -69,6 +69,7 @@ function SearchBox() {
   const setValue = useSearch((s) => s.setQuery);
   const focusNonce = useApp((s) => s.searchFocusNonce);
   const setPage = useApp((s) => s.setPage);
+  const setCommandPaletteOpen = useApp((s) => s.setCommandPaletteOpen);
 
   // 托盘 / 全局快捷键唤起时抢焦点
   useEffect(() => {
@@ -155,13 +156,20 @@ function SearchBox() {
         inputRef.current?.focus();
         inputRef.current?.select();
       }
+      // E13 命令面板：Ctrl+Shift+P（VS Code 那套）。
+      // 不用 Ctrl+K —— 那个给了全局搜索框（B5），搜索框是一直在用的，
+      // 命令面板是偶尔用一次的，抢过来是净亏。
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        setCommandPaletteOpen(!useApp.getState().commandPaletteOpen);
+      }
       if (e.key === 'Escape' && document.activeElement === inputRef.current) {
         inputRef.current?.blur();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setPage]);
+  }, [setPage, setCommandPaletteOpen]);
 
   const cls = [
     'searchbox',

@@ -208,6 +208,13 @@ export const palette = {
     highlight: '#FBEFC4',
     /** 语义匹配（非精确词）高亮底 */
     highlightSemantic: '#E2F2EC',
+
+    /**
+     * 遮罩：命令面板、对话框背后压暗的那一层。
+     * 浅色下压 32%，深色下要更重（52%）—— 深色界面本来就暗，
+     * 用同样的透明度会看不出"背后那层被压住了"，弹层像是浮在半空。
+     */
+    scrim: 'rgb(0 0 0 / 32%)',
   },
 
   dark: {
@@ -252,6 +259,8 @@ export const palette = {
 
     highlight: '#4A3F1A',
     highlightSemantic: '#16302A',
+
+    scrim: 'rgb(0 0 0 / 52%)',
   },
 } as const;
 
