@@ -4,6 +4,21 @@
 
 .page__body--flush {
   padding-inline: 0;
+
+  /* 🔴 这三行不能省，少了文件管理器会整页空白（真栽过）。
+     里面的 .results 用的是 `flex: 1` + `contain: strict`。
+     contain: strict 含 size containment —— **元素尺寸不看内容**，
+     所以拿不到确定高度时它会直接塌成 0，而不是退回内容高度。
+     .page__body 默认是 block，block 容器里 `flex: 1` 是死的：
+       搜索页 .results 的父级是 flex → 拿到 703px  ✓
+       文件管理器父级是 block      → 高度 0，一条都不显示 ✗
+     症状极具迷惑性：scrollHeight 有 22800px（数据都在），
+     `.empty` 也不出现，看起来"页面正常但就是没内容"。 */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* 滚动交给里面的 .results，这一层不滚，否则会出现两条滚动条 */
+  overflow: hidden;
 }
 
 .page__body--flush .results {

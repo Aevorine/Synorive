@@ -20,7 +20,7 @@
     "build:icons": "node scripts/build-icons.mjs",
     "engine:dev": "engine/.venv/Scripts/python.exe -m synorive.main --reload",
     "lint:tokens": "node scripts/check-hardcoded-style.mjs",
-    "typecheck": "tsc --build --verbose"
+    "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

@@ -71,7 +71,24 @@ export const SERIF_SWITCH_PX = 24;
 export const fontFamily = {
   /** 正文：西文 Times New Roman + 中文 SimSun 宋体 */
   body: `"Times New Roman", "SimSun", "宋体", "NSimSun", serif`,
-  /** 大标题（≥24px）：西文 Times New Roman + 中文思源宋体（F1-b） */
+  /**
+   * 大标题（≥24px）：西文 Times New Roman + 中文思源宋体（F1-b）
+   *
+   * ⚠️ "Source Han Serif SC" 必须排第一 —— 它是 fonts.css 里**自带打包**的那份
+   *    （build_fonts.py 生成，@font-face 家族名就叫这个）。排到后面去，就会优先用
+   *    系统字体，等于白打包：没装思源宋体的机器上标题会掉回 SimSun，F1-b 方案落空。
+   *
+   * 🔴 别被 CDP 报的字体名骗了（我栽过一次，差点把上面的顺序改反）：
+   *    CSS.getPlatformFontsForNode 报的是字体文件**内部名表**里的名字，而
+   *    @fontsource/noto-serif-sc 5.2.8 的子集文件，name[1] 一律写成
+   *    「Noto Serif SC ExtraLight」/「Noto Serif SC ExtraLight SemiBold」——
+   *    **这是上游的命名 bug，字重数据本身是对的**：
+   *      *-400-*.woff2  OS/2 usWeightClass = 400
+   *      *-600-*.woff2  OS/2 usWeightClass = 600
+   *    48px「文件管理器」墨量实测：自带@400 = 2497，系统 Noto 常规@400 = 2496
+   *    （比值 1.000，完全同一档），真 ExtraLight 只有 2030。**标题没有发虚。**
+   *    → 判字重要量墨量，不能读名字。守卫见 scripts/verify-typography.mjs B3-2。
+   */
   display: `"Times New Roman", "Source Han Serif SC", "Noto Serif SC", "SimSun", "宋体", serif`,
   /** 等宽：路径、代码、哈希、日志 */
   mono: `"Cascadia Mono", "Consolas", "Courier New", "SimSun", monospace`,
@@ -139,8 +156,13 @@ export const palette = {
     text: '#1F2933',
     /** 次要文字 */
     textSecondary: '#52606D',
-    /** 辅助文字 / 占位符 */
-    textMuted: '#7B8794',
+    /**
+     * 辅助文字 / 占位符
+     * 原值 #7B8794 在纸底上只有 3.48:1、在输入框底上 3.21:1，达不到 WCAG AA。
+     * 占位符和状态栏文字都是 12px 小字，**不在无障碍豁免范围内**（豁免的是禁用态控件）。
+     * 现值对 bgSunken 4.56:1，是三种底色里卡得最紧的那个。
+     */
+    textMuted: '#636E7A',
     /** 反白文字（深色底上） */
     textInverse: '#FAF9F6',
 
@@ -159,12 +181,17 @@ export const palette = {
     primaryActive: '#092F58',
     primarySubtle: '#E3EDF7',
 
-    /** 辅色 · 沉翡翠：成功、已完成、已索引 */
-    success: '#1E9E76',
+    /**
+     * 辅色 · 沉翡翠：成功、已完成、已索引
+     * 这三个语义色都**当文字用**（.badge--* 的 color、.dep__degrade 的 12px 小字），
+     * 所以按 4.5:1 卡，不能按"装饰色 3:1"放行。压暗后当状态圆点用也只会更清楚。
+     * 卡得最紧的是"同色系浅底上的徽章文字"这一对，不是纸底。
+     */
+    success: '#177A5B',
     successSubtle: '#E2F2EC',
 
     /** 强调 · 暗琥珀：进行中、需注意、队列 */
-    warning: '#C8871B',
+    warning: '#936314',
     warningSubtle: '#FAF0DC',
 
     /** 警示 · 朱砂：仅用于删除和不可逆操作，全应用不超过 3 处 */
@@ -173,7 +200,7 @@ export const palette = {
     dangerSubtle: '#F7E5E3',
 
     /** 信息 · 亮青（源自图标） */
-    info: '#1B7FA8',
+    info: '#187397',
     infoSubtle: '#E0F0F6',
 
     // 检索高亮
@@ -194,14 +221,18 @@ export const palette = {
 
     text: '#E8E6E1',
     textSecondary: '#B0B7BF',
-    textMuted: '#7B8794',
-    textInverse: '#1F2933',
+    /** 原值 #7B8794 压在卡片底 #22272C 上只有 4.11:1（状态栏就是这个组合） */
+    textMuted: '#838F9B',
+    /** 原值 #1F2933 压在危险按钮 #D9695C 上只有 4.30:1 */
+    textInverse: '#1C242D',
 
     border: '#333A41',
     borderStrong: '#4A535C',
-    borderFocus: '#5B9BD5',
+    /** 跟 primary 保持同值，改一个必须改另一个 */
+    borderFocus: '#62A0D7',
 
-    primary: '#5B9BD5',
+    /** 原值 #5B9BD5 压在 primarySubtle #1E3448 上只有 4.33:1（徽章文字） */
+    primary: '#62A0D7',
     primaryHover: '#7BB0E0',
     primaryActive: '#9AC4EA',
     primarySubtle: '#1E3448',

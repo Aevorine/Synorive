@@ -324,7 +324,12 @@
   background: var(--syn-color-danger);
 }
 .statusbar__dot--idle {
-  background: var(--syn-color-border-strong);
+  /* 这个圆点是**表意**的（在告诉你引擎空闲），不是装饰线条。
+     用 border-strong 时它对状态栏底只有 1.67:1，等于看不见 ——
+     WCAG 1.4.11 对"识别组件状态所需的视觉信息"要求 3:1。
+     border-strong 保持原样不动：它另外五处用途（滚动条、hover 边框、
+     空态字形）都是纯装饰，拉深了整个界面会变重。 */
+  background: var(--syn-color-text-muted);
 }
 
 @keyframes syn-pulse {

@@ -125,12 +125,16 @@ console.log();
 
 // ── 逐页巡检 ────────────────────────────────────────────────
 const PAGES = [
-  { id: 'search', name: '搜索', probe: '.searchbox__input', pre: async () => {
+  { id: 'search', name: '搜索', probe: '.searchbox__input', rows: '.card', pre: async () => {
       await cdp.js(`document.querySelector('.searchbox__input').focus()`);
       await cdp.send('Input.insertText', { text: '中文分词' });
       await sleep(2500);
     } },
-  { id: 'library', name: '文件管理器', probe: '.filterbar' },
+  // rows: 这一页必须要么有内容行、要么有明确的空状态。
+  // 只查 `.filterbar` 在不在是不够的 —— 筛选栏渲染成功、`.empty` 也不出现，
+  // 而列表区域一条都没有，巡检照样报"有内容"。真发生过：`.results` 因为
+  // `contain: strict` + 父级不是 flex 塌成 0 高，整页空白却全绿。
+  { id: 'library', name: '文件管理器', probe: '.filterbar', rows: '.card' },
   { id: 'analyze', name: '分析中心', probe: '.deplist' },
   { id: 'timeline', name: '时间轴', probe: '.timeline, .empty' },
   { id: 'graph', name: '知识图谱', probe: '.entitygrid, .empty' },
@@ -153,6 +157,17 @@ for (const p of PAGES) {
   await sleep(1400);
   if (p.pre) await p.pre();
 
+  // 轮询等关键元素出现，不要靠固定 sleep 赌。
+  // 分析中心的依赖清单要等 /api/doctor 回来才渲染，固定 1.4s 有时刚好差一点，
+  // 结果报成"找不到关键元素"—— 那是测试太急，不是页面坏了。踩过一次。
+  {
+    const deadline = Date.now() + 12_000;
+    while (Date.now() < deadline) {
+      if (await cdp.js(`!!document.querySelector(${JSON.stringify(p.probe)})`)) break;
+      await sleep(300);
+    }
+  }
+
   const info = await cdp.js(`(() => {
     const cs = (sel, prop) => { const e = document.querySelector(sel); return e ? getComputedStyle(e)[prop] : null; };
     const title = document.querySelector('.page__title');
@@ -162,19 +177,34 @@ for (const p of PAGES) {
       titleFamily: (cs('.page__title','fontFamily')||'').includes('Source Han Serif'),
       probeFound: !!document.querySelector(${JSON.stringify(p.probe)}),
       hasEmpty: !!document.querySelector('.empty'),
+      // 列表页专用：真正渲染出来的行数，以及滚动容器的可视高度。
+      // 高度为 0 而 scrollHeight 很大 = 数据在、但一行都没画出来。
+      rowCount: ${p.rows ? `document.querySelectorAll(${JSON.stringify(p.rows)}).length` : 'null'},
+      listClientH: document.querySelector('.results')?.clientHeight ?? null,
+      listScrollH: document.querySelector('.results')?.scrollHeight ?? null,
       hasError: !!document.querySelector('.banner--error'),
       errorText: document.querySelector('.banner--error')?.textContent ?? null,
       bodyText: (document.querySelector('.page__body')?.textContent ?? '').slice(0, 90).replace(/\\s+/g,' '),
     };
   })()`);
 
-  const mark = info.probeFound && !info.hasError ? '✓' : '✗';
+  const rowsBad = p.rows && info.rowCount === 0 && !info.hasEmpty;
+  const mark = info.probeFound && !info.hasError && !rowsBad ? '✓' : '✗';
   console.log(`${mark} ${p.name.padEnd(8)} 标题「${info.title}」${info.titleSize} ` +
               `思源=${info.titleFamily}　${info.hasEmpty ? '空状态' : '有内容'}`);
   if (info.errorText) console.log(`    ⚠ ${info.errorText.slice(0, 120)}`);
   if (info.bodyText) console.log(`    ${info.bodyText}`);
 
   if (!info.probeFound) problems.push(`${p.name}：找不到关键元素 ${p.probe}`);
+  if (p.rows && info.rowCount === 0 && !info.hasEmpty) {
+    problems.push(
+      `${p.name}：一行内容都没渲染出来（${p.rows} = 0），也没有空状态 —— ` +
+      `滚动容器 clientHeight=${info.listClientH} scrollHeight=${info.listScrollH}` +
+      (info.listClientH === 0 && info.listScrollH > 0
+        ? '　← 高度塌成 0：数据在但一行都没画出来，检查 .results 父级是不是 flex 容器'
+        : '')
+    );
+  }
   if (info.hasError) problems.push(`${p.name}：页面报错 ${info.errorText?.slice(0, 100)}`);
   if (info.titleSize !== '24px') problems.push(`${p.name}：主标题 ${info.titleSize} != 24px`);
   if (!info.titleFamily) problems.push(`${p.name}：主标题没用思源宋体`);
