@@ -300,6 +300,123 @@ class Repository:
             (rid, sqlite_vec.serialize_float32(list(embedding))),
         )
 
+    def write_scenes(
+        self, item_id: str, scenes: list[tuple[int, float, float, str | None, str]]
+    ) -> int:
+        """写视频场景。scenes: [(index, start, end, keyframe_path, transcript), ...]"""
+        if not scenes:
+            return 0
+        conn = self.db.connect()
+        conn.execute("DELETE FROM video_scenes WHERE item_id = ?", (item_id,))
+        conn.executemany(
+            "INSERT INTO video_scenes (item_id, scene_index, start_sec, end_sec, "
+            "keyframe_path, transcript) VALUES (?,?,?,?,?,?)",
+            [(item_id, i, a, b, kf, tx) for i, a, b, kf, tx in scenes],
+        )
+        return len(scenes)
+
+    def write_scene_vectors(self, item_id: str, vectors: list[tuple[int, Any]]) -> int:
+        """
+        关键帧向量。存在 vec_scenes 里，rowid 映射到 video_scenes 的 rowid，
+        这样向量命中之后能直接拿到"第几分几秒"和那一帧的缩略图。
+        """
+        if not vectors:
+            return 0
+        conn = self.db.connect()
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS scene_vec_map ("
+            "  vec_rowid INTEGER PRIMARY KEY, item_id TEXT NOT NULL, scene_index INTEGER NOT NULL,"
+            "  UNIQUE (item_id, scene_index))"
+        )
+        dim = len(list(vectors[0][1]))
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_scenes USING vec0("
+            f"  vec_rowid INTEGER PRIMARY KEY, embedding FLOAT[{dim}])"
+        )
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            old = conn.execute(
+                "SELECT vec_rowid FROM scene_vec_map WHERE item_id = ?", (item_id,)
+            ).fetchall()
+            for r in old:
+                conn.execute("DELETE FROM vec_scenes WHERE vec_rowid = ?", (r["vec_rowid"],))
+            conn.execute("DELETE FROM scene_vec_map WHERE item_id = ?", (item_id,))
+
+            for idx, vec in vectors:
+                cur = conn.execute(
+                    "INSERT INTO scene_vec_map (item_id, scene_index) VALUES (?,?)",
+                    (item_id, idx),
+                )
+                conn.execute(
+                    "INSERT INTO vec_scenes (vec_rowid, embedding) VALUES (?,?)",
+                    (cur.lastrowid, sqlite_vec.serialize_float32(list(vec))),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        return len(vectors)
+
+    def attach_transcript_to_scenes(
+        self, item_id: str, segments: list[tuple[float, float, str]]
+    ) -> None:
+        """把转写句按时间落到对应场景上 —— 一段场景既有画面也有台词。"""
+        conn = self.db.connect()
+        scenes = conn.execute(
+            "SELECT scene_index, start_sec, end_sec FROM video_scenes WHERE item_id = ? "
+            "ORDER BY scene_index",
+            (item_id,),
+        ).fetchall()
+        if not scenes:
+            return
+        buckets: dict[int, list[str]] = {}
+        for a, b, text in segments:
+            mid = (a + b) / 2
+            for s in scenes:
+                if float(s["start_sec"]) <= mid < float(s["end_sec"]):
+                    buckets.setdefault(int(s["scene_index"]), []).append(text)
+                    break
+        for idx, texts in buckets.items():
+            conn.execute(
+                "UPDATE video_scenes SET transcript = ? WHERE item_id = ? AND scene_index = ?",
+                (" ".join(texts), item_id, idx),
+            )
+
+    def scenes_of(self, item_id: str) -> list[dict[str, Any]]:
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT scene_index, start_sec, end_sec, keyframe_path, transcript "
+            "FROM video_scenes WHERE item_id = ? ORDER BY scene_index",
+            (item_id,),
+        ).fetchall()
+        return [
+            {
+                "index": int(r["scene_index"]),
+                "startSec": float(r["start_sec"]),
+                "endSec": float(r["end_sec"]),
+                "keyframePath": r["keyframe_path"],
+                "transcript": r["transcript"] or "",
+            }
+            for r in rows
+        ]
+
+    def pending_transcribe_items(self, limit: int = 20) -> list[tuple[str, str]]:
+        """还没转写的视频/音频，新的排前面。"""
+        conn = self.db.connect()
+        rows = conn.execute(
+            """
+            SELECT i.id, i.locator FROM items i
+            LEFT JOIN item_stages s ON s.item_id = i.id AND s.stage = 'transcribe'
+            WHERE i.modality IN ('video','audio')
+              AND (s.status IS NULL OR s.status = 'pending')
+            ORDER BY i.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [(str(r["id"]), str(r["locator"])) for r in rows]
+
     def pending_ocr_items(self, limit: int = 200) -> list[tuple[str, str]]:
         """还没跑 OCR 的图片，按新到旧排 —— 用户最近加的图最可能马上要搜。"""
         conn = self.db.connect()

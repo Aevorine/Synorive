@@ -30,6 +30,8 @@ from typing import Any
 from ..analyze.embedder import TextEmbedder
 from ..analyze.enrich import enrich
 from ..analyze.image import ImageEmbedder, OcrEngine, analyze_image, is_image
+from ..analyze.transcribe import Transcriber
+from ..analyze.video import analyze_video, is_audio, is_video
 from ..store.repository import ChunkRow, Repository
 from .chunker import chunk_segments
 from .parsers import CODE_EXT, ParseError, can_parse, iter_supported, parse
@@ -160,6 +162,8 @@ class IngestPipeline:
                 return "skipped"
             if is_image(path):
                 return self.ingest_image(path, source=source, tags=tags)
+            if is_video(path) or is_audio(path):
+                return self.ingest_media(path, source=source, tags=tags)
             if not can_parse(path):
                 return "skipped"
 
@@ -481,6 +485,203 @@ class IngestPipeline:
                 self.repo.set_stage(item_id, "ocr", "failed", error=str(e))
 
         log.info("后台 OCR 补跑完成 %d 张", done)
+        return done
+
+    # ── 视频 / 音频 ─────────────────────────────────────────
+
+    def ingest_media(
+        self, path: Path, *, source: str = "file", tags: list[str] | None = None
+    ) -> str:
+        """
+        视频/音频的快速通道：场景切分 + 关键帧 + 关键帧向量。
+
+        **语音转写不在这里跑**，理由和 OCR 一样：
+        实测完整分析（含转写）是 5.97 倍速，而只做场景+关键帧是 **88.6 倍速**。
+        一个小时的视频，快速通道 40 秒就能让你按画面搜到，
+        转写让它在后台慢慢补（约 6.7 倍速），台词随后可搜。
+        """
+        try:
+            stat = path.stat()
+            fp = file_fingerprint(path)
+            existing = self.repo.find_by_fingerprint(fp)
+            if existing is not None:
+                settled = self.repo.get_settled_stages(str(existing["id"]))
+                if {"extract", "index"} <= settled:
+                    return "skipped"
+
+            modality = "video" if is_video(path) else "audio"
+            item_id, _ = self.repo.upsert_item(
+                fingerprint=fp,
+                modality=modality,
+                source=source,
+                title=path.stem,
+                locator=str(path),
+                mime=mimetypes.guess_type(path.name)[0],
+                size_bytes=stat.st_size,
+                content_time=datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(
+                    timespec="seconds"
+                ),
+                status="analyzing",
+                tags=tags,
+            )
+
+            self.repo.set_stage(item_id, "extract", "running")
+            thumb_dir = self.repo.db.path.parent / "thumbs" / "video"
+            info = analyze_video(
+                path,
+                thumb_dir=thumb_dir,
+                item_id=item_id,
+                transcriber=None,          # 转写延后
+                want_scenes=(modality == "video"),
+            )
+            if info.duration_sec <= 0:
+                err = "；".join(info.warnings) or "读不出这个媒体文件"
+                self.repo.set_stage(item_id, "extract", "failed", error=err)
+                self.repo.set_item_status(item_id, "failed", err)
+                return "failed"
+            self.repo.set_stage(item_id, "extract", "done")
+
+            meta = {
+                "kind": "video",
+                "durationSec": round(info.duration_sec, 2),
+                "width": info.width,
+                "height": info.height,
+                "fps": info.fps,
+                "codec": info.codec,
+                "hasAudio": info.has_audio,
+                "hasTranscript": False,
+                "sceneCount": len(info.scenes),
+            }
+            mins, secs = divmod(int(info.duration_sec), 60)
+            bits = [f"{mins}:{secs:02d}"]
+            if info.width:
+                bits.append(f"{info.width}×{info.height}")
+            if info.scenes:
+                bits.append(f"{len(info.scenes)} 个片段")
+            self.repo.update_item_fields(
+                item_id,
+                snippet=" · ".join(bits),
+                meta_json=json.dumps(meta, ensure_ascii=False),
+            )
+
+            if info.scenes:
+                self.repo.write_scenes(
+                    item_id,
+                    [
+                        (s.index, s.start_sec, s.end_sec, s.keyframe_path, s.transcript)
+                        for s in info.scenes
+                    ],
+                )
+                self._embed_keyframes(item_id, info.scenes, thumb_dir)
+
+            self.repo.index_item_text(item_id)
+            self.repo.set_stage(item_id, "index", "done")
+            if info.has_audio:
+                self.repo.set_stage(item_id, "transcribe", "pending")
+            else:
+                self.repo.set_stage(item_id, "transcribe", "skipped", error="没有音轨")
+            self.repo.set_item_status(item_id, "ready")
+            return "done"
+
+        except Exception:  # noqa: BLE001
+            log.exception("处理媒体 %s 时出错", path)
+            return "failed"
+
+    def _embed_keyframes(self, item_id: str, scenes: list[Any], thumb_dir: Path) -> None:
+        """
+        给每个关键帧算 CLIP 向量 —— 「用一张图找视频里的相似镜头」靠它。
+        向量存在场景级，所以命中之后能直接给出"第几分几秒"。
+        """
+        emb = self._image_embedder()
+        if emb is None:
+            return
+        from PIL import Image as _Image
+
+        pairs: list[tuple[int, Any]] = []
+        for s in scenes:
+            if not s.keyframe_path:
+                continue
+            p = thumb_dir / s.keyframe_path
+            if not p.exists():
+                continue
+            try:
+                pairs.append((s.index, _Image.open(p).convert("RGB")))
+            except Exception:  # noqa: BLE001
+                continue
+        if not pairs:
+            return
+
+        try:
+            with self._lock:
+                if not self._img_vec_ready:
+                    self.repo.db.ensure_image_vector_table(emb.dim, emb.model_id)
+                    self._img_vec_ready = True
+            vecs = emb.encode([im for _, im in pairs])
+            self.repo.write_scene_vectors(item_id, [(i, v) for (i, _), v in zip(pairs, vecs)])
+        except Exception as e:  # noqa: BLE001
+            log.debug("关键帧向量化失败：%s", e)
+
+    def run_deferred_transcribe(
+        self, limit: int = 20, on_progress: ProgressCb | None = None
+    ) -> int:
+        """
+        后台补跑语音转写。返回处理了几个。
+
+        limit 默认只有 20：一个小时的视频要转 9 分钟，
+        一次拉太多会让这个后台任务几个小时不结束，进度也没法反馈。
+        """
+        pending = self.repo.pending_transcribe_items(limit)
+        if not pending:
+            return 0
+
+        tr = Transcriber(self.model_dir / "sense-voice", self.model_dir / "vad")
+        if not tr.available():
+            for item_id, _ in pending:
+                self.repo.set_stage(item_id, "transcribe", "skipped", error="语音模型未安装")
+            return 0
+
+        done = 0
+        for item_id, locator in pending:
+            p = Path(locator)
+            if not p.exists():
+                self.repo.set_stage(item_id, "transcribe", "skipped", error="文件已不存在")
+                continue
+            try:
+                self.repo.set_stage(item_id, "transcribe", "running")
+                thumb_dir = self.repo.db.path.parent / "thumbs" / "video"
+                info = analyze_video(
+                    p, thumb_dir=thumb_dir, item_id=item_id,
+                    transcriber=tr, want_scenes=False,
+                )
+                if info.transcript:
+                    rows = [
+                        ChunkRow(
+                            text=u.text,
+                            channel="transcript",
+                            index=i,
+                            start_sec=u.start_sec,
+                            end_sec=u.end_sec,
+                            token_count=len(u.text),
+                        )
+                        for i, u in enumerate(info.transcript)
+                    ]
+                    self.repo.write_chunks(item_id, rows, None)
+                    self.repo.attach_transcript_to_scenes(
+                        item_id, [(u.start_sec, u.end_sec, u.text) for u in info.transcript]
+                    )
+                    head = " ".join(u.text for u in info.transcript)[:200]
+                    cur = self.repo.get_item(item_id)
+                    base = str(cur["snippet"] or "") if cur else ""
+                    self.repo.update_item_fields(item_id, snippet=f"{base} · {head}".strip(" ·"))
+                    self.repo.index_item_text(item_id)
+                self.repo.set_stage(item_id, "transcribe", "done")
+                done += 1
+                if on_progress:
+                    on_progress({"stage": "transcribe", "done": done, "total": len(pending)})
+            except Exception as e:  # noqa: BLE001
+                self.repo.set_stage(item_id, "transcribe", "failed", error=str(e))
+
+        log.info("后台转写完成 %d 个", done)
         return done
 
     # ── 批量 ────────────────────────────────────────────────

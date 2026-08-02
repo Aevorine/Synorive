@@ -435,8 +435,17 @@ def parse_html_string(html: str, *, fallback_title: str = "", url: str | None = 
 
 
 def iter_supported(root: Path, recursive: bool = True) -> Iterator[Path]:
-    """遍历目录里所有能处理的文件（含图片）。跳过隐藏目录和常见的垃圾目录。"""
+    """
+    遍历目录里所有能处理的文件（文档 + 图片 + 视频 + 音频）。
+    跳过隐藏目录和常见的垃圾目录。
+
+    ⚠️ 加新模态时**这里也要加扩展名**。加了图片忘了加视频，
+    症状是"拖一个视频文件夹进去，一个都没被索引"，而且不报错。
+    """
     from ..analyze.image import SUPPORTED_IMAGE_EXT
+    from ..analyze.video import SUPPORTED_AUDIO_EXT, SUPPORTED_VIDEO_EXT
+
+    media_ext = SUPPORTED_IMAGE_EXT | SUPPORTED_VIDEO_EXT | SUPPORTED_AUDIO_EXT
 
     skip_dirs = {
         "node_modules", ".git", ".venv", "venv", "__pycache__", ".idea", ".vscode",
@@ -453,5 +462,5 @@ def iter_supported(root: Path, recursive: bool = True) -> Iterator[Path]:
             if p.is_dir():
                 if recursive and p.name not in skip_dirs and not p.name.startswith("."):
                     stack.append(p)
-            elif can_parse(p) or p.suffix.lower() in SUPPORTED_IMAGE_EXT:
+            elif can_parse(p) or p.suffix.lower() in media_ext:
                 yield p

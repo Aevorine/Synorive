@@ -176,6 +176,51 @@ REGISTRY: tuple[Dependency, ...] = (
             RemoteFile("tokenizer.json", _hf("Xenova/bge-reranker-base", "tokenizer.json")),
         ),
     ),
+    # ═══ 语音转写：三期，支撑「搜一句台词跳到那一秒」 ═══
+    #
+    # 选 SenseVoice 而不是 Whisper：它是**非自回归**的（一次前向出全部结果），
+    # 在 CPU 上比 Whisper 快好几倍，中文准确率也更高，还支持中英日韩粤五种语言。
+    # 代价是它不自带时间戳 —— 所以配一个 2.3MB 的 VAD 先把语音切成句子，
+    # 每句的起止时间由 VAD 给，转写内容由 SenseVoice 给。
+    Dependency(
+        id="asr-zh",
+        kind=DepKind.MODEL,
+        name="SenseVoice（中英日韩粤语音转写）",
+        purpose="把视频和音频里说的话转成文字，让你能搜一句台词直接跳到那一秒",
+        required_by=("视频片段级定位", "音频检索", "会议录音检索"),
+        degrades_to="视频只能靠画面和文件名搜，说了什么搜不到",
+        optional=True,
+        subdir="sense-voice",
+        files=(
+            RemoteFile(
+                "model.int8.onnx",
+                _hf("csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+                    "model.int8.onnx"),
+                size_bytes=239_200_000,
+            ),
+            RemoteFile(
+                "tokens.txt",
+                _hf("csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17", "tokens.txt"),
+            ),
+        ),
+    ),
+    Dependency(
+        id="vad",
+        kind=DepKind.MODEL,
+        name="Silero VAD（语音断句）",
+        purpose="把长音频切成一句一句，转写结果才能带上准确的时间点",
+        required_by=("视频片段级定位", "音频检索"),
+        degrades_to="转写只能整段出，没法定位到具体某一秒",
+        optional=True,
+        subdir="vad",
+        files=(
+            RemoteFile(
+                "silero_vad.onnx",
+                _hf("deepghs/silero-vad-onnx", "silero_vad.onnx"),
+                size_bytes=2_330_000,
+            ),
+        ),
+    ),
     # ═══ 外部命令行 ═══
     Dependency(
         id="ffmpeg",
