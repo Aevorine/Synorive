@@ -67,3 +67,6 @@ apps/desktop/src/styles/fonts.css
 
 # 注：图标产物（apps/desktop/resources/icons、apps/mobile/.../mipmap-*）
 # 是**要进仓库**的 —— 打包和 Gradle 构建直接读它们，且总共才 1MB 出头。
+
+# 打包产物（101MB，跑 npm run pack:win 可重建）
+/release/

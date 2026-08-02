@@ -533,3 +533,126 @@
   font-size: var(--syn-fs-body);
   color: var(--syn-color-text-muted);
 }
+
+/* ---- 引擎引导页 ---- */
+/* 一个装完打不开的应用，比一个装的时候多花两分钟的应用糟糕得多。
+   所以缺什么怎么补要摊在正中间，不能藏在状态栏那五个字里。 */
+.setup {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: var(--syn-space-xl);
+  overflow: auto;
+}
+
+.setup__card {
+  max-width: 640px;
+  padding: var(--syn-space-xxl);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-xl);
+  box-shadow: var(--syn-shadow-lg);
+}
+
+.setup__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-md);
+  margin-bottom: var(--syn-space-md);
+}
+
+.setup__icon { color: var(--syn-color-warning); flex: none; }
+
+.setup__title {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-page-title);
+  font-weight: var(--syn-fw-semibold);
+  letter-spacing: var(--syn-ls-display);
+}
+
+.setup__lead {
+  font-size: var(--syn-fs-body);
+  line-height: var(--syn-lh-relaxed);
+  color: var(--syn-color-text-secondary);
+  margin-bottom: var(--syn-space-lg);
+  text-wrap: pretty;
+}
+
+.setup__error {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-danger);
+  background: var(--syn-color-danger-subtle);
+  border-radius: var(--syn-radius-lg);
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  margin-bottom: var(--syn-space-lg);
+  word-break: break-all;
+}
+
+.setup__steps { list-style: none; display: flex; flex-direction: column; gap: var(--syn-space-lg); }
+
+.setup__step { display: flex; gap: var(--syn-space-md); align-items: flex-start; }
+
+.setup__num {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-primary);
+  color: var(--syn-color-text-inverse);
+  font-size: var(--syn-fs-micro);
+  font-weight: var(--syn-fw-semibold);
+}
+
+.setup__stepbody { min-width: 0; flex: 1; }
+.setup__steptitle { font-size: var(--syn-fs-body); font-weight: var(--syn-fw-medium); }
+.setup__stepdetail {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  line-height: var(--syn-lh-relaxed);
+  text-wrap: pretty;
+}
+
+.setup__cmd {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  margin-top: var(--syn-space-sm);
+  padding: var(--syn-space-xs) var(--syn-space-md);
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-md);
+}
+
+.setup__cmd code {
+  flex: 1;
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-caption);
+  user-select: text;
+}
+
+.setup__copy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  padding: 2px var(--syn-space-sm);
+  border-radius: var(--syn-radius-md);
+}
+
+.setup__copy:hover { background: var(--syn-color-bg-hover); color: var(--syn-color-text); }
+
+.setup__actions {
+  display: flex;
+  gap: var(--syn-space-sm);
+  margin-top: var(--syn-space-xl);
+  flex-wrap: wrap;
+}
+
+.setup__foot {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  margin-top: var(--syn-space-lg);
+  text-wrap: pretty;
+}

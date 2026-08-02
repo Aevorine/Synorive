@@ -1,4 +1,5 @@
 import { useEffect, type ComponentType } from 'react';
+import { EngineSetup } from './components/EngineSetup';
 import { SideBar } from './components/SideBar';
 import { StatusBar } from './components/StatusBar';
 import { TopBar } from './components/TopBar';
@@ -25,6 +26,7 @@ export default function App() {
   const focusSearch = useApp((s) => s.focusSearch);
   const setPage = useApp((s) => s.setPage);
   const page = useApp((s) => s.page);
+  const engine = useApp((s) => s.engine);
   const theme = useResolvedTheme();
 
   // ── 开机接线：拉设置、拉引擎状态、订阅变化 ────────────────
@@ -79,7 +81,14 @@ export default function App() {
       <TopBar />
       <SideBar />
       <main className="main">
-        <Router page={page} />
+        {/* 引擎起不来时，把"缺什么怎么补"摊在正中间，
+            而不是让用户对着一个状态栏里的「引擎启动失败」发呆。
+            设置页不拦 —— 那页不依赖引擎，而且用户可能想先改数据目录。 */}
+        {engine?.lifecycle === 'failed' && page !== 'settings' ? (
+          <EngineSetup />
+        ) : (
+          <Router page={page} />
+        )}
       </main>
       <StatusBar />
     </div>

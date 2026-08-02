@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Synorive —— 多模态并发分析与极速内容检索",
+  "author": "Synorive",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

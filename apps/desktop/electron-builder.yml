@@ -1,0 +1,64 @@
+# Synorive 打包配置
+# ====================================================================
+# ⚠️ electron-builder 26 的坑（本机实测版本 26.15.3，台账里记着）：
+#    **必须用 `signExecutable: false`，不能用 `signAndEditExecutable: false`。**
+#    后者在 24 上只跳过签名，26 起把「签名 + 资源编辑」一起关掉 ——
+#    结果打出来的 exe 顶着 ProductName=Electron / CompanyName=GitHub, Inc.
+#    和默认图标，而且构建**完全不报错**。
+#
+# 另一个坑：portable 和 nsis 是两个独立目标。NSIS 报错完全不影响 portable 产出，
+# 所以"构建成功"的日志天天有，安装包却可能从来没成功过。要分别核对产物。
+
+appId: com.synorive.desktop
+productName: Synorive
+copyright: Copyright © 2026 Synorive
+
+# electron-builder 要精确版本 —— package.json 里写的是 ^41.0.0 这种范围，
+# 它没法据此去下对应平台的二进制。这里写实装版本（node -e 打印出来的那个）。
+# 升级 Electron 时**这里也要同步改**，不然会打出版本不一致的包。
+electronVersion: 41.10.3
+
+directories:
+  output: ../../release
+  buildResources: resources
+
+files:
+  - out/**/*
+  - resources/icons/**/*
+  - package.json
+
+# 引擎不打进 asar —— Python 要能直接读到自己的文件
+asar: true
+asarUnpack:
+  - resources/icons/**/*
+
+win:
+  # 26 起用这个；signAndEditExecutable 会把图标和版本信息一起关掉
+  signExecutable: false
+  icon: resources/icons/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Synorive
+  installerIcon: resources/icons/icon.ico
+  uninstallerIcon: resources/icons/icon.ico
+  installerHeaderIcon: resources/icons/icon.ico
+  deleteAppDataOnUninstall: false # 索引库是用户的数据，卸载不该删
+
+portable:
+  artifactName: Synorive-${version}-portable.exe
+
+# 压缩级别。maximum 比 normal 小约 15%，代价是打包慢一倍。
+compression: maximum
+
+# 不做自动更新的元数据（还没有更新服务器）
+publish: null
