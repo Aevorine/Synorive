@@ -44,12 +44,18 @@ class ChunkRow:
     start_sec: float | None = None
     end_sec: float | None = None
     bbox_json: str | None = None
+    #: L3：PDF 章节名（Abstract/Method/Results…）。非 PDF 内容恒为 None
+    section: str | None = None
     token_count: int = 0
 
 
 class Repository:
     def __init__(self, db: Database) -> None:
         self.db = db
+        #: A17：大规模向量近似索引。None = 还没建（模型没就绪，或库还没大到
+        #: 需要它）。由 `Runtime` 在嵌入模型就绪时创建并挂上来，见 `ann_index.py`
+        #: 开头的设计说明——15 万块以下完全不启用，写入路径行为不变
+        self.ann_index: Any = None
 
     # ── 写入 ────────────────────────────────────────────────
 
@@ -175,6 +181,15 @@ class Repository:
                 "表现是搜索结果驴唇不对马嘴，而且极难定位"
             )
 
+        # A17：ANN 索引的变更**先攒着，事务真正 COMMIT 了才落地**。
+        # usearch 的 Index 不是 SQLite 的一部分，不会跟着 ROLLBACK 自动撤销——
+        # 如果在事务中途就直接改了 ANN 索引，一旦这批写入失败回滚，
+        # ANN 索引会留着一批 SQLite 里根本不存在的 rowid（脏但不致命：
+        # 查询侧按 rowid 关联 chunks 表查不到就跳过，见 recall_vector），
+        # 但更纯粹的做法是等 COMMIT 真正成功再落地，两边永远不会不一致。
+        ann_removes: list[int] = []
+        ann_adds: list[tuple[int, list[float]]] = []
+
         conn = self.db.connect()
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -185,6 +200,7 @@ class Repository:
             for r in old:
                 conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (r["rowid"],))
                 conn.execute("DELETE FROM vec_chunks WHERE chunk_rowid = ?", (r["rowid"],))
+                ann_removes.append(int(r["rowid"]))
             conn.execute("DELETE FROM chunks WHERE item_id = ?", (item_id,))
 
             written = 0
@@ -194,12 +210,12 @@ class Repository:
                     """
                     INSERT INTO chunks (
                         id, item_id, chunk_index, text, channel,
-                        page, start_sec, end_sec, bbox_json, token_count
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                        page, start_sec, end_sec, bbox_json, section, token_count
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         chunk_id, item_id, c.index, c.text, c.channel,
-                        c.page, c.start_sec, c.end_sec, c.bbox_json, c.token_count,
+                        c.page, c.start_sec, c.end_sec, c.bbox_json, c.section, c.token_count,
                     ),
                 )
                 rid = cur.lastrowid
@@ -212,6 +228,8 @@ class Repository:
                         "INSERT INTO vec_chunks (chunk_rowid, embedding) VALUES (?,?)",
                         (rid, sqlite_vec.serialize_float32(embeddings[i].tolist())),
                     )
+                    if self.ann_index is not None:
+                        ann_adds.append((rid, embeddings[i].tolist()))
                 written += 1
 
             if model_id:
@@ -221,6 +239,13 @@ class Repository:
                     (model_id,),
                 )
             conn.execute("COMMIT")
+
+            if self.ann_index is not None:
+                for rid in ann_removes:
+                    self.ann_index.remove(rid)
+                for rid, vec in ann_adds:
+                    self.ann_index.add(rid, vec)
+
             return written
         except Exception:
             conn.execute("ROLLBACK")
@@ -299,6 +324,177 @@ class Repository:
             "INSERT INTO vec_items (item_rowid, embedding) VALUES (?,?)",
             (rid, sqlite_vec.serialize_float32(list(embedding))),
         )
+
+    # ── C5 人脸聚类 ─────────────────────────────────────────
+
+    #: 两张脸的余弦相似度超过这个才算"同一个人"。
+    #: 🔴 **这个数字没有在这个项目里实测校准过**——ArcFace 系模型社区里
+    #: 常见的经验阈值落在 0.4~0.5 这个区间，这里取中间值当默认起点，
+    #: 但"多少算同一个人"这件事严重依赖具体人群和拍摄条件，
+    #: 装完这个功能之后应该拿自己的真实照片库跑几组已知同/不同的人核对，
+    #: 太松（阈值太低）会把不同的人并成一类，太紧会把同一个人拆成好几类。
+    FACE_MATCH_THRESHOLD = 0.45
+
+    def write_faces(self, item_id: str, faces: list[tuple[tuple[float, float, float, float], float, Any]]) -> int:
+        """
+        写一张图检测到的所有人脸，每张脸都要经过聚类分配。
+
+        `faces`：`[(bbox, det_score, embedding), ...]`，embedding 已经 L2 归一化过。
+        一个事务写完——人脸记录和它所属的聚类必须同时成立，
+        不能出现"脸存进去了但没有聚类归属"的半截状态。
+        """
+        if not faces:
+            return 0
+        conn = self.db.connect()
+        ts = now_iso()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # 同一张图重新分析时，先把它名下的旧人脸记录清掉——
+            # 不清的话重跑一次人脸检测，同一批脸会在库里翻倍
+            conn.execute("DELETE FROM faces WHERE item_id = ?", (item_id,))
+
+            clusters = conn.execute(
+                "SELECT id, centroid, face_count FROM face_clusters"
+            ).fetchall()
+            written = 0
+            for bbox, score, embedding in faces:
+                emb = np.asarray(embedding, dtype=np.float32)
+                cluster_id = self._assign_face_cluster(conn, clusters, emb, ts)
+                face_id = new_id()
+                conn.execute(
+                    "INSERT INTO faces (id, item_id, cluster_id, bbox_json, det_score, created_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (face_id, item_id, cluster_id, json.dumps(list(bbox)), float(score), ts),
+                )
+                written += 1
+            conn.execute("COMMIT")
+            return written
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    def _assign_face_cluster(
+        self, conn: sqlite3.Connection, clusters: list[sqlite3.Row], embedding: np.ndarray, ts: str,
+    ) -> str:
+        """
+        找最相似的已有聚类中心；够相似就归进去并更新中心（运行平均），
+        不够相似就新建一类。**`clusters` 是调用方传进来的快照**——
+        同一次 `write_faces` 调用里，前面几张脸新建/更新的聚类不会立刻
+        反映到这份快照里，这意味着"同一张照片里长得很像的两张脸"
+        理论上可能被分进两个刚好都新建的聚类而不是互相匹配到——
+        这种情况很少见（同一张照片里两张脸一般是不同的人），
+        真发生了也不是数据损坏，顶多是多了一个可以后续合并的聚类。
+        """
+        best_id: str | None = None
+        best_sim = -1.0
+        best_centroid: np.ndarray | None = None
+        best_count = 0
+        for r in clusters:
+            centroid = np.frombuffer(r["centroid"], dtype=np.float32)
+            sim = float(np.dot(embedding, centroid))
+            if sim > best_sim:
+                best_sim = sim
+                best_id = str(r["id"])
+                best_centroid = centroid
+                best_count = int(r["face_count"])
+
+        if best_id is not None and best_sim >= self.FACE_MATCH_THRESHOLD and best_centroid is not None:
+            new_centroid = (best_centroid * best_count + embedding) / (best_count + 1)
+            norm = float(np.linalg.norm(new_centroid))
+            if norm > 1e-6:
+                new_centroid = new_centroid / norm
+            conn.execute(
+                "UPDATE face_clusters SET centroid=?, face_count=face_count+1, updated_at=? WHERE id=?",
+                (new_centroid.astype(np.float32).tobytes(), ts, best_id),
+            )
+            return best_id
+
+        cluster_id = new_id()
+        conn.execute(
+            "INSERT INTO face_clusters (id, label, face_count, centroid, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (cluster_id, None, 1, embedding.astype(np.float32).tobytes(), ts, ts),
+        )
+        return cluster_id
+
+    def pending_face_items(self, limit: int = 200) -> list[tuple[str, str]]:
+        """还没跑人脸检测的图片。判据和 C4 图片描述一样——"从没跑过这个阶段"。"""
+        conn = self.db.connect()
+        rows = conn.execute(
+            """
+            SELECT i.id, i.locator FROM items i
+            LEFT JOIN item_stages s ON s.item_id = i.id AND s.stage = 'faces'
+            WHERE i.modality = 'image' AND s.stage IS NULL
+            ORDER BY i.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [(str(r["id"]), str(r["locator"])) for r in rows]
+
+    def list_face_clusters(self, limit: int = 200) -> list[dict[str, Any]]:
+        """人物列表：按聚类里的照片数量倒序——照片最多的人物最可能是用户想找的。"""
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT id, label, face_count, updated_at FROM face_clusters "
+            "ORDER BY face_count DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "id": str(r["id"]),
+                "label": r["label"],
+                "faceCount": int(r["face_count"]),
+                "updatedAt": r["updated_at"],
+            }
+            for r in rows
+        ]
+
+    def label_face_cluster(self, cluster_id: str, label: str | None) -> bool:
+        """给一个人物命名（或清空名字）。这是用户唯一能对聚类结果做的事——
+        应用自己绝不猜测、绝不自动填一个名字。"""
+        conn = self.db.connect()
+        cur = conn.execute(
+            "UPDATE face_clusters SET label = ?, updated_at = ? WHERE id = ?",
+            (label, now_iso(), cluster_id),
+        )
+        return cur.rowcount > 0
+
+    def items_in_face_cluster(self, cluster_id: str, limit: int = 200) -> list[sqlite3.Row]:
+        """这个人物出现在哪些内容里——"搜所有出现过这张脸的照片"就是查这个。"""
+        conn = self.db.connect()
+        return conn.execute(
+            """
+            SELECT DISTINCT i.* FROM items i
+            JOIN faces f ON f.item_id = i.id
+            WHERE f.cluster_id = ?
+            ORDER BY i.content_time DESC
+            LIMIT ?
+            """,
+            (cluster_id, limit),
+        ).fetchall()
+
+    def faces_for_item(self, item_id: str) -> list[dict[str, Any]]:
+        """一张图里检测到的所有脸，含各自所属的人物（供界面画框+标名字）。"""
+        conn = self.db.connect()
+        rows = conn.execute(
+            """
+            SELECT f.id, f.bbox_json, f.det_score, f.cluster_id, c.label
+            FROM faces f LEFT JOIN face_clusters c ON c.id = f.cluster_id
+            WHERE f.item_id = ?
+            """,
+            (item_id,),
+        ).fetchall()
+        return [
+            {
+                "id": str(r["id"]),
+                "bbox": json.loads(r["bbox_json"]),
+                "detScore": r["det_score"],
+                "clusterId": r["cluster_id"],
+                "label": r["label"],
+            }
+            for r in rows
+        ]
 
     def write_scenes(
         self, item_id: str, scenes: list[tuple[int, float, float, str | None, str]]
@@ -426,6 +622,27 @@ class Repository:
             LEFT JOIN item_stages s ON s.item_id = i.id AND s.stage = 'ocr'
             WHERE i.modality = 'image'
               AND (s.status IS NULL OR s.status = 'pending')
+            ORDER BY i.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [(str(r["id"]), str(r["locator"])) for r in rows]
+
+    def pending_description_items(self, limit: int = 200) -> list[tuple[str, str]]:
+        """
+        C4：还没生成描述的图片。**"description" 阶段一开始不存在**——
+        不像 OCR 那样在图片摄取时就统一标 pending（OCR 一直是默认要做的事，
+        只是延后跑；图片描述是默认关闭的可选功能，大部分用户永远不会打开它，
+        没道理给每张图片都预先写一行"pending"占着表）。所以这里判"待处理"
+        用的是"从来没有这个阶段的记录"，跟 OCR 那条"记录是 pending"的判据不同。
+        """
+        conn = self.db.connect()
+        rows = conn.execute(
+            """
+            SELECT i.id, i.locator FROM items i
+            LEFT JOIN item_stages s ON s.item_id = i.id AND s.stage = 'description'
+            WHERE i.modality = 'image' AND s.stage IS NULL
             ORDER BY i.created_at DESC
             LIMIT ?
             """,
@@ -716,6 +933,23 @@ class Repository:
             "JOIN items i ON i.id = c.item_id WHERE c.rowid = ?",
             (chunk_rowid,),
         ).fetchone()
+
+    def item_chunks(self, item_id: str, *, limit: int = 400) -> list[sqlite3.Row]:
+        """
+        一篇文档的所有块，按原文顺序。N6「这篇能回答哪些问题」要用。
+
+        `limit` 卡在 400 是因为再多也读不完 —— 一篇 400 块的文档
+        约等于 12 万字，问题清单从前 400 块里读出来已经足够代表全篇，
+        而不设上限的话，索引了一整本书的用户会一次拉出几万行。
+        """
+        conn = self.db.connect()
+        # 只取正文块（body）：OCR 和语音转写那些块混进来会让问题清单
+        # 出现「图里那行字讲了什么」这种没意义的条目
+        return conn.execute(
+            "SELECT rowid, * FROM chunks WHERE item_id = ? AND channel = 'body' "
+            "ORDER BY chunk_index LIMIT ?",
+            (item_id, max(1, limit)),
+        ).fetchall()
 
     def item_tags(self, item_id: str) -> list[str]:
         conn = self.db.connect()

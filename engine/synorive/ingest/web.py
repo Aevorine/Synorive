@@ -125,8 +125,22 @@ def url_fingerprint(url: str) -> str:
     return hashlib.sha256(canon.encode()).hexdigest()[:32]
 
 
-def fetch(url: str, *, archive_dir: Path | None = None, save_html: bool = True) -> FetchedPage:
-    """抓一个网页并（可选）存档。任何失败都返回带 warnings 的对象，不抛异常。"""
+def fetch(
+    url: str,
+    *,
+    archive_dir: Path | None = None,
+    save_html: bool = True,
+    keep_html: bool = False,
+) -> FetchedPage:
+    """
+    抓一个网页并（可选）存档。任何失败都返回带 warnings 的对象，不抛异常。
+
+    `keep_html` 把原始 HTML 一起带回来（N4 顺藤摸瓜要靠它抠出链）。
+    **默认关**是刻意的：正文提取那一步会把链接和导航全部扔掉，
+    那对语义检索是对的（不扔的话每个网页都因共同的导航文字而互相"相似"），
+    但代价就是拿不到链接。默认带回一份完整 HTML 会让每次抓取
+    多占几百 KB 内存，而绝大多数调用方根本不需要它。
+    """
     ok, why = is_safe_url(url)
     if not ok:
         return FetchedPage(url=url, final_url=url, status=0, title="", text="", warnings=[why])
@@ -167,6 +181,8 @@ def fetch(url: str, *, archive_dir: Path | None = None, save_html: bool = True) 
     page.url = url
     page.final_url = final_url
     page.status = status
+    if keep_html:
+        page.html = html
     if status >= 400:
         page.warnings.append(f"HTTP {status}")
 
