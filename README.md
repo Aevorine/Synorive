@@ -253,7 +253,7 @@ Times New Roman 取，汉字它没有就自动落到宋体。24px 以上的标�
 
 ## 许可 / License
 
-**[GNU AGPL-3.0](LICENSE)** — Copyright © 2026 Fusheng201
+**[GNU AGPL-3.0](LICENSE)** — Copyright © 2026 Aevorine
 
 你可以自由使用、修改、分发这个项目。但有一条硬约束：
 **任何基于它的修改版，只要被别人用到（包括做成网络服务），源码就必须一并公开。**
