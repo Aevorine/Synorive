@@ -116,7 +116,21 @@ if (!CONFIRM) {
 }
 
 // ── 执行 ──────────────────────────────────────────────────
-run('gh', ['repo', 'delete', SLUG, '--yes']);
+
+// 仓库可能已经被手动删过了（`gh` 的 token 默认没有 delete_repo 权限，
+// 网页上删是更省事的一条路）。已经没了就跳过，不要因为"删一个不存在的东西
+// 失败了"把整个流程停住 —— 那是一个成功的前置条件，不是错误。
+const exists = spawnSync('gh', ['repo', 'view', SLUG, '--json', 'name'], {
+  cwd: ROOT, stdio: 'ignore', shell: true,
+}).status === 0;
+
+if (exists) {
+  console.log('· 远端仓库还在，先删');
+  run('gh', ['repo', 'delete', SLUG, '--yes']);
+} else {
+  console.log('· 远端仓库已不存在（你手动删过了），跳过删除这一步');
+}
+
 run('gh', ['repo', 'create', SLUG, '--public', '--description', `"${DESCRIPTION}"`]);
 run('gh', ['repo', 'edit', SLUG, '--add-topic', TOPICS.join(',')]);
 run('git', ['remote', 'set-url', 'origin', `https://github.com/${SLUG}.git`]);
