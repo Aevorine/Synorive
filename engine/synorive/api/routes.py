@@ -1025,6 +1025,14 @@ class ResearchRequest(BaseModel):
     verifyLevel: str | None = Field(
         default=None, description="annotate / counter / claim"
     )
+    #: X3 全局时间预算（秒）。不传就用 deepdive.TOTAL_BUDGET_S（8.0，正好是 X3 的目标）。
+    #: 传 0 表示**不设死线**，回到"能挖多深挖多深"的老行为。
+    #: 超预算时是降级（少一轮追问 / 核查降到不出网）而不是截断，
+    #: 降了什么在响应的 `budget.degraded` 里列着。
+    budgetS: float | None = Field(
+        default=None, ge=0, le=120,
+        description="全局时间预算（秒）。0 = 不限时。默认 8s",
+    )
 
 
 class ScholarRequest(BaseModel):
@@ -1189,7 +1197,7 @@ async def web_research(req: ResearchRequest, request: Request) -> dict[str, Any]
     **自己想出该追问什么再搜一轮**，每一轮问了什么、为什么问，
     都在返回的 `rounds` 字段里如实列着。
     """
-    from ..websearch.deepdive import deep_research
+    from ..websearch.deepdive import TOTAL_BUDGET_S, deep_research
     from ..websearch.trust import TrustProfile
 
     rt = _rt(request)
@@ -1214,6 +1222,13 @@ async def web_research(req: ResearchRequest, request: Request) -> dict[str, Any]
         expand=req.expand,
         verify_level=req.verifyLevel or getattr(rt.config, "verify_level", "counter"),
         profile=TrustProfile.from_dict(getattr(rt.config, "trust_profile", None)),
+        # X3：不传 → 用默认 8s 死线；传 0 → 关掉死线（老行为）。
+        # `req.budgetS or DEFAULT` 这种写法在这里是**错的** —— 0 会被当成"没传"，
+        # 用户明确要求的"不限时"会被悄悄改回 8s
+        total_budget_s=(
+            TOTAL_BUDGET_S if req.budgetS is None
+            else (req.budgetS if req.budgetS > 0 else None)
+        ),
     )
 
 

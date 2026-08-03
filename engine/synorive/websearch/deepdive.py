@@ -48,6 +48,32 @@ ROUND_BUDGET_S = (12.0, 9.0, 8.0)
 FETCH_BUDGET_S = 20.0
 MAX_ROUNDS = 3
 
+#: 🔴 **X3 的全局截止时间。这一条是 P95 那个指标的正主。**
+#:
+#: 在它之前，每个阶段各有各的预算、互相不知道对方花了多少：
+#: 光第一轮搜索就 12s（比 8s 的目标还大），后面还叠 20s 抓正文、
+#: 9s 第二轮、再加核查。**各阶段都"没超自己的预算"，加起来照样 12.45s。**
+#: 分段实测也印证了这一点：核查降级只省 0.5s、不扩写省 1.8s ——
+#: 说明时间不是被某一个阶段吃掉的，是**摊在各阶段的尾巴上**。
+#:
+#: P95 是尾部指标，治尾部的办法是给一条所有人共用的死线，
+#: 而不是把每个阶段的平均值再压快一点（那治的是中位数，本来就达标）。
+#:
+#: 🔴 **超预算时降级，绝不硬截断。** 少一轮追问、核查降档，简报仍然成立；
+#: 而把抓正文砍掉，出来的是一份**空简报** —— 那比慢严重得多：
+#: 接口 200、内容是空的、用户看不出发生了什么。降级项会写进
+#: 响应的 `budget.degraded`，界面必须显示出来。
+TOTAL_BUDGET_S = 8.0
+#: 无论如何要给抓正文留的时间。没有正文的简报是空的，
+#: 所以这一段的优先级高于"再多搜一轮"
+RESERVE_FETCH_S = 3.0
+#: 搜索阶段最少也要给这么久，再少不如别搜
+MIN_ROUND_S = 1.5
+#: 剩余时间少于这个数就不开第二轮了（搜 + 抓至少要这么久）
+MIN_FOR_ROUND2_S = 4.0
+#: 剩余时间少于这个数，核查从 counter/claim 降到 annotate（不出网）
+MIN_FOR_VERIFY_S = 2.0
+
 #: 搜索阶段：一个变体够几家引擎就先走（转给 `meta.search`）
 ENOUGH_ENGINES = 3
 #: 抓正文够几篇就先走（X3）。
@@ -99,6 +125,7 @@ async def deep_research(
     verify_level: str = "counter",
     profile: TrustProfile | None = None,
     on_progress: Any | None = None,
+    total_budget_s: float | None = TOTAL_BUDGET_S,
 ) -> dict[str, Any]:
     """
     跑一次深挖。返回的结构是 `/api/web/research` 的响应体。
@@ -112,6 +139,14 @@ async def deep_research(
 
     🔴 **进度回调抛异常绝不能影响深挖本身**：它只是"顺便说一声"，
     为了一条播报把整轮检索废掉是本末倒置。所以统一包一层。
+
+    `total_budget_s` 是**全局截止时间**（X3）。各阶段自己的预算仍然生效，
+    但都会被"离死线还剩多久"再夹一道。走到预算尽头时**降级而不是截断**：
+    先砍第二轮追问、再把核查降到不出网的 annotate，
+    抓正文永远保底 —— 没有正文的简报是空的，那比慢严重得多。
+    传 `None` 关掉死线，回到老行为。
+    降级了哪些写在返回值的 `budget.degraded` 里，**界面必须显示它**，
+    否则用户会以为这就是完整结果。
     """
     from ..websearch.research import build_briefing
     from ..websearch.verify import run_verification
@@ -120,6 +155,26 @@ async def deep_research(
     rounds = max(1, min(MAX_ROUNDS, rounds))
     trace: list[dict[str, Any]] = []
     step = {"n": 0}
+
+    # ── X3 全局死线 ────────────────────────────────────────
+    deadline = (t0 + total_budget_s) if total_budget_s and total_budget_s > 0 else None
+    degraded: list[str] = []
+
+    def left() -> float:
+        """离死线还有多久。没设死线时返回一个大到不会触发任何降级的数。"""
+        return 1e9 if deadline is None else deadline - time.monotonic()
+
+    def stage_budget(own: float, *, reserve: float = 0.0, floor: float = MIN_ROUND_S) -> float:
+        """
+        这个阶段实际能用多久 = min(它自己的预算, 死线剩余 - 给后面留的)。
+
+        `floor` 保证不会夹成 0 —— 夹成 0 的阶段等于没跑，
+        而"跑了但一个结果都没有"和"压根没跑"在日志里长得一样，
+        排查时会以为是功能坏了。
+        """
+        if deadline is None:
+            return own
+        return max(floor, min(own, left() - reserve))
 
     def tick(stage: str, detail: str, **extra: Any) -> None:
         step["n"] += 1
@@ -155,9 +210,11 @@ async def deep_research(
     engine_replies: list[dict[str, Any]] = []
 
     tick("search", f"第 1 轮：{len(variants)} 个查询并发搜出去", round=1)
+    # 第一轮必须给抓正文留出 RESERVE_FETCH_S —— 搜到一堆链接却没时间抓正文，
+    # 出来的是一份空简报，那是这条链路最坏的结局
     got = await _run_round(
         web, variants, engines=engines, limit=limit, lang=lang,
-        preset=preset, budget_s=ROUND_BUDGET_S[0],
+        preset=preset, budget_s=stage_budget(ROUND_BUDGET_S[0], reserve=RESERVE_FETCH_S),
     )
     all_clusters.extend(got["clusters"])
     engine_replies.extend(got["engines"])
@@ -175,13 +232,25 @@ async def deep_research(
         f"折叠成 {len(shown)} 条，正在抓最靠前 {min(fetch, len(shown))} 篇的正文",
         results=len(shown), excluded=len(dropped),
     )
-    docs = await _fetch_docs(shown, fetch)
+    docs = await _fetch_docs(
+        shown, fetch,
+        budget_s=stage_budget(FETCH_BUDGET_S, reserve=MIN_FOR_VERIFY_S, floor=RESERVE_FETCH_S),
+    )
 
     tick("brief", f"抓到 {len(docs)} 篇正文，正在摘录", fetched=len(docs))
     briefing = build_briefing(query, docs)
 
     # ── 第二轮起：从第一轮的缺口生成新查询 ──────────────────
     for rnd in range(2, rounds + 1):
+        # 🔴 时间不够就不开新一轮。第二轮是**补充**，它的价值远小于
+        #    "整件事在预算内做完"；而开了一轮又中途被死线掐断，
+        #    花掉的时间一点结果都换不回来 —— 那是最差的一种选择
+        if left() < MIN_FOR_ROUND2_S:
+            degraded.append(f"跳过第 {rnd} 轮追问（剩余 {max(0.0, left()):.1f}s 不够搜一轮再抓正文）")
+            trace.append({"round": rnd, "queries": [], "skipped": "时间预算不够，用已有结果出简报"})
+            tick("followup", f"时间预算只剩 {max(0.0, left()):.1f}s，不开第 {rnd} 轮了，用已有结果出简报", round=rnd)
+            break
+
         follow = _followup_queries(query, briefing, limit=3)
         if not follow:
             trace.append({"round": rnd, "queries": [], "skipped": "第一轮没有暴露出值得追问的缺口"})
@@ -201,7 +270,11 @@ async def deep_research(
         )
         got = await _run_round(
             web, fv, engines=engines, limit=max(8, limit // 2), lang=lang,
-            preset=preset, budget_s=ROUND_BUDGET_S[min(rnd - 1, len(ROUND_BUDGET_S) - 1)],
+            preset=preset,
+            budget_s=stage_budget(
+                ROUND_BUDGET_S[min(rnd - 1, len(ROUND_BUDGET_S) - 1)],
+                reserve=RESERVE_FETCH_S,
+            ),
         )
         before = len(shown)
         all_clusters.extend(got["clusters"])
@@ -210,7 +283,10 @@ async def deep_research(
         # 只抓新出现的那几篇，已经抓过的别重抓
         seen_urls = {d["url"] for d in docs}
         fresh = [c for c in shown if c["url"] not in seen_urls][: max(2, fetch // 2)]
-        docs.extend(await _fetch_docs(fresh, len(fresh)))
+        docs.extend(await _fetch_docs(
+            fresh, len(fresh),
+            budget_s=stage_budget(FETCH_BUDGET_S, reserve=MIN_FOR_VERIFY_S, floor=1.0),
+        ))
         briefing = build_briefing(query, docs)
         trace.append({
             "round": rnd,
@@ -225,18 +301,31 @@ async def deep_research(
         for m in [re.search(r"10\.\d{4,9}/[^\s\"'<>]+", str(c.get("url") or ""))]
         if m
     ]
+    # 🔴 时间不够就把核查降到 annotate。annotate 是**纯本地静态标注、不出网**，
+    #    所以它几乎不花时间，同时"反虚假"这条产品线不会整个消失 ——
+    #    降级后简报上仍然有标注，只是少了反向检索那一层。
+    #    直接跳过核查的话，用户拿到的是一份**没有任何可信度信息**的简报，
+    #    而这个产品的卖点恰恰是"会自己找反驳材料"。
+    effective_level = verify_level
+    if verify_level != "annotate" and left() < MIN_FOR_VERIFY_S:
+        effective_level = "annotate"
+        degraded.append(
+            f"核查从 {verify_level} 降到 annotate（剩余 {max(0.0, left()):.1f}s 不够出网反查）"
+        )
+
     tick(
         "verify",
         {
             "annotate": "只做静态标注，不额外出网",
             "counter": "正在反向搜辟谣/质疑，并追溯最早出处",
             "claim": "正在逐条核查每个断言（这一步最慢）",
-        }.get(verify_level, "核查中"),
-        level=verify_level,
+        }.get(effective_level, "核查中"),
+        level=effective_level,
+        **({"degradedFrom": verify_level} if effective_level != verify_level else {}),
     )
     verification = await run_verification(
         web, query=query, clusters=shown, briefing=briefing,
-        level=verify_level, engines=engines, dois=dois[:20],
+        level=effective_level, engines=engines, dois=dois[:20],
     )
 
     tick(
@@ -256,6 +345,17 @@ async def deep_research(
         "fetchFailed": max(0, min(fetch, len(shown)) - len(docs)),
         "engines": engine_replies,
         "elapsedMs": int((time.monotonic() - t0) * 1000),
+        # 🔴 降级必须说出来。用户拿到一份"少了一轮追问、核查只做了标注"的简报，
+        #    如果界面不显示这一段，他会把它当成完整结果 ——
+        #    那是拿他的信任换我们的 P95 数字
+        "budget": {
+            "totalS": total_budget_s,
+            "usedMs": int((time.monotonic() - t0) * 1000),
+            "overrun": bool(deadline is not None and left() < 0),
+            "degraded": degraded,
+            "verifyLevel": effective_level,
+            "verifyRequested": verify_level,
+        },
     }
 
 
@@ -360,10 +460,18 @@ def _dedupe(clusters: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(best.values(), key=lambda d: -float(d.get("score") or 0))
 
 
-async def _fetch_docs(clusters: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
+async def _fetch_docs(
+    clusters: list[dict[str, Any]],
+    n: int,
+    *,
+    budget_s: float = FETCH_BUDGET_S,
+) -> list[dict[str, Any]]:
     """
     抓正文。**引擎已经给了正文的就不再抓**（Tavily/Exa 会带 `fulltext`）——
     省掉的是一整个网络往返，深挖里这能省好几秒。
+
+    `budget_s` 由调用方按全局死线夹过（X3）。默认值是老的硬上限，
+    这样单独调用它的地方行为不变。
     """
     from ..ingest.web import fetch as fetch_page
 
@@ -407,9 +515,13 @@ async def _fetch_docs(clusters: list[dict[str, Any]], n: int) -> list[dict[str, 
     grace_until: float | None = None
     need = min(len(tasks), max(ENOUGH_DOCS_MIN, math.ceil(len(tasks) * ENOUGH_DOCS_RATIO)))
 
+    # 死线夹过之后可能只剩很短一点。夹成 0 或负数的话下面第一轮就 break，
+    # 一篇正文都不抓 —— 简报直接变空。给一个不可再小的地板
+    budget_s = max(1.0, budget_s)
+
     while pending:
         now = time.monotonic()
-        left = FETCH_BUDGET_S - (now - started)
+        left = budget_s - (now - started)
         if left <= 0:
             break
         if grace_until is not None:
