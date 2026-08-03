@@ -107,8 +107,9 @@ hand you a fluent summary you cannot verify. Synorive refuses both:
 - `claude mcp add synorive` 之后，Claude Code 能直接检索你的库、核查一个说法、
   同时对比「你自己的资料」和「网上说的」
 
-完整进度与实测数据见 [`task-progress.md`](task-progress.md)，
-技术方案与 76 项功能菜单见 `docs/00-技术方案.md`。
+技术方案与 76 项功能菜单见 [`docs/00-技术方案.md`](docs/00-技术方案.md)。
+每条性能指标的目标值、怎么才算测过了、以及**哪些还没测**，都写在代码里的 [`engine/synorive/metrics.py`](engine/synorive/metrics.py)，
+基准脚本在 [`engine/tests/`](engine/tests)（`bench_g_series` / `bench_research` / `bench_ingest_stages`）。
 
 ### 实测数据（都是量出来的，不是估的）
 
@@ -124,10 +125,18 @@ hand you a fluent summary you cannot verify. Synorive refuses both:
 | 图片 OCR（后台补跑） | 1.2~1.5 张/秒 | ← 受限于 Python GIL |
 | 视频快速通道 | **88.6 倍速** | — |
 | 视频含转写 | 5.97 倍速 | ≥6 ⚠️ |
-| 文本向量化 | 47 块/秒（本机天花板） | ⚠️ 见下 |
+| 文本向量化（单 worker） | **19.8 块/秒**（原 12.6，批大小 16→8 后 **1.57 倍**） | ⚠️ 见下 |
+| 深挖出简报 P95 | **8.29s**（原 23.79s，加全局死线后降 **65%**） | ≤8.0 ⚠️ 差 0.29s |
+| 缓存二次命中 | P50 **17.6ms** | ≤200 ✅ |
+| 投喂到可搜 | P95 **0.8s** | ≤3.0 ✅ |
+| 联网快搜 P95 | **2.4s** | ≤3.0 ✅ |
 
-⚠️ 两条指标在这台机器（i5-1155G7 / 无独显）上定不到，原始目标需要约 3 倍算力。
-详见 `task-progress.md` 的「待你拍板清单」。
+⚠️ 入库吞吐受限于这台机器（i5-1155G7 / 无独显）：分段计时实测 **嵌入这一步占 97.7%**，
+其余五步加起来才 2.3%，所以再要快只能换量化模型或上 GPU。
+深挖 P95 那条虽然从 23.79s 降到 8.29s，但**代价是 20/20 次都跳过了第二轮追问** ——
+数字和代价要一起看。
+详见 [`engine/synorive/metrics.py`](engine/synorive/metrics.py) 里 A6/A7 两条的 `how` 字段 ——
+**目标值那一栏写的是「⚠️ 待重定」而不是一个数字，那是故意的**：一个明知达不到的数字挂在那儿，比承认「还没定」更糟。
 
 ---
 
