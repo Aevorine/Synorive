@@ -6,6 +6,7 @@ import { BrowserWindow, app, dialog, globalShortcut, ipcMain, nativeTheme, shell
 import type { AppSettings } from '@synorive/shared-types';
 import { IPC, type ClipEntry, type EngineProcessState } from '../shared/ipc-contract.js';
 import { ClipboardWatcher } from './clipboard.js';
+import { PeekWindow } from './peek.js';
 import {
   clearCloudKey,
   hasCloudKey,
@@ -27,6 +28,8 @@ let win: BrowserWindow | null = null;
 let tray: TrayController | null = null;
 let engine: EngineManager | null = null;
 let clip: ClipboardWatcher | null = null;
+/** N7 随手研究浮窗。默认关，所以默认是 null —— 开了才建 */
+let peek: PeekWindow | null = null;
 let settings: AppSettings = loadSettings();
 
 // ── 单实例：第二次启动就把已有窗口拉到前面 ─────────────────────
@@ -88,11 +91,35 @@ function broadcast(channel: string, payload: unknown): void {
 
 function startClipboard(): void {
   clip = new ClipboardWatcher({
-    onEntry: (e) => broadcast(IPC.clipCaptured, e),
+    onEntry: (e) => {
+      broadcast(IPC.clipCaptured, e);
+      // N7 随手研究：复制到一段文字就在屏幕角落浮出三条最相关的。
+      // **只对纯文本触发，不对链接** —— 复制链接多半是要发给别人，
+      // 那时候弹一个"这个链接讲什么"没有帮助，只是打扰。
+      // 密钥类内容在 ClipboardWatcher 里已经被静默丢弃，走不到这儿
+      if (settings.clipboardPeek && e.kind === 'text') {
+        peek?.show(e.content);
+      }
+    },
     onAutoArchive: (e) => void archiveClip(e),
   });
   clip.setAutoArchiveLinks(settings.clipboardAutoArchiveLinks);
   applyClipboardSetting();
+}
+
+/** N7 浮窗按当前设置启停。关掉时**销毁窗口**而不是只隐藏 —— 用户关掉它
+ *  是不想要它存在，留一个隐藏的窗口在那儿占内存说不过去 */
+function applyPeekSetting(): void {
+  if (settings.clipboardPeek) {
+    peek ??= new PeekWindow();
+    peek.setOptions({
+      allowNetwork: settings.allowNetwork ?? true,
+      peekWeb: settings.clipboardPeekWeb ?? false,
+    });
+  } else {
+    peek?.destroy();
+    peek = null;
+  }
 }
 
 /** 开关拨到哪就真的启停到哪。关掉时连内存里攒的也清空。 */
@@ -229,6 +256,13 @@ function registerIpc(): void {
     if (before.clipboardAutoArchiveLinks !== settings.clipboardAutoArchiveLinks) {
       clip?.setAutoArchiveLinks(settings.clipboardAutoArchiveLinks);
     }
+    if (
+      before.clipboardPeek !== settings.clipboardPeek ||
+      before.clipboardPeekWeb !== settings.clipboardPeekWeb ||
+      before.allowNetwork !== settings.allowNetwork
+    ) {
+      applyPeekSetting();
+    }
     if (JSON.stringify(before.cloud) !== JSON.stringify(settings.cloud)) {
       void pushCloudConfig();
     }
@@ -322,6 +356,7 @@ function registerIpc(): void {
     return entry ? archiveClip(entry) : false;
   });
   ipcMain.handle(IPC.clipDismiss, (_e, id: string) => clip?.remove(id));
+  ipcMain.handle(IPC.peekClose, () => peek?.hide());
   ipcMain.handle(IPC.clipClear, () => {
     clip?.clear();
     // ⚠️ 必须广播，否则界面自己那份状态不会跟着清 —— 用户点了「全部清掉」，
@@ -414,6 +449,7 @@ app.whenReady().then(() => {
 
   startEngine();
   startClipboard();
+  applyPeekSetting();
 
   // 全局快捷键：任何时候唤起搜索
   globalShortcut.register('CommandOrControl+Alt+Space', () => {

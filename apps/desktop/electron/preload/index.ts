@@ -66,6 +66,15 @@ const api = {
     onCaptured: (cb: (e: ClipEntry | null) => void) => on(IPC.clipCaptured, cb),
   },
 
+  /**
+   * N7 随手研究浮窗。**只有浮窗那个渲染进程会用到这两个** ——
+   * 主窗口也能调，但它拿不到任何东西（主进程只往浮窗推 peekQuery）。
+   */
+  peek: {
+    onQuery: (cb: (p: { query: string; web: boolean }) => void) => on(IPC.peekQuery, cb),
+    close: (): Promise<void> => ipcRenderer.invoke(IPC.peekClose),
+  },
+
   theme: {
     getSystem: (): Promise<'light' | 'dark'> => ipcRenderer.invoke(IPC.themeGetSystem),
     onSystemChanged: (cb: (t: 'light' | 'dark') => void) => on(IPC.themeSystemChanged, cb),

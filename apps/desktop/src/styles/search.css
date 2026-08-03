@@ -740,3 +740,117 @@
   max-height: 20em;
   overflow-y: auto;
 }
+
+/* ============================================================
+ * N7 随手研究浮窗
+ *
+ * 窗口本身 focusable: false（见 electron/main/peek.ts），
+ * 所以这里**不能有任何需要键盘输入的元素** —— 用户敲不进去。
+ * 只能是「看一眼 + 点一下」。
+ * ============================================================ */
+
+.peek {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: var(--syn-space-sm);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+  overflow: hidden;
+  /* 整个窗口不允许选中文字：它不可聚焦，选中了也复制不走，
+     只会让用户以为自己点坏了什么 */
+  user-select: none;
+}
+
+.peek__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  padding-bottom: var(--syn-space-xs);
+  border-bottom: 1px solid var(--syn-color-border);
+}
+
+.peek__q {
+  flex: 1;
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.peek__close {
+  flex: none;
+  padding: 2px;
+  border: none;
+  border-radius: var(--syn-radius-sm);
+  background: transparent;
+  color: var(--syn-color-text-muted);
+  cursor: pointer;
+}
+
+.peek__close:hover {
+  background: var(--syn-color-bg-sunken);
+  color: var(--syn-color-text);
+}
+
+.peek__msg {
+  margin: var(--syn-space-sm) 0 0;
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+}
+
+.peek__dim {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+
+.peek__sep {
+  margin-top: var(--syn-space-xs);
+  padding-top: var(--syn-space-xs);
+  border-top: 1px solid var(--syn-color-border);
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+
+.peek__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.peek__list button {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  width: 100%;
+  padding: var(--syn-space-xs);
+  border: none;
+  border-radius: var(--syn-radius-sm);
+  background: transparent;
+  color: var(--syn-color-text);
+  text-align: left;
+  font-size: var(--syn-fs-caption);
+  cursor: pointer;
+}
+
+.peek__list button:hover {
+  background: var(--syn-color-primary-subtle);
+  color: var(--syn-color-primary);
+}
+
+.peek__title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.peek__loc {
+  flex: none;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}

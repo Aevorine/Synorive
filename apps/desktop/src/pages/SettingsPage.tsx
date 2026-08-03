@@ -200,6 +200,28 @@ export function SettingsPage() {
             onChange={(v) => patch({ clipboardAutoArchiveLinks: v })}
             disabled={!settings.clipboardSentinel}
           />
+
+          <Toggle
+            label="随手研究浮窗"
+            hint="复制一段文字后，在屏幕右下角浮出三条最相关的（你自己的库）。
+                  浮窗**不会抢走键盘焦点** —— 你复制东西多半是为了马上粘贴，
+                  抢焦点等于毁掉你正在做的事。12 秒自动消失，也可以随时点掉。
+                  默认关：每次复制都弹窗是一种很具体的打扰，得你自己说要。"
+            checked={settings.clipboardPeek ?? false}
+            onChange={(v) => patch({ clipboardPeek: v })}
+            disabled={!settings.clipboardSentinel}
+          />
+
+          <Toggle
+            label="浮窗也查网上"
+            hint="默认只查本地库（几十毫秒、不出网、不花钱）。打开后浮窗还会联网搜一次，
+                  多等几秒，而且会把你复制的这段话作为查询词发给搜索引擎。
+                  和「联网搜索总闸」是两道闸，两个都开才生效。"
+            checked={settings.clipboardPeekWeb ?? false}
+            onChange={(v) => patch({ clipboardPeekWeb: v })}
+            disabled={!settings.clipboardPeek || !(settings.allowNetwork ?? true)}
+            danger
+          />
         </section>
 
         {/* ── 索引目录 ────────────────────────────────── */}

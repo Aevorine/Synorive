@@ -47,6 +47,10 @@ export function defaultSettings(): AppSettings {
     clipboardSentinel: true,
     // 默认关。自动落盘这件事必须由你明确打开，不能靠默认值替你决定。
     clipboardAutoArchiveLinks: false,
+    // N7 随手研究浮窗：默认关。每次复制都弹窗是敌意，用户得先明确说要
+    clipboardPeek: false,
+    // 浮窗联网：再单独一道闸。只查本地几十毫秒不出网，联网要几秒还泄露查询词
+    clipboardPeekWeb: false,
     watchedFolders: [],
     dataDir,
     modelDir: join(dataDir, 'models'),

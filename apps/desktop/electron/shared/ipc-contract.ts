@@ -43,6 +43,10 @@ export const IPC = {
   clipClear: 'clip:clear',
   /** 攒到新内容时主进程推过来 */
   clipCaptured: 'clip:captured',
+  /** N7 随手研究：主进程把"刚复制的这段话"推给浮窗渲染层 */
+  peekQuery: 'peek:query',
+  /** 浮窗自己请求关闭（点了叉、或按 Esc） */
+  peekClose: 'peek:close',
 
   // ── 主题 ────────────────────────────────────────────────
   themeGetSystem: 'theme:get-system',

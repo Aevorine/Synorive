@@ -1,4 +1,5 @@
 import { useEffect, type ComponentType } from 'react';
+import { ClipboardPeek } from './components/ClipboardPeek';
 import { EngineSetup } from './components/EngineSetup';
 import { SideBar } from './components/SideBar';
 import { CommandPalette } from './components/CommandPalette';
@@ -20,7 +21,22 @@ import './styles/search.css';
 import './styles/pages.css';
 import './styles/research.css';
 
+/**
+ * N7：随手研究浮窗和主窗口共用同一个渲染包，靠 hash 区分。
+ *
+ * 为它单开一个 Vite 入口是更"标准"的做法，但代价是多一份构建产物、
+ * 多一套要维护的 HTML 和资源路径 —— 而这个浮窗一共就一个组件。
+ * hash 判定在**模块顶层**做一次，不放进组件：它一辈子不会变，
+ * 放进组件等于每次渲染都重新读一遍 location。
+ */
+const IS_PEEK = typeof window !== 'undefined' && window.location.hash.startsWith('#peek');
+
 export default function App() {
+  if (IS_PEEK) return <ClipboardPeek />;
+  return <MainApp />;
+}
+
+function MainApp() {
   const settings = useApp((s) => s.settings);
   const setSettings = useApp((s) => s.setSettings);
   const setEngine = useApp((s) => s.setEngine);
