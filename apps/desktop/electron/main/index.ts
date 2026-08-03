@@ -250,7 +250,12 @@ async function pushCloudConfig(): Promise<void> {
 
 function startUpdater(): void {
   updater = new UpdateManager(settings.skippedUpdateVersion ?? null);
-  updater.onChange((s) => broadcast(IPC.updateStateChanged, s));
+  updater.onChange((s) => {
+    broadcast(IPC.updateStateChanged, s);
+    // 托盘常驻是默认行为，多数时候主窗口是关着的 —— 只广播给渲染层的话，
+    // 那些时候查到的更新一个人也看不到
+    tray?.setUpdateState(s);
+  });
 
   // 启动就查会和引擎启动、模型加载抢带宽和 CPU，而更新这件事一点都不急。
   // 延后 20 秒，等首屏和引擎都稳定了再悄悄查一次。

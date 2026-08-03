@@ -98,3 +98,6 @@ apps/desktop/src/styles/fonts.css
 
 # 随包分发的 Python 运行时（scripts/bundle-python.mjs 生成，几百 MB，构建时重建）
 apps/desktop/resources/pyruntime/
+
+# uitest.mjs 的截图输出，不是产品资产
+/search-*.png

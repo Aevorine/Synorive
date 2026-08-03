@@ -201,6 +201,8 @@
   border-radius: var(--syn-radius-lg);
   color: var(--syn-color-text-secondary);
   white-space: nowrap;
+  /* 更新角标要绝对定位在这个按钮里，收起侧栏时才跟着图标走 */
+  position: relative;
   overflow: hidden;
   transition: background-color var(--syn-dur-instant) var(--syn-ease-standard),
     color var(--syn-dur-instant) var(--syn-ease-standard);
@@ -492,4 +494,26 @@
   background: var(--syn-color-bg-sunken);
   font-family: var(--syn-ff-mono);
   font-size: var(--syn-fs-micro);
+}
+
+/* ── U 组 更新角标 ─────────────────────────────────────────
+   自动检查查到了新版本，如果不在侧栏挂个点，用户只有碰巧打开设置页
+   才会知道 —— 那自动检查就白做了。
+   刻意做得很小很安静：这是"有件事你可以做"，不是"出事了"。 */
+.sidebar__badge {
+  position: absolute;
+  top: 9px;
+  left: 26px;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-primary);
+  /* 描一圈底色，压在图标上时边缘不糊 */
+  box-shadow: 0 0 0 2px var(--syn-color-bg);
+}
+
+/* 已经下载好、只差点一下安装 —— 用强调色和主色区分开：
+   「可以下载」和「装就完事了」对用户是两件不同的事 */
+.sidebar__badge--ready {
+  background: var(--syn-color-success);
 }
