@@ -31,13 +31,83 @@ const ANDROID = !args.has('--desktop-only');
 const version = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
 const tag = `v${version}`;
 
-function run(cmd, cmdArgs, cwd) {
+function run(cmd, cmdArgs, cwd, env) {
   console.log(`\n▶ ${cmd} ${cmdArgs.join(' ')}`);
-  const r = spawnSync(cmd, cmdArgs, { cwd: cwd ?? ROOT, stdio: 'inherit', shell: true });
+  const r = spawnSync(cmd, cmdArgs, {
+    cwd: cwd ?? ROOT,
+    stdio: 'inherit',
+    shell: true,
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
   if (r.status !== 0) {
     console.error(`✗ 失败（退出码 ${r.status}）：${cmd} ${cmdArgs.join(' ')}`);
     process.exit(1);
   }
+}
+
+/**
+ * 找一个 JDK 17+ 给 Gradle 用。
+ *
+ * 🔴 **不能直接指望 PATH 里的 `java`。** 这台机器上 `java -version` 报的是
+ * 1.8.0_481 —— 而 Android Gradle Plugin 要 17+。用 Java 8 跑 `assembleRelease`
+ * 的报错是一句 `Unsupported class file major version` 或者
+ * `Could not initialize class org.codehaus.groovy...`，**两句都不提 JDK 版本**，
+ * 看到的人只会以为 Gradle 配置坏了，然后去翻 build.gradle.kts。
+ *
+ * 🔴 **也不能把路径写进 `gradle.properties` 的 `org.gradle.java.home`。**
+ * 那个文件是要进仓库的，写死一个 `D:\APPS\JDK17\...` 等于把本机路径
+ * 提交给所有人 —— 别人克隆下来构建，报错会指向一个他机器上不存在的目录。
+ *
+ * 所以在这里探测，只对这一次 Gradle 调用设 `JAVA_HOME`。
+ * 顺序：`JAVA_HOME` 已经够新就直接用 → 常见安装位置扫一遍 → 都没有就明确报错。
+ */
+function findJdk17() {
+  const probe = (home) => {
+    const exe = join(home, 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
+    if (!existsSync(exe)) return null;
+    const r = spawnSync(exe, ['-version'], { encoding: 'utf8', shell: false });
+    // `java -version` 走的是 stderr，这是它几十年的老行为，不是 bug
+    const text = `${r.stderr ?? ''}${r.stdout ?? ''}`;
+    const m = text.match(/version "(\d+)[.\d_]*"/);
+    const major = m ? parseInt(m[1], 10) : 0;
+    return major >= 17 ? { home, major } : null;
+  };
+
+  if (process.env.JAVA_HOME) {
+    const got = probe(process.env.JAVA_HOME);
+    if (got) return got;
+  }
+
+  const roots = [
+    'C:\\Program Files\\Java',
+    'C:\\Program Files\\Eclipse Adoptium',
+    'C:\\Program Files\\Microsoft',
+    'C:\\Program Files\\Amazon Corretto',
+    'C:\\Program Files\\Zulu',
+    'C:\\Program Files\\Android\\Android Studio\\jbr',
+    'D:\\APPS\\JDK17',
+    '/usr/lib/jvm',
+    '/Library/Java/JavaVirtualMachines',
+  ];
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    // 目录本身可能就是一个 JDK（Android Studio 的 jbr 就是这样）
+    const direct = probe(root);
+    if (direct) return direct;
+    let entries = [];
+    try {
+      entries = readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const got = probe(join(root, e))
+        // macOS 的 .jdk 包多一层 Contents/Home
+        ?? probe(join(root, e, 'Contents', 'Home'));
+      if (got) return got;
+    }
+  }
+  return null;
 }
 
 /**
@@ -119,8 +189,39 @@ if (ANDROID) {
     process.exit(1);
   }
 
-  const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
-  run(gradlew, ['assembleRelease', '--no-daemon'], mobileDir);
+  const jdk = findJdk17();
+  if (!jdk) {
+    console.error(
+      '✗ 没找到 JDK 17 或更高版本，Android Gradle Plugin 跑不起来。\n' +
+        '  （PATH 里的 java 可能是 8/11 —— 那个版本报的错完全不提 JDK，\n' +
+        '   会让你去翻 build.gradle.kts，方向就跑偏了）\n' +
+        '  装一个：winget install EclipseAdoptium.Temurin.17.JDK\n' +
+        '  或者已经装了就设 JAVA_HOME 指向它，再重跑。',
+    );
+    process.exit(1);
+  }
+  console.log(`  ✓ Gradle 用 JDK ${jdk.major}：${jdk.home}`);
+
+  // 🔴 **必须用绝对路径调 gradlew，不能靠"反正 cwd 是它所在的目录"。**
+  //
+  // 实测（2026-08-04，本机）：`spawnSync('gradlew.bat', …, {cwd: mobileDir, shell:true})`
+  // 报 `'gradlew.bat' is not recognized as an internal or external command`，
+  // 而同一个文件用绝对路径调就正常打印 Gradle 8.9。
+  // 原因是 cmd.exe 的"先搜当前目录"这条行为**并不是永远成立的**
+  // （`NoDefaultCurrentDirectoryInExePath` 一类的环境/组策略会关掉它）。
+  //
+  // 这个错最坑的地方是它长得像"你没装 Gradle"，而文件明明就在那儿 ——
+  // 于是排查方向会一路跑到"是不是 wrapper 没提交""是不是要先 gradle wrapper"，
+  // 而真正的问题只是**调用方式**。绝对路径在所有平台都成立，没有理由不用。
+  const gradlew = join(mobileDir, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
+  if (!existsSync(gradlew)) {
+    console.error(
+      `✗ 找不到 Gradle wrapper：${gradlew}\n` +
+        '  它应该是随仓库一起提交的。没有的话在 apps/mobile 里跑一次 `gradle wrapper`。',
+    );
+    process.exit(1);
+  }
+  run(`"${gradlew}"`, ['assembleRelease', '--no-daemon'], mobileDir, { JAVA_HOME: jdk.home });
 
   const apkDir = join(mobileDir, 'app', 'build', 'outputs', 'apk', 'release');
   const apk = readdirSync(apkDir).find((f) => f.endsWith('.apk'));
