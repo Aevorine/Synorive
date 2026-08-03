@@ -367,12 +367,30 @@ def bench_x5(b: Bench, r: Result, pid: int | None) -> None:
     r.judge(peak)
 
 
-def bench_x6(b: Bench, r: Result) -> None:
+def bench_x6(b: Bench, r: Result, pairs: int = 6) -> None:
     """X6 单引擎失败不拖累整体：总耗时增量 ≤15%。
 
-    测法：先用全阵容跑一遍拿基线，再在阵容里塞一个**不存在的引擎名**
-    跑一遍。一个引擎失败时，正确的行为是其余的照常返回、
-    总耗时基本不变；错误的行为是所有人一起等它超时。
+    测法：全阵容跑一遍拿基线，再在阵容里塞一个**不存在的引擎名**跑一遍。
+    一个引擎失败时，正确的行为是其余的照常返回、总耗时基本不变；
+    错误的行为是所有人一起等它超时。
+
+    🔴 **改成配对测量了，因为上一版测不准。** 上一版的毛病有两个，
+    单纯加样本量治不了：
+
+      ① 基线用查询词 `q`、降级组用 `q + " x"` —— **比的是两个不同的查询**，
+         在两个不同的时刻、面对不同的网络状况。它们之间的差异远大于
+         "一个坏引擎"造成的差异
+      ② 只跑 3 对，然后拿"中位数之差"当结论
+
+    实测后果：基线 6 个样本落在 2.73~5.81 之间，**样本自身的波动比
+    要测的那个差值还大**，于是同一份代码连着测出 +14.2% / +69.1% / +37.3%
+    三个数，全是噪声。「+14.2% 压线通过」那次是运气不是证据。
+
+    现在：**同一个查询词内部比**（配对差分能抵掉"这个词本来就慢"和
+    "这一刻网络本来就差"这两个共同因素），**交替先后顺序**（抵掉第二次
+    跑总是沾点热的便宜），取每一对的增量比的中位数。
+    并且**把离散度一起报出来** —— 波动大到盖过阈值时直接判"测不准"，
+    而不是给一个看起来很确定的假数字。
     """
     try:
         engines_body, _ = b.call("/web/engines")
@@ -385,34 +403,67 @@ def bench_x6(b: Bench, r: Result) -> None:
         r.note = f"可用引擎只有 {len(names)} 个，测不出'单个失败的影响'"
         return
 
-    base_ts, degraded_ts = [], []
-    for i in range(3):
-        q = f"基准 单引擎失败 第{i}轮"
-        try:
-            _, dt = b.call("/web/search",
-                           {"query": q, "limit": 10, "useCache": False, "engines": names})
-            base_ts.append(dt)
-        except (urllib.error.URLError, OSError, TimeoutError):
-            pass
-        try:
-            # 🔴 塞一个**根本不存在的引擎名**，而不是拔掉一个真引擎。
-            # 拔掉真引擎会同时减少工作量，两个变量混在一起，
-            # 测出来的"变快了"毫无意义
-            _, dt = b.call("/web/search",
-                           {"query": q + " x", "limit": 10, "useCache": False,
-                            "engines": [*names, "__synorive_bench_nonexistent__"]})
-            degraded_ts.append(dt)
-        except (urllib.error.URLError, OSError, TimeoutError):
-            pass
+    # 🔴 塞一个**根本不存在的引擎名**，而不是拔掉一个真引擎。
+    # 拔掉真引擎会同时减少工作量，两个变量混在一起，
+    # 测出来的"变快了"毫无意义
+    bad = [*names, "__synorive_bench_nonexistent__"]
 
-    if not base_ts or not degraded_ts:
-        r.note = "基线或降级组一轮都没跑成，算不出增量"
+    def once(q: str, lineup: list[str]) -> float | None:
+        try:
+            _, dt = b.call("/web/search",
+                           {"query": q, "limit": 10, "useCache": False, "engines": lineup})
+            return dt
+        except (urllib.error.URLError, OSError, TimeoutError):
+            return None
+
+    deltas: list[float] = []
+    base_ts: list[float] = []
+    degraded_ts: list[float] = []
+    for i in range(max(1, pairs)):
+        q = f"基准 单引擎失败 第{i}轮"
+        # 交替先后：偶数轮先跑基线，奇数轮先跑降级组。
+        # 不交替的话，"后跑的那个总是沾连接池预热的光"会被整个记到
+        # 降级组头上，系统性地把增量压低 —— 一个看不见的偏向
+        if i % 2 == 0:
+            t_base, t_bad = once(q, names), once(q, bad)
+        else:
+            t_bad, t_base = once(q, bad), once(q, names)
+        if t_base is None or t_bad is None or t_base <= 0:
+            continue
+        base_ts.append(t_base)
+        degraded_ts.append(t_bad)
+        deltas.append((t_bad - t_base) / t_base * 100.0)
+
+    if not deltas:
+        r.note = "没有一对跑成，算不出增量"
         return
-    b0, b1 = statistics.median(base_ts), statistics.median(degraded_ts)
-    delta = (b1 - b0) / b0 * 100.0 if b0 > 0 else float("nan")
-    r.samples = [*base_ts, *degraded_ts]
-    r.note = f"全阵容中位 {b0:.2f}s → 含一个坏引擎 {b1:.2f}s"
+
+    delta = statistics.median(deltas)
+    lo, hi = min(deltas), max(deltas)
+    r.samples = deltas
+    r.unit = "%"
+    r.note = (
+        f"{len(deltas)} 对配对测量（同一查询词内部比，交替先后）："
+        f"基线中位 {statistics.median(base_ts):.2f}s → 含坏引擎 "
+        f"{statistics.median(degraded_ts):.2f}s ｜ 每对增量 {lo:+.1f}% ~ {hi:+.1f}%"
+    )
     r.judge(max(0.0, delta))
+
+    # 波动大不等于测不准 —— 要看它**是否影响结论**：
+    #   最差的一对都达标        → 通过。再怎么抖也翻不了案，离散度无关
+    #   中位数就已经超标        → 不达标。同上，结论稳的
+    #   中位达标但最差的超标    → **只有这种情况才叫测不准**，如实说
+    #
+    # 第一版守卫只看跨度、不看结论，把「14 对里最差的一对才 +14.3%、
+    # 中位还是负的」也判成测不准 —— 那是把保守做成了另一种不准确
+    tgt = float(r.target or 0)
+    if len(deltas) >= 3 and hi > tgt >= delta:
+        r.status = "manual"
+        r.note += (
+            f"\n      ⚠️ **测不准，别下结论**：中位 {delta:+.1f}% 达标，"
+            f"但最差的一对到了 {hi:+.1f}%，跨过了 {tgt:.0f}% 的阈值。"
+            f"加大 --x6-pairs 或换个网络稳定的时段再测"
+        )
 
 
 def bench_x7(b: Bench, r: Result) -> None:
@@ -503,6 +554,8 @@ def main() -> int:
     ap.add_argument("--only", default="", help="只跑这几条，逗号分隔，如 X1,X7")
     ap.add_argument("--skip-net", action="store_true", help="跳过要出网的 X2/X3/X6")
     ap.add_argument("--rounds", type=int, default=6, help="X2/X3 各跑几轮（默认 6，严格 P95 要 ≥20）")
+    ap.add_argument("--x6-pairs", type=int, default=6,
+                    help="X6 跑几对配对测量（默认 6；波动大时加到 12~20 才判得准）")
     ap.add_argument("--engine-pid", type=int, default=None, help="引擎进程号，X5 量内存要用")
     ap.add_argument("--json", default="", help="把原始样本另存成 JSON")
     a = ap.parse_args()
@@ -525,7 +578,7 @@ def main() -> int:
         "X2": lambda r: bench_x2(b, r, a.rounds),
         "X3": lambda r: bench_x3(b, r, max(2, a.rounds // 2)),
         "X5": lambda r: bench_x5(b, r, a.engine_pid),
-        "X6": lambda r: bench_x6(b, r),
+        "X6": lambda r: bench_x6(b, r, a.x6_pairs),
         "X7": lambda r: bench_x7(b, r),
         "X8": lambda r: bench_x8(b, r),
     }
