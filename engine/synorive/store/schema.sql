@@ -88,12 +88,43 @@ CREATE TABLE IF NOT EXISTS chunks (
     start_sec   REAL,
     end_sec     REAL,
     bbox_json   TEXT,
+    -- L3：论文分节（Abstract/Method/Results…），PDF 之外的内容一律 NULL
+    section     TEXT,
     token_count INTEGER,
     UNIQUE (item_id, chunk_index, channel)
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_item ON chunks (item_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_channel ON chunks (channel);
+
+-- ── C5 人脸聚类（默认关）────────────────────────────────────
+-- 没有走 sqlite-vec：一个人的库里聚出的"人物"最多几百个，
+-- 暴力比对特征向量找最近的聚类中心快得可以忽略不计，
+-- 犯不上为这点数据量另建一张向量表、多背一次维度/模型兼容性判断。
+
+CREATE TABLE IF NOT EXISTS face_clusters (
+    id          TEXT PRIMARY KEY,
+    -- 用户自己起的名字，NULL = 还没命名（界面显示"未命名人物 N"）
+    label       TEXT,
+    face_count  INTEGER NOT NULL DEFAULT 0,
+    -- 512 维 float32，这个聚类里所有人脸特征的运行平均，新脸进来时拿它比对
+    centroid    BLOB NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS faces (
+    id          TEXT PRIMARY KEY,
+    item_id     TEXT NOT NULL REFERENCES items (id) ON DELETE CASCADE,
+    cluster_id  TEXT REFERENCES face_clusters (id) ON DELETE SET NULL,
+    -- 归一化坐标框 (x,y,w,h) 0~1，供界面画框和裁切缩略图
+    bbox_json   TEXT NOT NULL,
+    det_score   REAL,
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_faces_item ON faces (item_id);
+CREATE INDEX IF NOT EXISTS idx_faces_cluster ON faces (cluster_id);
 
 -- ── 全文检索（FTS5 + 中文分词）──────────────────────────────
 -- ⚠️ 这里的选型是实测出来的，不是拍脑袋的。2026-08-02 在 SQLite 3.50.4 上量过：
@@ -297,4 +328,54 @@ CREATE INDEX IF NOT EXISTS idx_phash_lookup ON phash_buckets (seg, value);
 CREATE TABLE IF NOT EXISTS meta_kv (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+-- ── P4 研究项目持久化 ───────────────────────────────────────
+-- 深挖一次要十几秒、要发几十个请求、抓十几篇正文。关掉窗口就全没了，
+-- 等于每次想接着挖都得从头付一遍这个成本。
+--
+-- 分三张表而不是一张大 JSON：
+--   projects 是"这个研究是关于什么的"，要能按标题/时间列出来
+--   runs     是"每一次搜索的完整结果"，只按 project 取，整份 JSON 存着最省事
+--   sources  是"这个项目累计见过哪些来源"，跨轮次去重，且能被单独钉住/加备注
+-- 全塞进一张表的话，"列出我的研究项目"这个最高频的操作要反序列化几 MB JSON。
+
+CREATE TABLE IF NOT EXISTS research_projects (
+    id            TEXT PRIMARY KEY,
+    title         TEXT NOT NULL,
+    query         TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'open',   -- open / done / archived
+    notes         TEXT,
+    settings_json TEXT                            -- 引擎/预设/档位，续做时原样复用
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_projects_updated
+    ON research_projects (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS research_runs (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL REFERENCES research_projects (id) ON DELETE CASCADE,
+    query        TEXT NOT NULL,
+    mode         TEXT NOT NULL,                   -- quick / deep / scholar
+    created_at   TEXT NOT NULL,
+    elapsed_ms   INTEGER,
+    payload_json TEXT NOT NULL                    -- 整份响应，原样存
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_runs_project
+    ON research_runs (project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS research_sources (
+    project_id  TEXT NOT NULL REFERENCES research_projects (id) ON DELETE CASCADE,
+    url         TEXT NOT NULL,
+    title       TEXT,
+    site        TEXT,
+    tier        TEXT,
+    trust_score REAL,
+    first_seen  TEXT NOT NULL,
+    pinned      INTEGER NOT NULL DEFAULT 0,       -- 用户钉住的，导出时排最前
+    note        TEXT,
+    PRIMARY KEY (project_id, url)
 );

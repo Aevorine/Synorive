@@ -3,7 +3,7 @@ name = "synorive-engine"
 version = "0.1.0"
 description = "Synorive 引擎 —— 多模态并发分析与极速内容检索"
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
+license = { text = "AGPL-3.0-or-later" }
 
 dependencies = [
     # ── Web 层 ──────────────────────────────────────────
@@ -11,6 +11,10 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "httpx>=0.28",
+    # A16：/api/upload 用 FastAPI 的 File/UploadFile 接安卓端上传的文件，
+    # 这俩底层靠 python-multipart 解析 multipart/form-data——没装的话
+    # 不报明显的错，是 FastAPI 启动时静默把这个路由标记成不可用
+    "python-multipart>=0.0.9",
 
     # ── 存储 ────────────────────────────────────────────
     "sqlite-vec>=0.1.9",
@@ -45,12 +49,25 @@ docs = [
 ]
 # 多模态（三期）
 media = [
-    "rapidocr-onnxruntime>=1.4",
+    # 🔴 不是 rapidocr-onnxruntime——那个包名不支持 Python 3.13，
+    #    实测已换成 rapidocr 3.9.2（见台账阶段 3 坑 19）。
+    #    这里之前还写着旧包名，是文档和实现脱节的又一个例子（坑 28 那一类）
+    "rapidocr>=3.9",
     "av>=13.0",
 ]
 # 核显加速（依赖医生一键切换，不要和 onnxruntime 同时装）
 gpu = [
     "onnxruntime-directml>=1.20",
+]
+# 大规模向量检索提速（A17，可选）
+ann = [
+    "usearch>=2.26",
+]
+# C5 人脸检测与聚类（可选，默认关，隐私最敏感的一类）
+# 模型来源仅限非商业研究用途，见 analyze/face.py 顶部说明
+face = [
+    "insightface>=1.0",
+    "opencv-python>=4.10",
 ]
 dev = [
     "pytest>=8.3",
