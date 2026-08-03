@@ -1612,3 +1612,47 @@
     transform: rotate(360deg);
   }
 }
+
+/* ============================================================
+ * P2 逐句可点溯源：右栏点 [n] → 左栏那句原文闪一下
+ *
+ * 默认动作是跳回左栏而不是打开浏览器 —— 打开浏览器就把
+ * 「两栏并排随时能对照」丢掉了，而那是当初选并排布局的全部理由。
+ * ============================================================ */
+
+.evline {
+  scroll-margin-top: var(--syn-space-xl);
+  border-radius: var(--syn-radius-sm);
+  transition: background-color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.evline--flash {
+  animation: syn-evflash 1.8s var(--syn-ease-standard);
+}
+
+@keyframes syn-evflash {
+  0%,
+  60% {
+    background: var(--syn-color-warning-subtle);
+    box-shadow: 0 0 0 4px var(--syn-color-warning-subtle);
+  }
+  100% {
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+/* 让 [n] 看起来是可点的，且和普通链接区分开 ——
+   它的默认动作和普通链接不一样（跳左栏而不是开浏览器），
+   长得一样会让人预期错 */
+.citelink {
+  cursor: pointer;
+  border-bottom: 1px dashed currentColor;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .evline--flash {
+    animation: none;
+    background: var(--syn-color-warning-subtle);
+  }
+}

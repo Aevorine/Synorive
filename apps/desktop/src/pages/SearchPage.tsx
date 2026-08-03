@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { FolderPlus, Loader2, Search as SearchIcon } from 'lucide-react';
 import { ClipboardTray } from '../components/ClipboardTray';
 import { QuestionsPanel } from '../components/QuestionsPanel';
+import { SceneStrip } from '../components/SceneStrip';
 import { Recovery } from '../components/Recovery';
 import { RankingPanel } from '../components/RankingPanel';
 import { SearchResults } from '../components/SearchResults';
@@ -19,6 +20,10 @@ const STAGE_LABEL: Record<string, string> = {
 export function SearchPage() {
   /** N6：正在看哪一篇的「能回答什么」。null = 抽屉关着 */
   const [asking, setAsking] = useState<{ id: string; title: string } | null>(null);
+  /** N3：正在看哪个视频的镜头带。null = 抽屉关着 */
+  const [scening, setScening] = useState<
+    { id: string; locator: string; title: string; sec?: number } | null
+  >(null);
   const { query, hits, stage, total, elapsedMs, loading, error, searched, recovery, weakMatch, filters } = useSearch();
   const setQuery = useSearch((s) => s.setQuery);
   const setFilters = useSearch((s) => s.setFilters);
@@ -122,12 +127,25 @@ export function SearchPage() {
           )}
 
           {hits.length > 0 && (
-            <SearchResults hits={hits} onAsk={(id, t) => setAsking({ id, title: t })} />
+            <SearchResults hits={hits} onAsk={(id, t) => setAsking({ id, title: t })}
+              onScenes={(id, loc, t, sec) => setScening({ id, locator: loc, title: t, sec })} />
           )}
         </div>
 
         <RankingPanel />
       </div>
+
+      {scening && (
+        <aside className="qp" role="dialog" aria-label="视频镜头">
+          <header className="qp__head">
+            <h3>{scening.title}</h3>
+            <button className="qp__close" onClick={() => setScening(null)} aria-label="关闭">
+              ×
+            </button>
+          </header>
+          <SceneStrip itemId={scening.id} locator={scening.locator} focusSec={scening.sec} />
+        </aside>
+      )}
 
       {asking && (
         <QuestionsPanel

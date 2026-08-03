@@ -308,6 +308,47 @@ async def item_scenes(item_id: str, request: Request) -> list[dict[str, Any]]:
     return _rt(request).repo.scenes_of(item_id)
 
 
+@router.get("/media/thumb/{name}")
+async def media_thumb(name: str, request: Request) -> Any:
+    """
+    缩略图与视频关键帧的静态出口 —— N3 场景缩略条靠它。
+
+    **在这之前，关键帧一直躺在磁盘上而界面根本没办法显示它们**：
+    `scenes_of()` 返回的 `keyframePath` 只是个文件名，渲染层没有任何途径
+    把它变成一张图（渲染进程读不了任意本地文件，那是对的）。
+    所以"视频场景缩略条"这个功能的数据早就有了，缺的就是这一条路由。
+
+    🔴 **路径穿越必须挡死**。这条接口拿用户可控的字符串去拼路径，
+    不挡的话 `../../../settings.json` 就能把任意文件读走 ——
+    而引擎对本机是完全信任的（只听 127.0.0.1），这里是少数几个
+    "外部输入直接变成文件路径"的地方之一。
+    判据用**解析后的真实路径是否仍在 thumbs 目录内**，
+    而不是黑名单过滤 `..` —— 黑名单永远漏（`%2e%2e`、`....//`、软链接）。
+    """
+    rt = _rt(request)
+    base = rt.config.thumb_dir.resolve()
+    try:
+        target = (base / name).resolve()
+    except (OSError, ValueError):
+        raise HTTPException(400, "文件名不合法") from None
+
+    # 解析后必须还在 base 里面。`is_relative_to` 是 3.9+ 的标准做法，
+    # 比自己拼字符串比较可靠（它处理了大小写、符号链接、盘符等一堆边角）
+    if not target.is_relative_to(base):
+        raise HTTPException(403, "越界访问")
+    if not target.is_file():
+        raise HTTPException(404, "没有这个文件")
+
+    from fastapi.responses import FileResponse
+
+    return FileResponse(
+        target,
+        # 缩略图内容按文件名唯一，永不变 —— 让浏览器长期缓存，
+        # 一个 20 场景的视频滚动时不会反复回源
+        headers={"Cache-Control": "public, max-age=604800, immutable"},
+    )
+
+
 @router.get("/items/{item_id}/duplicates")
 async def item_duplicates(item_id: str, request: Request) -> list[dict[str, Any]]:
     """E9 近重复：找出和这张图几乎一样的其它图。"""

@@ -36,10 +36,13 @@ const MODALITY_ICON: Record<Modality, typeof FileText> = {
 export function SearchResults({
   hits,
   onAsk,
+  onScenes,
 }: {
   hits: SearchHit[];
   /** N6：给每条文档一个「能回答什么」入口。不传就不显示这个按钮 */
   onAsk?: (itemId: string, title: string) => void;
+  /** N3：给每条视频一个「看镜头」入口，带上命中的秒数直接定位过去 */
+  onScenes?: (itemId: string, locator: string, title: string, sec?: number) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const density = useApp((s) => s.settings?.density ?? 'standard');
@@ -65,7 +68,7 @@ export function SearchResults({
               className="results__row"
               style={{ height: `${v.size}px`, transform: `translateY(${v.start}px)` }}
             >
-              <ResultCard hit={hit} rank={v.index + 1} onAsk={onAsk} />
+              <ResultCard hit={hit} rank={v.index + 1} onAsk={onAsk} onScenes={onScenes} />
             </div>
           );
         })}
@@ -78,10 +81,12 @@ function ResultCard({
   hit,
   rank,
   onAsk,
+  onScenes,
 }: {
   hit: SearchHit;
   rank: number;
   onAsk?: (itemId: string, title: string) => void;
+  onScenes?: (itemId: string, locator: string, title: string, sec?: number) => void;
 }) {
   const { item, highlight, explain, location } = hit;
   const Icon = MODALITY_ICON[item.modality] ?? FileText;
@@ -139,6 +144,20 @@ function ResultCard({
           {explain && <span className="card__why">{explain.reason}</span>}
           {/* N6：只对文档类给这个入口 —— 一张图片"能回答哪些问题"没有意义，
               给了只会让用户点开发现是空的 */}
+          {/* N3：只对视频给这个入口。带上命中的秒数——从搜索结果点进来时
+              用户要的是"那一秒"，让他自己在 20 格缩略图里找是本末倒置 */}
+          {onScenes && item.modality === 'video' && (
+            <button
+              className="card__ask"
+              onClick={(e) => {
+                e.stopPropagation();
+                onScenes(item.id, item.locator, item.title, location?.startSec);
+              }}
+              title="把这个视频切成一条能点的镜头带，点一格就地跳到那一秒"
+            >
+              <Film size={12} strokeWidth={1.8} /> 看镜头
+            </button>
+          )}
           {onAsk && (item.modality === 'text' || item.modality === 'link') && (
             <button
               className="card__ask"

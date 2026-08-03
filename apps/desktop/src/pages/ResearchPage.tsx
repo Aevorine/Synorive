@@ -732,10 +732,27 @@ function ExtractBriefing({ briefing }: { briefing: Briefing }) {
   );
 }
 
+/**
+ * P2 逐句可点溯源：给每条摘录一个可被定位的标记。
+ *
+ * 生成版右栏里的 `[n]` 点下去，要能跳到**左栏这条原文**并高亮 ——
+ * 而不是打开浏览器。打开浏览器就把"两栏并排随时能对照"这件事丢掉了，
+ * 而那正是当初选并排布局的全部理由。
+ *
+ * 用 `data-src` 而不是 React ref：引用是跨组件、跨栏的，
+ * 用 ref 要把回调一路传下去穿过四层组件；而这里要的只是
+ * "按 URL 找到那个元素"，`querySelector` 一行就够。
+ */
+function evAnchorId(url: string): string {
+  // URL 里有 `/` `:` `?` 这些字符，不能直接当 CSS 选择器用，
+  // 所以用属性选择器匹配而不是 id。这里只做规范化
+  return url.trim();
+}
+
 function EvidenceLine({ ev, label, prefix }: { ev: Evidence; label?: string; prefix?: string }) {
   if (!ev.text) return null;
   return (
-    <p className="evline">
+    <p className="evline" data-src={ev.url ? evAnchorId(ev.url) : undefined}>
       {label && <span className="evline__label">{label}：</span>}
       {prefix && <span className="evline__prefix">{prefix}　</span>}
       「{ev.text}」
@@ -844,10 +861,20 @@ function renderCitedText(
         key={key++}
         className="citelink"
         href={url}
-        title={c?.title}
+        title={
+          c?.title
+            ? `${c.title}\n点：跳到左栏那句原文并高亮　Ctrl+点：用浏览器打开`
+            : '点：跳到左栏原文　Ctrl+点：用浏览器打开'
+        }
         onClick={(e) => {
           e.preventDefault();
-          void window.synorive.sys.openExternal(url);
+          // 🔴 P2：默认动作是**跳回左栏的原文**，不是打开浏览器。
+          // 打开浏览器就把"两栏并排随时能对照"这件事丢掉了 ——
+          // 而那正是当初选并排布局的全部理由。
+          // 想去原站的人按 Ctrl 就行，那是次要动作。
+          if (e.ctrlKey || e.metaKey || !highlightSource(url)) {
+            void window.synorive.sys.openExternal(url);
+          }
         }}
       >
         [{n}]
@@ -857,6 +884,27 @@ function renderCitedText(
   }
   if (last < text.length) parts.push(text.slice(last));
   return parts;
+}
+
+/**
+ * P2：在左栏找到这条出处的原文，滚过去并闪一下。
+ *
+ * 返回 false 表示**左栏没有这一条** —— 这不是异常：生成版可能引用了
+ * 一条没有被摘录到简报里的来源（它读了全文，而左栏只放摘出来的句子）。
+ * 那种情况下退回"用浏览器打开"，而不是让用户点了没反应。
+ * **点了没反应是最糟的交互**：用户不知道是坏了还是自己点错了。
+ */
+function highlightSource(url: string): boolean {
+  const el = document.querySelector<HTMLElement>(`.evline[data-src="${CSS.escape(url)}"]`);
+  if (!el) return false;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // 用 class 触发一次性动画。先移除再加，保证连续点同一条时每次都会闪 ——
+  // 不移除的话第二次点因为 class 已在，动画根本不会重放
+  el.classList.remove('evline--flash');
+  void el.offsetWidth; // 强制重排，让浏览器认下这次移除
+  el.classList.add('evline--flash');
+  window.setTimeout(() => el.classList.remove('evline--flash'), 1800);
+  return true;
 }
 
 // ════════════════════════════════════════════════════════════

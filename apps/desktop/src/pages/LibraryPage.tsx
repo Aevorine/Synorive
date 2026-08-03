@@ -3,6 +3,7 @@ import { FolderOpen, RotateCcw } from 'lucide-react';
 import type { Modality, SearchHit, SourceKind } from '@synorive/shared-types';
 import { PageState } from '../components/PageState';
 import { QuestionsPanel } from '../components/QuestionsPanel';
+import { SceneStrip } from '../components/SceneStrip';
 import { SearchResults } from '../components/SearchResults';
 import { api } from '../lib/api';
 import { useEngineData } from '../lib/useEngineData';
@@ -43,6 +44,10 @@ const TIME_RANGES: { id: string; label: string; days: number | null }[] = [
 export function LibraryPage() {
   /** N6：正在看哪一篇的「能回答什么」。null = 抽屉关着 */
   const [asking, setAsking] = useState<{ id: string; title: string } | null>(null);
+  /** N3：正在看哪个视频的镜头带。null = 抽屉关着 */
+  const [scening, setScening] = useState<
+    { id: string; locator: string; title: string; sec?: number } | null
+  >(null);
   const [modalities, setModalities] = useState<Modality[]>([]);
   const [sources, setSources] = useState<SourceKind[]>([]);
   const [range, setRange] = useState('all');
@@ -164,12 +169,25 @@ export function LibraryPage() {
           }
           onRetry={reload}
         >
-          <SearchResults hits={hits} onAsk={(id, t) => setAsking({ id, title: t })} />
+          <SearchResults hits={hits} onAsk={(id, t) => setAsking({ id, title: t })}
+              onScenes={(id, loc, t, sec) => setScening({ id, locator: loc, title: t, sec })} />
         </PageState>
       </div>
 
       {/* N6：抽屉盖在列表右侧，不替换列表 ——
           用户是在"浏览库"的过程中顺手问一篇，替换掉列表会打断这件事 */}
+      {scening && (
+        <aside className="qp" role="dialog" aria-label="视频镜头">
+          <header className="qp__head">
+            <h3>{scening.title}</h3>
+            <button className="qp__close" onClick={() => setScening(null)} aria-label="关闭">
+              ×
+            </button>
+          </header>
+          <SceneStrip itemId={scening.id} locator={scening.locator} focusSec={scening.sec} />
+        </aside>
+      )}
+
       {asking && (
         <QuestionsPanel
           itemId={asking.id}
