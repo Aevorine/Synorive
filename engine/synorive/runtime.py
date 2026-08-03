@@ -75,6 +75,13 @@ class EngineConfig:
     都必须带 `X-Synorive-Token` 头且和它一致，见 main.py 的 `_pairing_guard`。
     本机（桌面端自己/MCP/CLI，全部走 127.0.0.1）永远不受这道闸影响。"""
     pairing_token: str | None = None
+    """4.22b H1：局域网是否走 HTTPS（自签证书 + 手机端指纹固定）。
+
+    **默认 False，而且必须默认 False** —— 现在的明文配对是能用的功能，
+    一个没法端到端验证的 TLS 改造默认打开，最坏结果是"更新了一下手机连不上了"。
+    证书在 `<data-dir>/lan-cert.pem`，指纹通过免鉴权的 `/status` 报出来
+    （手机在配对前就得能读到它，否则没法固定）。"""
+    lan_tls: bool = False
     """
     E15 是否优先用核显（DirectML）跑 ONNX 推理。
 

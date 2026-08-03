@@ -155,6 +155,70 @@ def file_fingerprint(path: Path) -> str:
     return h.hexdigest()[:32]
 
 
+def verify_sources(
+    repo: Repository,
+    *,
+    limit: int = 5000,
+    on_progress: ProgressCb | None = None,
+) -> dict[str, Any]:
+    """
+    4.22b H2 —— 源文件完整性校验：**库里的记录和磁盘上的文件还对得上吗。**
+
+    不用改表、不用额外存哈希：`items.fingerprint` 本来就是内容派生的
+    （头 1MB + 尾 1MB + 大小，见 `file_fingerprint`），重算一遍对比就知道了。
+    读 2MB 一个文件，几千条也就几秒。
+
+    三种结论，**必须分开报**，因为用户要做的事完全不同：
+      · `changed` 文件被改过 → 库里的正文/向量是旧的，**搜出来的内容和文件对不上**，
+        该重新投喂
+      · `missing` 文件没了 → 记录成了孤儿，搜到了也打不开，该清理
+      · `ok` 一致
+
+    🔴 **只报告，不自动删也不自动重建。** 外接硬盘没插、网络盘没连上时，
+    整库都会报 missing —— 那种情况下自动清理等于把整个库删掉。
+    删什么由用户看着报告决定。
+    """
+    rows = repo.file_backed_items(limit=limit)
+    changed: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    ok = 0
+
+    for n, r in enumerate(rows, 1):
+        locator = str(r["locator"] or "")
+        p = Path(locator)
+        info = {"itemId": r["id"], "title": r["title"] or p.name, "path": locator}
+        try:
+            if not p.exists() or not p.is_file():
+                missing.append(info)
+                continue
+            now_fp = file_fingerprint(p)
+            if now_fp != str(r["fingerprint"] or ""):
+                info["was"] = str(r["fingerprint"] or "")[:12]
+                info["now"] = now_fp[:12]
+                changed.append(info)
+            else:
+                ok += 1
+        except OSError as e:
+            # 权限不足 / 文件被独占 / 路径太长 —— 这些**不是"文件被改了"**，
+            # 混进 changed 里会让用户去重新投喂一堆其实没问题的文件
+            info["error"] = str(e)
+            missing.append(info)
+
+        if on_progress and n % 50 == 0:
+            on_progress({"stage": "verify", "done": n, "total": len(rows)})
+
+    return {
+        "checked": len(rows),
+        "ok": ok,
+        "changed": changed,
+        "missing": missing,
+        # 🔴 报出来的是"检查了几条"，不是"库里有几条" —— 超过 limit 时
+        #    不说清楚的话，用户会把"抽查了 5000 条全对"当成"全库都对"
+        "truncated": len(rows) >= limit,
+        "limit": limit,
+    }
+
+
 class IngestPipeline:
     def __init__(
         self,

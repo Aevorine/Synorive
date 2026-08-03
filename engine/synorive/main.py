@@ -183,7 +183,22 @@ def build_app(runtime: Runtime) -> FastAPI:
 
     @app.get("/status")
     async def status() -> dict[str, Any]:
-        return await health()
+        out = await health()
+        # 4.22b H1：证书指纹要在**免鉴权**的路径上报出来 ——
+        # 手机是在配对**之前**读它的，那时候还没有令牌。
+        # 🔴 指纹不是秘密（它是公钥的哈希），公开它没有任何风险；
+        #    真正重要的是用户**核对**它，而不是让手机"第一次连上就信任"。
+        out["lanTls"] = bool(runtime.config.lan_tls)
+        if runtime.config.lan_tls:
+            from .lan_tls import CERT_NAME, fingerprint
+
+            cert = runtime.config.data_dir / CERT_NAME
+            out["lanCertFingerprint"] = fingerprint(cert) if cert.exists() else None
+            out["lanTlsNote"] = (
+                "手机端要把这个指纹填进去做固定校验。"
+                "**别让手机'第一次连上就信任'** —— 那样第一次就被劫持的话，之后每次都会信任攻击者。"
+            )
+        return out
 
     # ── 实时事件通道 ────────────────────────────────────────
     @app.websocket("/events")
@@ -241,6 +256,14 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
     p.add_argument("--pairing-token", default=None,
                     help="A16：安卓配对令牌。设了之后，非本机地址的 /api 请求"
                          "必须带匹配的 X-Synorive-Token 头才放行")
+    # 🔴 **默认关，而且必须默认关**（4.22b H1）。
+    # 现在的明文配对是能用的、用户已经在用的功能；一个没法在开发机上
+    # 端到端验证的 TLS 改造如果默认打开，最坏结果是"更新了一下手机连不上了"，
+    # 而用户完全不知道为什么。安全改进不该以弄坏能用的功能为代价。
+    p.add_argument("--lan-tls", action="store_true",
+                   help="4.22b H1：局域网走 HTTPS（自签证书 + 手机端指纹固定）。"
+                        "默认关 —— 开了之后手机端要改成 https:// 并填证书指纹，"
+                        "指纹在 /status 里报出来")
     # ── 联网搜索这一路（E12/U9 · S1 · S3 · V5）────────────────
     # 🔴 用 `--no-network` 而不是 `--allow-network`：联网是这个软件的主要
     # 用途之一，默认必须是开的（不然装完发现半个功能是灰的）。
@@ -300,6 +323,7 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
         enable_image_description=a.enable_image_description,
         enable_face_clustering=a.enable_face_clustering,
         pairing_token=a.pairing_token,
+        lan_tls=bool(a.lan_tls),
         web_engines=[s.strip() for s in a.web_engines.split(",") if s.strip()] or None,
         web_keys=web_keys or None,
         web_lineup_size=max(0, a.web_lineup),
@@ -336,6 +360,26 @@ def main(argv: list[str] | None = None) -> int:
 
     app = build_app(runtime)
 
+    # 4.22b H1 局域网 TLS。**拿不到证书就退回明文并大声说出来** ——
+    # 静默地"以为开了 TLS 其实是明文"，比根本没这个功能危险得多
+    ssl_kw: dict[str, Any] = {}
+    if config.lan_tls:
+        from .lan_tls import ensure_cert, fingerprint
+
+        pair = ensure_cert(config.data_dir)
+        if pair is None:
+            log.error(
+                "🔴 --lan-tls 开着但证书没弄出来，**本次是明文 HTTP**。"
+                "手机端如果按 https 配的会连不上 —— 这是故意让你看见的，"
+                "不是悄悄降级。"
+            )
+        else:
+            cert, key = pair
+            ssl_kw = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
+            fp = fingerprint(cert)
+            log.info("局域网 TLS 已启用。手机端要固定的证书指纹：%s", fp or "(读不出来)")
+            log.info("指纹也可以从 http(s)://<本机IP>:%d/status 读到", config.port)
+
     uvicorn.run(
         app,
         host=config.host,
@@ -344,6 +388,7 @@ def main(argv: list[str] | None = None) -> int:
         access_log=False,
         ws_ping_interval=20,
         ws_ping_timeout=20,
+        **ssl_kw,
     )
     return 0
 

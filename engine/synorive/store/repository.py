@@ -629,6 +629,27 @@ class Repository:
         ).fetchall()
         return [(str(r["id"]), str(r["locator"])) for r in rows]
 
+    def file_backed_items(self, limit: int = 5000, offset: int = 0) -> list[sqlite3.Row]:
+        """
+        磁盘上有实体文件的条目（4.22b H2 源文件完整性校验用）。
+
+        排除 `source='link'/'clipboard'` 这类没有本地文件的 —— 对它们做
+        "文件还在不在"的检查毫无意义，只会在报告里制造一堆假的"文件丢失"。
+        """
+        conn = self.db.connect()
+        rows = conn.execute(
+            """
+            SELECT id, locator, fingerprint, title, size_bytes, modality
+            FROM items
+            WHERE locator IS NOT NULL AND locator <> ''
+              AND source NOT IN ('link', 'clipboard')
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+        return list(rows)
+
     def pending_ocr_items(self, limit: int = 200) -> list[tuple[str, str]]:
         """还没跑 OCR 的图片，按新到旧排 —— 用户最近加的图最可能马上要搜。"""
         conn = self.db.connect()

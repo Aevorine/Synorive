@@ -15,7 +15,7 @@ from typing import Any
 
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 log = logging.getLogger("synorive.api")
@@ -622,6 +622,30 @@ async def delete_item(item_id: str, request: Request) -> dict[str, Any]:
 @router.get("/stats")
 async def stats(request: Request) -> dict[str, Any]:
     return _rt(request).repo.stats()
+
+
+@router.post("/maintenance/verify-sources")
+async def verify_sources_route(
+    request: Request,
+    limit: int = Query(default=5000, ge=1, le=100000),
+) -> dict[str, Any]:
+    """
+    4.22b H2 —— 查库里的记录和磁盘上的文件还对不对得上。
+
+    重算 `file_fingerprint`（头 1MB + 尾 1MB + 大小）和入库时存的比。
+    三种结论分开报：`changed`（文件被改过，搜出来的内容是旧的）／
+    `missing`（文件没了，搜到也打不开）／`ok`。
+
+    🔴 **只报告，绝不自动删或自动重建。** 外接硬盘没插、网络盘没连上时
+    整库都会报 missing —— 那种情况下自动清理等于把库删掉。
+
+    走线程：几千个文件各读 2MB 是实打实的阻塞 IO，直接在事件循环里跑
+    会把引擎的其他请求全卡住（包括界面的状态轮询，表现是"整个应用假死"）。
+    """
+    from ..ingest.pipeline import verify_sources
+
+    rt = _rt(request)
+    return await asyncio.to_thread(verify_sources, rt.repo, limit=limit)
 
 
 @router.get("/search/ann/status")
@@ -2722,11 +2746,17 @@ async def metrics_budgets(request: Request) -> dict[str, Any]:
     抖动很大。真正的达标判定要跑 `engine/tests/bench_*.py`，
     那是另一件事，**不要拿这个页面上的数字当验收证据**。
     """
-    from ..metrics import BUDGETS, observe
+    from ..metrics import BUDGETS, INGEST_BUDGETS, observe
 
     return {
+        # `budgets` 保持只有 G 组 —— 界面和已有调用方按这个键取数，
+        # 往里塞 A 组会让"九条指标"凭空变成十三条
         "budgets": [b.to_dict() for b in BUDGETS],
+        # A 组（吞吐/时延）单独一个键。其中 A6/A7 的 target 现在是
+        # 「⚠️ 待重定」而不是一个数字 —— 那是**故意的**：
+        # 一个明知达不到的数字挂在那里，比承认"还没定"更糟
+        "ingestBudgets": [b.to_dict() for b in INGEST_BUDGETS],
         "observed": observe(_rt(request)),
-        "note": "目标值来自 G 组验收标准；观察值是运行期采样，"
+        "note": "目标值来自 G 组 / A 组验收标准；观察值是运行期采样，"
                 "**样本少时抖动很大，不能当基准测试结果用**",
     }

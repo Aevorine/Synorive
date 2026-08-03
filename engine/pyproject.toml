@@ -48,6 +48,14 @@ dependencies = [
 sync = [
     "cryptography>=43.0",
 ]
+# 4.22b H1 局域网 TLS（自签证书 + 手机端指纹固定）。
+# 和 sync 是同一个包，单列一组是为了让"我只想给局域网加密，不用同步"
+# 这个诉求有一条明确的安装命令：pip install -e "engine[lantls]"
+# 没装的话 --lan-tls 会**退回明文并在日志里大声报出来**，
+# 绝不静默降级 —— "以为加密了其实是明文"比没有这个功能危险得多。
+lantls = [
+    "cryptography>=43.0",
+]
 # 文档解析（二期）
 docs = [
     "pymupdf>=1.25",
