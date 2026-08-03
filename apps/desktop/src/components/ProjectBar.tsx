@@ -22,6 +22,25 @@ const FORMATS = [
   { id: 'html', label: '网页', hint: '带排版，用浏览器打开可以再打印成 PDF' },
   { id: 'docx', label: 'Word', hint: '要装 python-docx（约 250 KB）' },
   { id: 'json', label: 'JSON', hint: '原始数据，给脚本用' },
+  // E6：一个文件、双击就能开、断网也能看，每条出处的原文一起嵌进去。
+  // 和上面的「网页」区别在于**出处不再是外链** —— 原站下线了也还看得到
+  {
+    id: 'single-html',
+    label: '离线单文件',
+    hint: '证据全内嵌，断网和原站下线之后都还能看（不含图片）',
+  },
+] as const;
+
+/**
+ * E1 简报模板。**四种排法用的是同一批摘录，一个字都不改** ——
+ * 换模板改的只是"先看什么后看什么"和"怎么分组"。
+ * 如果换个模板结论就变了，那说明其中至少一个在偷偷做提炼。
+ */
+const TEMPLATES = [
+  { id: 'points', label: '要点式', hint: '默认。按主题分组，每组几条摘录' },
+  { id: 'timeline', label: '时间线', hint: '所有带日期的摘录按时间排；没日期的单列最后' },
+  { id: 'compare', label: '对比表', hint: '一行一个说法，列出谁在说、谁有异议' },
+  { id: 'qa', label: '问答式', hint: '每个主题变成一个问句，摘录当答案' },
 ] as const;
 
 export function ProjectBar({
@@ -41,6 +60,8 @@ export function ProjectBar({
   const [busy, setBusy] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /** E1 当前选的排法。默认要点式 —— 那是绝大多数场合下最好读的 */
+  const [template, setTemplate] = useState<(typeof TEMPLATES)[number]['id']>('points');
 
   const load = useCallback(async () => {
     try {
@@ -108,6 +129,7 @@ export function ProjectBar({
         format: fmt,
         title: query || active?.title,
         includeExcluded: true,
+        template,
       });
       // base64（docx）和 utf-8（其余）两条路，别混 —— 混了 Word 文件会打不开
       const blob =
@@ -123,6 +145,41 @@ export function ProjectBar({
       a.click();
       // 立刻 revoke 会让某些情况下下载拿不到内容，给浏览器留一帧
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * E5 —— 导出**引用可点**的 PDF。
+   *
+   * 拿的是 `single-html`（证据全内嵌）而不是普通 `html`：普通 html 的出处是外链，
+   * 打成 PDF 之后点过去要联网，原站下线就断了；单文件版把原文摘录嵌在同一份文档里，
+   * 引用号跳的是**文档内部的锚点**，那才是"离线也点得动"。
+   *
+   * 🔴 打印交给主进程的 `printToPDF`，不是渲染层的 `window.print()`。
+   * 后者走系统打印驱动，到那一层 `<a href>` 已经只剩字形，PDF 里点它没反应 ——
+   * 而这正是这个功能唯一要做到的事。
+   */
+  const doExportPdf = async () => {
+    if (!result && !activeId) return;
+    setBusy('export-pdf');
+    setErr(null);
+    try {
+      const r = await projectApi.export({
+        payload: result ?? undefined,
+        projectId: result ? undefined : (activeId ?? undefined),
+        format: 'single-html',
+        title: query || active?.title,
+        includeExcluded: true,
+        template,
+      });
+      const out = await window.synorive.doc.exportPdf(r.content, query || active?.title || '研究简报');
+      // ok:false 且没有 error = 用户在保存对话框点了取消。
+      // 那是他的选择，不是故障，弹红字只会让人以为出错了
+      if (!out.ok && out.error) setErr(`PDF 没导出成：${out.error}`);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -158,6 +215,24 @@ export function ProjectBar({
 
         <span className="pb__spacer" />
 
+        {/* E1：模板选在格式**前面** —— 它决定的是内容怎么排，
+            而格式只决定存成什么文件。顺序反了会让人以为
+            「Markdown 的时间线」和「Word 的时间线」是两回事 */}
+        <span className="pb__label">排法</span>
+        <select
+          className="pb__tpl"
+          value={template}
+          onChange={(e) => setTemplate(e.target.value as (typeof TEMPLATES)[number]['id'])}
+          title={TEMPLATES.find((t) => t.id === template)?.hint}
+          disabled={busy !== null}
+        >
+          {TEMPLATES.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+
         <span className="pb__label">
           <Download size={14} aria-hidden /> 导出
         </span>
@@ -172,6 +247,17 @@ export function ProjectBar({
             {busy === `export-${f.id}` ? <Loader2 size={12} className="spin" /> : f.label}
           </button>
         ))}
+        {/* E5：PDF 单独一个按钮而不是并进 FORMATS ——
+            它走的是完全不同的一条路（引擎出 HTML → 主进程 Chromium 打印），
+            混进那个数组会让"格式 = 引擎的一个参数"这个前提悄悄失真 */}
+        <button
+          className="pb__fmt"
+          title="引用号可点：点一下直接跳到这份 PDF 里嵌着的原文摘录，不联网也能跳"
+          disabled={(!result && !activeId) || busy !== null}
+          onClick={() => void doExportPdf()}
+        >
+          {busy === 'export-pdf' ? <Loader2 size={12} className="spin" /> : 'PDF'}
+        </button>
       </div>
 
       {active && (

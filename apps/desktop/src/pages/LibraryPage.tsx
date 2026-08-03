@@ -4,6 +4,8 @@ import type { Modality, SearchHit, SourceKind } from '@synorive/shared-types';
 import { PageState } from '../components/PageState';
 import { QuestionsPanel } from '../components/QuestionsPanel';
 import { SceneStrip } from '../components/SceneStrip';
+import { ChapterList } from '../components/ChapterList';
+import { DupCleanup } from '../components/DupCleanup';
 import { SearchResults } from '../components/SearchResults';
 import { api } from '../lib/api';
 import { useEngineData } from '../lib/useEngineData';
@@ -172,6 +174,14 @@ export function LibraryPage() {
           <SearchResults hits={hits} onAsk={(id, t) => setAsking({ id, title: t })}
               onScenes={(id, loc, t, sec) => setScening({ id, locator: loc, title: t, sec })} />
         </PageState>
+
+        {/* E9 近重复清理：放在库列表**下面**而不是筛选栏里 ——
+            它是"整理这个库"的动作，不是"看这个库的某一部分"。
+            混进筛选栏会让人以为点一下就把重复的筛出来了 */}
+        <section className="panel">
+          <h2 className="panel__title">清理重复图</h2>
+          <DupCleanup />
+        </section>
       </div>
 
       {/* N6：抽屉盖在列表右侧，不替换列表 ——
@@ -185,6 +195,13 @@ export function LibraryPage() {
             </button>
           </header>
           <SceneStrip itemId={scening.id} locator={scening.locator} focusSec={scening.sec} />
+          {/* A6 章节目录跟在缩略条下面：缩略条给"看起来是什么"，
+              目录给"讲了几件事"。点一章就把缩略条的焦点挪过去，
+              两块用的是同一个 focusSec，不需要各自维护一份位置 */}
+          <ChapterList
+            itemId={scening.id}
+            onJump={(sec) => setScening((s) => (s ? { ...s, sec } : s))}
+          />
         </aside>
       )}
 

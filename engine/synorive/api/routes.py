@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,12 @@ class SearchFilters(BaseModel):
     sizeMaxBytes: int | None = None
     scopes: list[str] | None = None
     excludeScopes: list[str] | None = None
+    #: D10 `type:pdf` 的扩展名过滤。以前只有查询串这一条入口，
+    #: 界面上点选的筛选传不进来 —— 补齐，两条入口共用同一套语义
+    extensions: list[str] | None = None
+    #: L3-plus `section:方法`。**子串匹配**，不是精确相等
+    #: （真实标题是 `3.2 Experimental Method`，精确匹配一条都命中不了）
+    sections: list[str] | None = None
 
 
 class RankingWeights(BaseModel):
@@ -128,6 +135,405 @@ async def ingest(req: IngestRequest, request: Request) -> dict[str, Any]:
 
     job_id = rt.start_ingest(targets, recursive=req.recursive, source=req.source, tags=req.tags)
     return {"jobId": job_id, "status": "running", "totalItems": 0}
+
+
+@router.get("/ingest/{job_id}")
+async def ingest_job(job_id: str, request: Request) -> dict[str, Any]:
+    """
+    F2 驾驶舱轮询这条。
+
+    🔴 **任务表只在内存里**，引擎重启就没了 —— 所以这里 404 是**正常情况**
+    而不是异常，界面收到 404 要说"引擎重启过，这个任务的进度查不到了"，
+    不能显示成一个卡在 0% 的任务让人一直等。
+    """
+    d = _rt(request).job_detail(job_id)
+    if d is None:
+        raise HTTPException(404, "没有这个任务（引擎重启后任务表会清空）")
+    return d
+
+
+# ── E17 端到端加密同步 ｜ 6.5 离线队列 ────────────────────
+
+
+def _sync_queue(request: Request) -> Any:
+    """
+    懒建同步队列。**独立的 sqlite 文件，不塞进主库** ——
+    同步状态可以整个丢掉重来，主库不能。
+    """
+    rt = _rt(request)
+    q = getattr(rt, "_sync_queue", None)
+    if q is None:
+        from ..sync.queue import SyncQueue
+
+        q = SyncQueue(rt.config.data_dir / "sync" / "queue.db")
+        rt._sync_queue = q  # type: ignore[attr-defined]
+    return q
+
+
+def _sync_key(request: Request) -> bytes:
+    """
+    取这次会话的同步密钥。**没配对就明确拒绝**，不去猜一个默认口令。
+
+    🔴 引擎重启后密钥就没了（只存内存）——这时候返回 409 而不是 500，
+    并且把"去重新配对"这句话写出来。含糊的 500 会让用户以为是引擎坏了。
+    """
+    key = getattr(_rt(request), "_sync_key", None)
+    if not key:
+        raise HTTPException(
+            409,
+            "还没配对（或者引擎重启过 —— 密钥只存内存，不落盘）。"
+            "先在两台设备上用同一个口令调一次 /api/sync/pair",
+        )
+    return bytes(key)
+
+
+class SyncPairRequest(BaseModel):
+    passphrase: str
+    #: 第一次配对不传，由这一端生成并返回；对端拿到之后原样带回来
+    salt: str | None = None
+
+
+class SyncPushRequest(BaseModel):
+    """
+    对端推来的一批操作。**整批是一个加密信封**，不是明文数组。
+
+    🔴 **不带口令。** 口令在 `/sync/pair` 时派生成密钥留在内存里，
+    之后每次收发都用那把内存里的钥匙。每个请求都带口令的话，
+    口令会在网络上传来传去 —— 端到端加密最不该做的就是这个。
+    """
+
+    envelope: dict[str, Any]
+
+
+class SyncPullRequest(BaseModel):
+    """拉取本机待推操作。同样不带口令，用内存里那把钥匙。"""
+
+    limit: int = Field(default=200, ge=1, le=500)
+
+
+class SyncAckRequest(BaseModel):
+    ids: list[str]
+
+
+class SyncEnqueueRequest(BaseModel):
+    entity: str = "item"
+    entityId: str
+    kind: str = "upsert"
+    payload: dict[str, Any] | None = None
+
+
+@router.get("/sync/status")
+async def sync_status(request: Request) -> dict[str, Any]:
+    """同步状态：本机设备号、Lamport 时钟、队列里还有多少没推出去。"""
+    from ..sync.crypto import crypto_available
+
+    q = _sync_queue(request)
+    st = q.stats()
+    st["cryptoAvailable"] = crypto_available()
+    if not st["cryptoAvailable"]:
+        # 🔴 说清楚是**整个不可用**而不是"降级运行"。含糊其辞的话，
+        # 用户会以为同步在跑只是没加密 —— 而实际上一条都推不出去
+        st["note"] = (
+            "没装 cryptography，**同步整个不可用**（不是降级、不是明文同步）。"
+            "装一下：pip install \"synorive[sync]\""
+        )
+    else:
+        st["note"] = "冲突按 Lamport 时钟判，不看系统时间；删除留墓碑 30 天"
+    return st
+
+
+@router.post("/sync/pair")
+async def sync_pair(req: SyncPairRequest, request: Request) -> dict[str, Any]:
+    """
+    E17 配对：口令 + 盐 → 密钥指纹。
+
+    🔴 **口令和密钥都不返回、不落盘、不写日志。** 只返回**指纹**
+    （密钥的哈希），两台设备各自算一遍比对 —— 指纹一样就说明钥匙一样。
+    把密钥本身发出去的话，这套端到端加密就只是个装饰。
+    """
+    from ..sync.crypto import CryptoUnavailable, derive_key, key_fingerprint, make_challenge, new_salt
+
+    try:
+        salt = req.salt or new_salt()
+        key = await asyncio.to_thread(derive_key, req.passphrase, salt)
+        # 🔴 密钥**只存内存，跟着进程走**。落盘的话，攻破这台机器的人
+        # 不需要口令就能解开所有同步数据 —— 那这套加密就只是个装饰。
+        # 引擎重启后要重新配对，这是刻意的代价（和云端 Key 同一条约定）
+        rt = _rt(request)
+        rt._sync_key = key  # type: ignore[attr-defined]
+        rt._sync_salt = salt  # type: ignore[attr-defined]
+        return {
+            "salt": salt,
+            "fingerprint": key_fingerprint(key),
+            "challenge": make_challenge(key),
+            "deviceId": _sync_queue(request).device_id,
+            "note": "把 salt 和指纹给另一台设备，让它用**同一个口令**算一遍。"
+            "指纹对得上才算配对成功 —— 口令本身两边都不要传",
+        }
+    except CryptoUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.post("/sync/enqueue")
+async def sync_enqueue(req: SyncEnqueueRequest, request: Request) -> dict[str, Any]:
+    """6.5 —— 把一条本地改动压进离线队列，等联网了再推。"""
+    op = _sync_queue(request).enqueue(req.entity, req.entityId, req.kind, req.payload)
+    return {"ok": True, "op": op.to_dict()}
+
+
+@router.post("/sync/pull")
+async def sync_pull(req: SyncPullRequest, request: Request) -> dict[str, Any]:
+    """
+    把本机待推的操作封成一个加密信封交出去。
+
+    🔴 **不在这里标记 `sent`。** 只有对端 `/sync/push` 成功之后
+    才由调用方回来调 `/sync/ack` —— 发出去就标的话，网络在半路断了
+    这批操作永远不会重发，数据静默丢失而两端看起来都正常。
+    """
+    from ..sync.crypto import CryptoUnavailable, seal
+
+    q = _sync_queue(request)
+    key = _sync_key(request)
+    ops = q.pending(req.limit)
+    # 🔴 守卫要包住**真正会抛的那一句**。`pending()` 只读 sqlite，
+    # 从不抛 CryptoUnavailable —— 包着它等于没包，异常会原样变成 500，
+    # 用户看到的是"内部错误"而不是"去装 cryptography"
+    try:
+        # aad 里放发送方设备号：它不加密但参与认证，被改了解密就会失败。
+        # ⚠️ 说明白它的边界：aad 本身也随信封传输，所以这**不是**
+        # "绑定到一个外部已知值"，只是保证 aad 没被悄悄改过
+        env = seal(key, [o.to_dict() for o in ops], aad=q.device_id.encode("utf-8"))
+    except CryptoUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+    return {
+        "envelope": env,
+        "opIds": [o.id for o in ops],
+        "count": len(ops),
+        "deviceId": q.device_id,
+        "note": "这批还**没有**标记成已发送。对端确认收到后调 /sync/ack 才算数",
+    }
+
+
+@router.post("/sync/ack")
+async def sync_ack(req: SyncAckRequest, request: Request) -> dict[str, Any]:
+    """对端确认收到之后才标记已发送。"""
+    return {"marked": _sync_queue(request).mark_sent(req.ids)}
+
+
+@router.post("/sync/push")
+async def sync_push(req: SyncPushRequest, request: Request) -> dict[str, Any]:
+    """
+    收对端推来的一批操作，解密后合并。
+
+    🔴 **解密失败一律拒绝，不去"试试能不能解出点什么"。**
+    认证失败意味着数据被改过或者口令不对 —— 两种都必须让用户知道，
+    而不是安静地跳过这一批然后报"同步完成"。
+    """
+    from ..sync.crypto import CryptoUnavailable, open_envelope
+    from ..sync.queue import Op
+
+    q = _sync_queue(request)
+    key = _sync_key(request)
+    try:
+        raw = open_envelope(key, req.envelope)
+    except CryptoUnavailable as e:
+        # 🔴 **必须排在 `except Exception` 前面。** `CryptoUnavailable` 是
+        # `RuntimeError` 的子类，会被下面那个宽 catch 吞掉，然后报成
+        # "口令不对" —— 而真实原因是根本没装库。用户会一直去改口令，
+        # 改到天亮也不会好。诊断错的报错比不报错更浪费时间
+        raise HTTPException(503, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, f"信封坏了或版本对不上：{e}") from e
+    except Exception as e:  # noqa: BLE001 — cryptography 的 InvalidTag 不是 ValueError
+        raise HTTPException(
+            403,
+            "解密失败：口令不对，或者这批数据在路上被改过。"
+            "**没有应用任何一条** —— 检查两台设备的配对口令是不是同一个",
+        ) from e
+
+    if not isinstance(raw, list):
+        raise HTTPException(400, "信封里应该是一个操作数组")
+    return q.merge([Op.from_dict(d) for d in raw if isinstance(d, dict)])
+
+
+@router.post("/sync/purge")
+async def sync_purge(request: Request) -> dict[str, Any]:
+    """清理已确认的历史和过期墓碑。"""
+    q = _sync_queue(request)
+    return {"purgedSent": q.purge_sent(), "purgedTombstones": q.purge_tombstones()}
+
+
+class ArchiveShotRequest(BaseModel):
+    """C12 整页截图归档 ｜ C13 登录态抓取。"""
+
+    url: str
+    #: C13：这个站点的 cookie。**不给就是匿名抓取**
+    cookies: list[dict[str, str]] | None = None
+    #: 顺便把正文也抓一份入库（截图是版面证据，正文才能被搜索到）
+    ingest: bool = True
+    tags: list[str] | None = None
+
+
+@router.post("/web/archive-shot")
+async def archive_shot(req: ArchiveShotRequest, request: Request) -> dict[str, Any]:
+    """
+    C12 —— 把一个网页**整页截图**存进归档目录；C13 —— 可带 cookie 抓登录后的页面。
+
+    🔴 **两个开关都受 `allow_network` 管**：截图要真的去访问那个网址。
+    隐私围栏关了联网就一律拒绝，不给"截图不算联网"这种解释空间。
+
+    🔴 **cookie 只在这一次请求里存在。** 引擎不落盘、不写日志、不回显；
+    桌面端那边用的是内存分区的 session，每次抓取前先清空。
+    **绝不能为了"下次不用再传"把它存起来** —— 那是把用户的登录凭证
+    变成一个躺在磁盘上的长期资产，而用户完全不知道。
+
+    🔴 **截图和正文是两回事，都要给。** 只有截图的话搜不到（图里的字要 OCR）；
+    只有正文的话版面证据就没了（"这个页面当时长这样"）。
+    """
+    rt = _rt(request)
+    if not rt.config.allow_network:
+        raise HTTPException(403, "联网功能被隐私设置关闭了")
+    if not req.url.lower().startswith(("http://", "https://")):
+        raise HTTPException(400, "只支持 http/https 网址")
+
+    broker = getattr(rt, "render_broker", None)
+    if broker is None or not broker.available:
+        raise HTTPException(
+            503,
+            "整页截图要借桌面端的浏览器，现在借不到"
+            "（桌面端没连上引擎，或者引擎是在纯命令行模式下跑的）",
+        )
+
+    shot = await broker.capture(req.url, cookies=req.cookies)
+    # 🔴 把**真实原因**透出去，不要自己编一句"可能是A可能是B"的猜测清单 ——
+    # 用户拿着猜测清单什么也做不了，拿着"等了 23 秒超时"就知道该换个页面试
+    if shot is None or shot.get("error"):
+        raise HTTPException(502, f"截图没成功：{(shot or {}).get('error') or '渲染端没有回应'}")
+
+    import base64 as _b64
+    import hashlib as _hl
+
+    raw = _b64.b64decode(shot["png"])
+    # 🔴 再查一次字节数。base64 串非空**不代表**解出来非空
+    if not raw:
+        raise HTTPException(502, "截图解码出来是 0 字节")
+
+    shots_dir = rt.config.archive_dir / "shots"
+    shots_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    name = f"{stamp}-{_hl.sha1(req.url.encode()).hexdigest()[:10]}.png"
+    (shots_dir / name).write_bytes(raw)
+
+    out: dict[str, Any] = {
+        "ok": True,
+        "shot": name,
+        "path": str(shots_dir / name),
+        "bytes": len(raw),
+        "width": shot.get("width"),
+        "height": shot.get("height"),
+        "truncated": bool(shot.get("truncated")),
+        "usedCookies": bool(req.cookies),
+    }
+    # 🔴 cookie 有没有设失败必须报上来。少了关键的那个 session cookie，
+    # 抓回来的是登录页 —— 而截图、字节数、HTTP 200 全都正常
+    if shot.get("cookieFailures"):
+        out["cookieFailures"] = shot["cookieFailures"]
+        out["warning"] = (
+            "有 cookie 没设成功，截到的可能是**登录页而不是内容页** —— 打开图确认一下"
+        )
+    if out["truncated"]:
+        out["warning"] = (
+            (out.get("warning", "") + "；") if out.get("warning") else ""
+        ) + f"页面太长，只截到前 {shot.get('height')} 像素"
+
+    if req.ingest and rt.pipeline is not None:
+        try:
+            r = await asyncio.to_thread(
+                rt.pipeline.ingest_url, req.url, tags=(req.tags or ["整页归档"])
+            )
+            out["ingest"] = r
+        except Exception as e:  # noqa: BLE001
+            # 入库失败不该让截图也白截 —— 图已经存下来了，如实说一声
+            out["ingest"] = f"正文入库失败：{type(e).__name__}: {e}"
+    return out
+
+
+@router.get("/web/archive-shot/{name}")
+async def get_archive_shot(name: str, request: Request) -> Any:
+    """
+    把归档的整页截图发出去（渲染层读不了任意本地文件，这是唯一的出口）。
+
+    🔴 越界判据用「解析后的真实路径是否仍在 shots 目录内」，
+    不用黑名单过滤 `..` —— 黑名单永远漏（`%2e%2e`、`....//`、软链接）。
+    这和 `/media/thumb/{name}` 是同一条判据，别用两套。
+    """
+    from fastapi.responses import FileResponse
+
+    rt = _rt(request)
+    base = (rt.config.archive_dir / "shots").resolve()
+    target = (base / name).resolve()
+    if not str(target).startswith(str(base)) or not target.is_file():
+        raise HTTPException(404, "没有这张截图")
+    return FileResponse(target, media_type="image/png")
+
+
+class ModelReloadRequest(BaseModel):
+    """E15。`preferGpu` 不传就只重建会话、不改偏好。"""
+
+    preferGpu: bool | None = None
+
+
+@router.get("/models/status")
+async def models_status(request: Request) -> dict[str, Any]:
+    """E15 —— 各模型装没装、加载没加载、跑在哪个执行器上。"""
+    return _rt(request).model_status()
+
+
+@router.post("/models/reload")
+async def models_reload(req: ModelReloadRequest, request: Request) -> dict[str, Any]:
+    """
+    E15 —— **不重启引擎**换执行器 / 重建推理会话。
+
+    🔴 **不能用它换「另一个」文本向量模型。** 库里的向量都是当前模型算的，
+    换模型之后新查询的向量和旧向量不在同一个空间里 ——
+    **搜索不会报错，只会开始返回不相干的东西**。要换必须整库重建索引。
+    所以这条接口只重建会话、只换执行器（CPU ↔ 核显），不碰模型身份。
+    """
+    return await asyncio.to_thread(_rt(request).reload_models, prefer_gpu=req.preferGpu)
+
+
+class PreviewRequest(BaseModel):
+    path: str
+
+
+@router.post("/preview/media")
+async def preview_media_route(req: PreviewRequest) -> dict[str, Any]:
+    """
+    A2 —— 视频/音频「先看后搜」秒开预览：等距缩略带 + 语音波形。
+
+    🔴 **这条不入库、不写任何记录。** 它回答的是"这里面是什么"，
+    不是"把它分析进库"。混起来会让一次随手预览在库里留下半成品。
+
+    🔴 在**工作线程**里跑：ffmpeg 抽帧和解音轨都是阻塞调用，
+    直接在事件循环里跑会把 `/health` 和 WebSocket 一起卡住 ——
+    症状是"预览一个视频，整个界面显示引擎掉线了"。
+    """
+    from ..analyze.preview import preview_media
+
+    p = Path(req.path)
+    if not p.exists():
+        raise HTTPException(400, f"文件不在：{req.path}")
+    return await asyncio.to_thread(preview_media, p)
+
+
+@router.post("/ingest/{job_id}/{action}")
+async def ingest_job_control(job_id: str, action: str, request: Request) -> dict[str, Any]:
+    """暂停 / 继续 / 取消。重试不走这里 —— 重试就是拿失败清单再 POST 一次 `/ingest`。"""
+    if action not in ("pause", "resume", "cancel"):
+        raise HTTPException(400, f"只支持 pause/resume/cancel，收到的是 {action}")
+    return _rt(request).control_job(job_id, action)
 
 
 #: 单次上传上限（512MB，够放视频）——没有这道闸，一个恶意/失控的客户端
@@ -349,6 +755,145 @@ async def media_thumb(name: str, request: Request) -> Any:
     )
 
 
+@router.get("/duplicates/sweep")
+async def duplicates_sweep(request: Request, limit: int = 200) -> dict[str, Any]:
+    """
+    E9 —— **全库**近重复扫描，按组返回。
+
+    原来只有 `/items/{id}/duplicates`（"和这一张像的还有哪些"）。
+    那条回答不了用户真正的问题：**"我库里到底有多少重复，能不能一次清掉"**。
+    要靠它清库，得先知道该点开哪一张 —— 而那正是他不知道的事。
+
+    🔴 **只扫、不删。** 删除是另一条显式接口，而且一次只删被点名的那几个 id。
+    "扫描顺便清理"是这类功能最容易出事的地方：判据错一点就静默删掉真东西，
+    而删掉的东西**没有回收站**（`delete_item` 是直接删索引和记录的）。
+
+    🔴 **每组里"留哪一张"由用户定，这里不替他选。** 常见做法是留最大/最早的那张，
+    但真实情况是他可能要留有 EXIF 的那张、或者路径在正式目录里的那张。
+    这里只按"分辨率×字节数"给一个**建议保留**标记，最终点哪个是他的事。
+    """
+    import json as _json
+
+    rt = _rt(request)
+    conn = rt.db.connect()
+    rows = conn.execute(
+        "SELECT id, title, locator, size_bytes, created_at, meta_json FROM items "
+        "WHERE modality = 'image' AND meta_json IS NOT NULL"
+    ).fetchall()
+
+    # phash → 成员。**只按完整 phash 精确分桶**，不在这里做汉明距离两两比对：
+    # 一万张图两两比是五千万次，会把这个请求变成一次几十秒的阻塞
+    by_hash: dict[str, list[dict[str, Any]]] = {}
+    scanned = 0
+    for r in rows:
+        try:
+            meta = _json.loads(str(r["meta_json"] or "{}"))
+        except _json.JSONDecodeError:
+            continue
+        ph = meta.get("phash")
+        if not ph or len(str(ph)) < 16:
+            continue
+        scanned += 1
+        w, h = int(meta.get("width") or 0), int(meta.get("height") or 0)
+        by_hash.setdefault(str(ph), []).append({
+            "id": str(r["id"]),
+            "title": str(r["title"] or ""),
+            "locator": str(r["locator"] or ""),
+            "sizeBytes": int(r["size_bytes"] or 0),
+            "createdAt": str(r["created_at"] or ""),
+            "width": w,
+            "height": h,
+            "score": w * h * max(1, int(r["size_bytes"] or 0)),
+        })
+
+    groups: list[dict[str, Any]] = []
+    for ph, members in by_hash.items():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda m: -int(m["score"]))
+        for i, m in enumerate(members):
+            m["suggestKeep"] = i == 0
+            m.pop("score", None)
+        groups.append({
+            "phash": ph,
+            "count": len(members),
+            "wastedBytes": sum(int(m["sizeBytes"]) for m in members[1:]),
+            "members": members,
+        })
+    groups.sort(key=lambda g: -int(g["wastedBytes"]))
+    shown = groups[:limit]
+
+    return {
+        "groups": shown,
+        "groupCount": len(groups),
+        "truncated": len(groups) > limit,
+        "scannedImages": scanned,
+        "wastedBytes": sum(int(g["wastedBytes"]) for g in groups),
+        "note": "只找**指纹完全相同**的（同一张图的多份拷贝）。"
+        "改过尺寸、压过一道、加过水印的算不同指纹，这里找不出来 —— "
+        "那种要用「和这张像的」逐张看。**建议保留**只按分辨率×体积排，最终留哪张你自己定",
+    }
+
+
+class DeleteItemsRequest(BaseModel):
+    ids: list[str]
+    #: 二次确认。**没传 true 就只干跑**，返回将要删什么但一个都不动
+    confirm: bool = False
+
+
+@router.post("/items/delete")
+async def delete_items(req: DeleteItemsRequest, request: Request) -> dict[str, Any]:
+    """
+    E9 清理 —— 按 id 删内容。
+
+    🔴 **`confirm` 默认 false = 干跑。** 删除**没有回收站**
+    （`delete_item` 直接清索引和记录，撤不回来），所以默认行为必须是
+    "告诉你将要删什么"而不是"删给你看"。界面拿干跑结果做二次确认。
+
+    🔴 **只删库里的记录，不碰硬盘上的原文件。** 这是刻意的：
+    用户点的是"从我的检索库里去掉"，不是"把我的照片删了"。
+    两者混为一谈的后果不可逆，而且他八成到很久以后才发现。
+    """
+    rt = _rt(request)
+    ids = [i for i in dict.fromkeys(req.ids) if i]
+    if not ids:
+        raise HTTPException(400, "没给要删的 id")
+    if len(ids) > 500:
+        raise HTTPException(400, f"一次最多删 500 条，收到 {len(ids)} 条")
+
+    rows = rt.repo.get_items(ids)
+    found = [i for i in ids if i in rows]
+    missing = [i for i in ids if i not in rows]
+
+    if not req.confirm:
+        return {
+            "dryRun": True,
+            "wouldDelete": len(found),
+            "missing": missing,
+            "titles": [str(rows[i]["title"] or rows[i]["locator"]) for i in found[:20]],
+            "note": "这是干跑，**一条都没删**。确认无误后带 confirm:true 再发一次。"
+            "删的只是库里的记录，硬盘上的原文件不动",
+        }
+
+    deleted, failed = 0, []
+    for i in found:
+        try:
+            rt.repo.delete_item(i)
+            deleted += 1
+        except Exception as e:  # noqa: BLE001
+            # 逐条报因：一条删不掉不该让另外 99 条也白删一遍
+            failed.append({"id": i, "error": f"{type(e).__name__}: {e}"})
+
+    return {
+        "dryRun": False,
+        "deleted": deleted,
+        "missing": missing,
+        "failed": failed,
+        "note": f"删掉了 {deleted} 条库记录。**硬盘上的原文件没动** —— "
+        "要连文件一起删，请自己去文件管理器里删",
+    }
+
+
 @router.get("/items/{item_id}/duplicates")
 async def item_duplicates(item_id: str, request: Request) -> list[dict[str, Any]]:
     """E9 近重复：找出和这张图几乎一样的其它图。"""
@@ -453,6 +998,14 @@ class WebSearchRequest(BaseModel):
     #: 快搜默认**关**——它要多花一个维基往返，而快搜要的就是快；
     #: 深挖默认开（那边本来就要等几秒）
     expand: bool = False
+    #: B5 意图分流：判「找定义/教程/论文/新闻/代码/产品」自动换阵容。
+    #: 默认**开** —— 它是纯本地正则，1ms 内出结果，不花任何网络代价。
+    #: 🔴 用户显式传了 `engines` 时它一律不生效（见 `intent.apply_intent`）
+    intent: bool = True
+    #: D1/D7 内容农场指纹 + 利益相关标注。纯本地判据，默认开
+    farm: bool = True
+    #: B7 站点独立性统计。纯本地，默认开
+    independence: bool = True
 
 
 class ResearchRequest(BaseModel):
@@ -533,14 +1086,34 @@ async def web_search(req: WebSearchRequest, request: Request) -> dict[str, Any]:
 
     rt = _rt(request)
     web = _web(request)
-    q, preset = apply_preset(req.query, req.preset)
+
+    # B5 意图分流放在 apply_preset **之前** —— 它可能自己带一个 preset
+    # （比如判成「找代码」就锁 github），而用户显式传的 preset 优先级更高
+    eff_engines, eff_limit = req.engines, req.limit
+    eff_preset, eff_range = req.preset, req.timeRange
+    intent_out: dict[str, Any] | None = None
+    if req.intent:
+        from ..websearch.intent import apply_intent, detect
+
+        it = detect(req.query)
+        eff_engines, eff_limit, eff_preset, eff_range = apply_intent(
+            it, engines=req.engines, limit=req.limit,
+            preset=req.preset, time_range=req.timeRange,
+        )
+        intent_out = it.to_dict()
+
+    q, preset = apply_preset(req.query, eff_preset)
 
     res = await web.search(
-        q, engines=req.engines, limit=req.limit, lang=req.lang,
-        region=req.region, time_range=req.timeRange, use_cache=req.useCache,
+        q, engines=eff_engines, limit=eff_limit, lang=req.lang,
+        region=req.region, time_range=eff_range, use_cache=req.useCache,
     )
     out = res.to_dict()
     out["query"] = req.query
+    if intent_out and intent_out.get("kind") != "general":
+        # 换过阵容就必须说出来，理由和 preset 那条一样：
+        # 用户搜一句话却看到一屏 arXiv，不告诉他是谁干的，他只会以为搜索坏了
+        out["intent"] = intent_out
     if preset:
         # 改写过查询就必须说出来。用户搜「向量数据库」却看到一屏 arxiv.org，
         # 不告诉他是预设干的，他只会以为搜索坏了
@@ -584,6 +1157,22 @@ async def web_search(req: WebSearchRequest, request: Request) -> dict[str, Any]:
         # 拿不到就等于这些结果被静默删除了（R11 的全部要点）
         out["excluded"] = dropped
         out["trustSummary"] = summarize_trust(shown, dropped)
+
+    # D1/D7、B7 都是**纯本地判据**（不发请求、微秒级），所以直接跟着
+    # 每次搜索一起算完返回，不另开一次往返。真正要花时间的那几条
+    # （D2 事件时间 / D3 文风 / D5 数字）要正文，留在各自的接口里
+    if req.farm:
+        from ..websearch.farm import annotate as _farm_annotate
+        from ..websearch.farm import summarize as _farm_summary
+
+        flat = [(c.get("best") or c) for c in out.get("results") or []]
+        _farm_annotate(flat)
+        out["farmSummary"] = _farm_summary(flat)
+
+    if req.independence:
+        from ..websearch.meta import site_independence
+
+        out["independence"] = site_independence(out.get("results") or [])
     return out
 
 
@@ -786,6 +1375,74 @@ class ReverseImageRequest(BaseModel):
     #: 或者直接给本机文件路径（桌面端拖一张图进来，不一定已经入库）
     path: str | None = None
     limit: int = Field(default=20, ge=1, le=50)
+    #: B2 多家并发。默认只跑 bing —— 另外两家要借桌面端浏览器渲染结果页，
+    #: 而且更容易被验证码挡，不该在用户没要求时默默去撞
+    providers: list[str] | None = None
+
+
+@router.post("/web/reverse-image/multi")
+async def reverse_image_multi(req: ReverseImageRequest, request: Request) -> dict[str, Any]:
+    """
+    B2 —— 三家反查**同时跑**：Bing / Yandex / Google Lens。
+
+    为什么值得多跑两家：三家的索引重合度出乎意料地低。Bing 擅长
+    英文站和商品图，Yandex 对人像和小语种明显更好，Lens 偶尔能命中
+    另外两家都没有的社交媒体内容。一家没结果**不等于**网上没有。
+
+    🔴 **一家失败绝不带倒另外两家**，每家单独回自己的 `error`。
+    Yandex 和 Lens 都很容易被人机验证挡住，而那时候 Bing 往往是好的。
+
+    🔴 **「解析不出条目」和「网上没有这张图」是两件事**，各家的 `error`
+    文案里都写死了这句话。把它折叠掉，用户就会拿一次失败的查询
+    当成"这张图是原创的"证据 —— 那是这个功能能造成的最大误导。
+    """
+    rt = _rt(request)
+    if not rt.config.allow_network:
+        raise HTTPException(403, "联网功能被隐私设置关闭了")
+    if not req.itemId and not req.path:
+        raise HTTPException(400, "itemId 和 path 至少给一个")
+
+    target = Path(req.path) if req.path else None
+    if req.itemId and target is None:
+        row = rt.repo.get_item(req.itemId)
+        if row is None:
+            raise HTTPException(404, "没有这条内容")
+        target = Path(str(row["locator"]))
+    assert target is not None
+    if not target.exists():
+        raise HTTPException(404, f"文件不存在：{target}")
+
+    from ..websearch.reverse_image import BingReverseImage
+    from ..websearch.reverse_image_alt import LensReverseImage, YandexReverseImage
+
+    broker = getattr(rt, "render_broker", None)
+    catalog: dict[str, Any] = {
+        "bing": BingReverseImage(),
+        "yandex": YandexReverseImage(broker),
+        "lens": LensReverseImage(broker),
+    }
+    wanted = [p for p in (req.providers or ["bing"]) if p in catalog]
+    if not wanted:
+        raise HTTPException(400, f"不认识的反查来源。可选：{', '.join(catalog)}")
+
+    results = await asyncio.gather(
+        *(catalog[p].search_file(target, limit=req.limit) for p in wanted),
+        return_exceptions=True,
+    )
+    out: dict[str, Any] = {}
+    for name, r in zip(wanted, results, strict=True):
+        if isinstance(r, BaseException):
+            out[name] = {"error": f"{type(r).__name__}: {r}"}
+        else:
+            out[name] = r.to_dict()
+
+    total = sum(len(v.get("pagesIncluding") or []) for v in out.values())
+    return {
+        "providers": out,
+        "totalPages": total,
+        "note": "三家索引重合度很低，一家没结果不代表网上没有这张图。"
+        "Yandex 和 Google Lens 容易被人机验证挡下 —— 那是「这次没查成」，不是「查过了没有」",
+    }
 
 
 @router.post("/web/reverse-image")
@@ -813,6 +1470,132 @@ async def reverse_image_search(req: ReverseImageRequest, request: Request) -> di
 
     result = await BingReverseImage().search_file(target, limit=req.limit)
     return result.to_dict()
+
+
+class ImageLanesRequest(BaseModel):
+    """A3 一张图四路并发。itemId 和 path 二选一。"""
+
+    itemId: str | None = None
+    path: str | None = None
+    limit: int = Field(default=12, ge=1, le=40)
+    #: 关掉就只跑本地三路。默认跟随隐私设置，不在这里硬开
+    web: bool = True
+
+
+@router.post("/image/lanes")
+async def image_lanes(req: ImageLanesRequest, request: Request) -> dict[str, Any]:
+    """
+    A3 —— 一张图，**四路同时跑，一屏出完**。
+
+    四路各自回答一个不同的问题：
+      ① 像不像我库里已有的东西？（以图搜图 / 搜镜头）
+      ② 图里写了什么字？（OCR → 再拿这些字去搜一遍）
+      ③ 这张图网上还出现在哪？（W5 反查，找出处和更高清版）
+      ④ 它像不像被改过？（D4 四条判据初筛）
+
+    🔴 **一路失败绝不能带倒另外三路。** 反查那一路最容易挂
+    （要联网、可能被限流、可能被隐私开关关掉），而它挂掉时
+    OCR 和本地相似图仍然完全有效。所以每一路都单独 try，
+    失败的那一路回 `{"error": ...}` 而不是让整个请求 500 ——
+    否则表现是"网络一抖，连本地以图搜图都用不了了"。
+
+    🔴 **串行做这四件事要十几秒**（反查一次就好几秒），并发之后
+    总耗时 = 最慢那一路。这是 A3 唯一的技术要点，别把它做成顺序调用。
+    """
+    rt = _rt(request)
+    if not req.itemId and not req.path:
+        raise HTTPException(400, "itemId 和 path 至少给一个")
+
+    target = Path(req.path) if req.path else None
+    if req.itemId and target is None:
+        row = rt.repo.get_item(req.itemId)
+        if row is None:
+            raise HTTPException(404, "没有这条内容")
+        target = Path(str(row["locator"]))
+    assert target is not None
+    if not target.exists():
+        raise HTTPException(404, f"文件不存在：{target}")
+
+    want_web = req.web and rt.config.allow_network
+
+    async def lane_similar() -> dict[str, Any]:
+        if rt.search is None:
+            return {"error": "检索器还没就绪"}
+        # 🔴 `search_by_image` 收的是**向量**不是路径。先过一道
+        # `image_vector_for`；拿不到向量（图像模型没装）时给出
+        # 能照着做的话，而不是一句"失败了"
+        vec = await asyncio.to_thread(rt.image_vector_for, req.itemId, str(target))
+        if vec is None:
+            return {
+                "error": "拿不到这张图的向量。多半是图像模型还没装 —— "
+                "去「分析中心 → 能力与依赖」装 embed-image"
+            }
+        return await asyncio.to_thread(
+            rt.search.search_by_image,
+            vec,
+            limit=req.limit,
+            include_scenes=True,
+            exclude_item=req.itemId or "",
+        )
+
+    async def lane_ocr() -> dict[str, Any]:
+        from ..analyze.image import OcrEngine, analyze_image
+
+        # 只要 OCR，不要向量 —— 向量这一路已经由 lane_similar 走过了，
+        # 再算一遍纯属重复劳动（而且是这四路里最慢的一步）。
+        # `OcrEngine()` 是懒加载的：没装 OCR 依赖时它自己降级返回空行，
+        # 不抛异常，所以这里不需要额外的 try
+        engine = OcrEngine()
+        # 🔴 「没装 OCR」和「图里没字」结果长得一模一样（都是空字符串），
+        # 但对用户是两件完全不同的事：前者要去装东西，后者什么也不用做。
+        # 不分开说的话，一个没装 OCR 的人会一直以为自己的图里没字
+        if not engine.available:
+            return {"text": "", "charCount": 0, "note": "OCR 引擎没装，这一路没跑（不是图里没字）"}
+        res = await asyncio.to_thread(analyze_image, target, ocr=engine, embedder=None)
+        text = (getattr(res, "ocr_text", "") or "").strip()
+        out: dict[str, Any] = {"text": text, "charCount": len(text)}
+        if not text:
+            out["note"] = "OCR 跑完了，但一个字都没认出来 —— 图里可能本来就没字，也可能字太小或太花"
+            return out
+        if rt.search is not None:
+            hit = await asyncio.to_thread(
+                rt.search.search, text[:200], limit=req.limit, stage="keyword"
+            )
+            out["hits"] = hit.get("hits", [])
+        return out
+
+    async def lane_reverse() -> dict[str, Any]:
+        if not want_web:
+            return {"note": "联网反查没跑：隐私设置里关掉了联网，或这次请求要求只跑本地"}
+        from ..websearch.reverse_image import BingReverseImage
+
+        r = await BingReverseImage().search_file(target, limit=req.limit)
+        return r.to_dict()
+
+    async def lane_tamper() -> dict[str, Any]:
+        from ..analyze.tamper import screen
+
+        rep = await asyncio.to_thread(screen, target)
+        return rep.to_dict() if hasattr(rep, "to_dict") else dict(rep.__dict__)
+
+    names = ["similar", "ocr", "reverse", "tamper"]
+    results = await asyncio.gather(
+        lane_similar(), lane_ocr(), lane_reverse(), lane_tamper(), return_exceptions=True
+    )
+    lanes: dict[str, Any] = {}
+    for name, r in zip(names, results, strict=True):
+        if isinstance(r, BaseException):
+            # 🔴 把真实异常文本给出去。写成"分析失败"这类模板话，
+            # 用户和我都没法知道到底是没装 OCR、还是被限流、还是文件读不了
+            lanes[name] = {"error": f"{type(r).__name__}: {r}"}
+        else:
+            lanes[name] = r
+
+    return {
+        "path": str(target),
+        "lanes": lanes,
+        "note": "四路是并发跑的，总耗时等于最慢那一路。某一路显示错误不影响其他三路的结果",
+    }
 
 
 class ReverseVideoRequest(BaseModel):
@@ -1137,9 +1920,15 @@ class ExportRequest(BaseModel):
     payload: dict[str, Any] | None = None
     runId: str | None = None
     projectId: str | None = None
-    format: str = Field(default="markdown", description="markdown / html / json / docx")
+    format: str = Field(
+        default="markdown",
+        description="markdown / html / json / docx / single-html（E6 离线单文件）",
+    )
     title: str | None = None
     includeExcluded: bool = False
+    #: E1 简报模板：points 要点式 / timeline 时间线 / compare 对比表 / qa 问答。
+    #: **换模板不改任何一句摘录**，只换组织方式
+    template: str = Field(default="points", description="points / timeline / compare / qa")
 
 
 @router.post("/research/export")
@@ -1172,7 +1961,8 @@ async def export_research_route(req: ExportRequest, request: Request) -> Any:
     title = req.title or str(payload.get("query") or "研究简报")
     try:
         content, ext, mime = export_research(
-            payload, fmt=req.format, title=title, include_excluded=req.includeExcluded
+            payload, fmt=req.format, title=title,
+            include_excluded=req.includeExcluded, template=req.template,
         )
     except RuntimeError as e:
         # 缺 python-docx 这类**可操作**的失败要把原话给用户，
@@ -1289,4 +2079,639 @@ async def unified_search(req: UnifiedSearchRequest, request: Request) -> dict[st
             + (f"，其中 {len(conflicts)} 处你自己的资料和网上说法对不上"
                if conflicts else "，没有发现明显冲突")
         ),
+    }
+
+
+# ════════════════════════════════════════════════════════════════
+# 第四轮增强：B / C / D / E / A 五组的接口
+# ════════════════════════════════════════════════════════════════
+# 这一段里所有接口共享两条约定：
+#   ① **需要正文才准的判据（D1 排版 / D3 文风 / D5 数字 / D2 事件时间）
+#      都接受调用方传进来的 `texts: {url: 正文}`**，自己不去抓 ——
+#      抓正文是 `/web/read` 的事，混在一起会让一次「判个真假」的调用
+#      悄悄发出十几个网络请求，用户完全预料不到。
+#   ② 拿不到正文时一律降级并**在返回里说清楚降级了**，不静默跳过。
+# ════════════════════════════════════════════════════════════════
+
+
+# ── B1 首字节竞速（SSE 流式）────────────────────────────────
+@router.post("/web/search/stream")
+async def web_search_stream(req: WebSearchRequest, request: Request) -> Any:
+    """
+    B1 —— 哪家引擎先回哪家先画。返回 `text/event-stream`。
+
+    每个事件是一行 `data: {...}\\n\\n`，`kind` 取值 engines / partial / final。
+
+    🔴 **用 SSE 不用 WebSocket**：`/events` 那条 WebSocket 是**全局广播**，
+    多个窗口开着时每个都会收到别人的搜索结果。搜索是一次请求对应一条流，
+    SSE 天然就是这个形状，而且断线重连的语义比 WebSocket 简单得多。
+    """
+    from fastapi.responses import StreamingResponse
+
+    from ..websearch.presets import apply_preset
+
+    web = _web(request)
+    q, preset = apply_preset(req.query, req.preset)
+
+    async def gen() -> Any:
+        import json as _json
+        try:
+            async for ev in web.search_stream(
+                q, engines=req.engines, limit=req.limit, lang=req.lang,
+                region=req.region, time_range=req.timeRange, use_cache=req.useCache,
+            ):
+                if preset and ev.get("kind") == "engines":
+                    ev["appliedPreset"] = preset.to_dict()
+                    ev["effectiveQuery"] = q
+                yield f"data: {_json.dumps(ev, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            # 流里出错必须**发一个事件出去**再结束。直接断流的话前端只会看到
+            # 连接关闭，分不清是搜完了还是崩了 —— 那正是静默失败的形状
+            log.exception("流式搜索出错")
+            err = {"kind": "error", "error": f"{type(exc).__name__}: {exc}"}
+            yield f"data: {_json.dumps(err, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",      # 防止反代把流缓冲成一次性响应
+    })
+
+
+# ── B4 缓存 ────────────────────────────────────────────────
+class PrewarmRequest(BaseModel):
+    queries: list[str] = Field(default_factory=list, max_length=8)
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+@router.get("/web/cache")
+async def web_cache_stats(request: Request) -> dict[str, Any]:
+    return _web(request).cache_stats()
+
+
+@router.post("/web/prewarm")
+async def web_prewarm(req: PrewarmRequest, request: Request) -> dict[str, Any]:
+    rt = _rt(request)
+    if not getattr(rt.config, "allow_network", True):
+        return {"warmed": 0, "errors": [], "note": "联网已关闭，没有预热"}
+    return await _web(request).prewarm(req.queries, limit=req.limit)
+
+
+# ── B5 意图分流 ────────────────────────────────────────────
+class IntentRequest(BaseModel):
+    query: str
+
+
+@router.post("/web/intent")
+async def web_intent(req: IntentRequest) -> dict[str, Any]:
+    """判一句查询的意图，并给出它会怎么改阵容。**纯本地，不发请求。**"""
+    from ..websearch.intent import detect
+
+    return detect(req.query).to_dict()
+
+
+@router.get("/web/intent/describe")
+async def web_intent_describe() -> dict[str, Any]:
+    from ..websearch.intent import describe
+
+    return {"intents": describe()}
+
+
+# ── B7 站点独立性 ──────────────────────────────────────────
+class ClustersRequest(BaseModel):
+    """好几个接口都只要一批已经搜到的结果，共用这一个模型。"""
+
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    texts: dict[str, str] = Field(default_factory=dict)
+
+
+@router.post("/web/independence")
+async def web_independence(req: ClustersRequest) -> dict[str, Any]:
+    from ..websearch.meta import site_independence
+
+    return site_independence(req.results)
+
+
+# ── D1 / D7 内容农场与利益相关 ──────────────────────────────
+@router.post("/web/farm")
+async def web_farm(req: ClustersRequest) -> dict[str, Any]:
+    from ..websearch.farm import annotate, summarize
+
+    flat = [
+        {**(c.get("best") or c), "published": (c.get("best") or c).get("published")}
+        for c in req.results
+    ]
+    annotate(flat)
+    return {"items": flat, "summary": summarize(flat)}
+
+
+# ── D2 时间线冲突 ──────────────────────────────────────────
+@router.post("/web/timeline-conflicts")
+async def web_timeline_conflicts(req: ClustersRequest) -> dict[str, Any]:
+    from ..websearch.timeline import detect_conflicts
+
+    flat = [dict(c.get("best") or c) for c in req.results]
+    return detect_conflicts(flat, req.texts)
+
+
+# ── D3 AI 文风标注 ─────────────────────────────────────────
+@router.post("/web/ai-style")
+async def web_ai_style(req: ClustersRequest) -> dict[str, Any]:
+    from ..websearch.aidetect import annotate
+
+    flat = [dict(c.get("best") or c) for c in req.results]
+    annotate(flat, req.texts)
+    scored = [e for e in flat if e.get("aiStyle")]
+    return {
+        "items": flat,
+        "analyzed": len(scored),
+        "skipped": len(flat) - len(scored),
+        "note": "只对真的抓到正文的条目跑。摘要太短，在上面算这些统计量全是噪声",
+    }
+
+
+# ── D5 数字回原文校对 ──────────────────────────────────────
+class NumberCheckRequest(BaseModel):
+    briefing: dict[str, Any] = Field(default_factory=dict)
+    texts: dict[str, str] = Field(default_factory=dict)
+    maxNumbers: int = Field(default=30, ge=1, le=120)
+
+
+@router.post("/web/numbers")
+async def web_numbers(req: NumberCheckRequest) -> dict[str, Any]:
+    from ..websearch.numbers import verify_briefing
+
+    return verify_briefing(req.briefing, req.texts, max_numbers=req.maxNumbers)
+
+
+# ── D6 争议度 ──────────────────────────────────────────────
+class ControversyRequest(BaseModel):
+    verification: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/web/controversy")
+async def web_controversy(req: ControversyRequest) -> dict[str, Any]:
+    from ..websearch.timeline import annotate_controversy
+
+    return annotate_controversy(dict(req.verification))
+
+
+# ── B8 把搜到的网页存进本地库 ───────────────────────────────
+class IngestResultsRequest(BaseModel):
+    urls: list[str] = Field(default_factory=list, max_length=30)
+    tags: list[str] | None = None
+
+
+@router.post("/web/ingest-results")
+async def web_ingest_results(req: IngestResultsRequest, request: Request) -> dict[str, Any]:
+    """
+    B8 —— 把这次搜到的网页抓正文入库，以后**离线也能搜到**。
+
+    🔴 **上限 30 条且逐条报结果**。一键把两百条网页全存进来听起来很爽，
+    实际是往库里灌一堆再也不会看的东西，还把语义检索的信噪比拉低。
+    """
+    rt = _rt(request)
+    done: list[dict[str, Any]] = []
+    for url in req.urls[:30]:
+        try:
+            item_id = await asyncio.to_thread(
+                rt.pipeline.ingest_url, url, tags=(req.tags or ["网页存档"])
+            )
+            done.append({"url": url, "itemId": item_id, "status": "ok"})
+        except Exception as exc:  # noqa: BLE001
+            done.append({"url": url, "status": "failed", "error": str(exc)})
+    ok = sum(1 for d in done if d["status"] == "ok")
+    return {
+        "items": done, "ok": ok, "failed": len(done) - ok,
+        "note": f"入库 {ok} 条，失败 {len(done) - ok} 条。失败的都写了原因，没有静默跳过",
+    }
+
+
+# ── C8 结果聚类 ────────────────────────────────────────────
+class ClusterRequest(BaseModel):
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    maxClusters: int = Field(default=8, ge=2, le=20)
+
+
+@router.post("/scholar/cluster")
+async def scholar_cluster(req: ClusterRequest) -> dict[str, Any]:
+    from ..websearch.cluster import cluster_entries
+
+    return cluster_entries(req.entries, max_clusters=req.maxClusters)
+
+
+# ── C3 引用网络 ────────────────────────────────────────────
+class CitationGraphRequest(BaseModel):
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    direction: str = Field(default="both", description="back / forward / both")
+    maxSeeds: int = Field(default=20, ge=1, le=40)
+    topN: int = Field(default=15, ge=3, le=40)
+
+
+@router.post("/scholar/citations")
+async def scholar_citations(req: CitationGraphRequest, request: Request) -> dict[str, Any]:
+    from ..websearch.citations import build_graph
+
+    if not getattr(_rt(request).config, "allow_network", True):
+        raise HTTPException(status_code=409, detail="联网已关闭，引用图谱要访问 OpenAlex")
+    return await build_graph(
+        req.entries, direction=req.direction,
+        max_seeds=req.maxSeeds, top_n=req.topN,
+    )
+
+
+# ── C4 综述 ｜ C5 对齐抽表 ─────────────────────────────────
+class ReviewRequest(BaseModel):
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    topic: str = ""
+    maxSections: int = Field(default=6, ge=2, le=12)
+
+
+@router.post("/scholar/review")
+async def scholar_review(req: ReviewRequest) -> dict[str, Any]:
+    from ..websearch.review import build_review
+
+    return build_review(req.entries, topic=req.topic, max_sections=req.maxSections)
+
+
+class AlignTableRequest(BaseModel):
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: list[str] | None = None
+    extra: dict[str, str] | None = None
+    format: str = Field(default="json", description="json / csv")
+
+
+@router.post("/scholar/table")
+async def scholar_table(req: AlignTableRequest) -> Any:
+    from fastapi.responses import Response
+
+    from ..websearch.review import align_table, table_to_csv
+
+    table = align_table(req.entries, metrics=req.metrics, extra=req.extra)
+    if req.format == "csv":
+        # BOM 是给 Excel 的：不带的话中文列名在 Excel 里全是乱码，
+        # 而用户拿到 csv 十有八九就是要用 Excel 打开
+        body = "﻿" + table_to_csv(table)
+        return Response(
+            content=body.encode("utf-8"),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="synorive-table.csv"'},
+        )
+    return table
+
+
+# ── C9 引用格式导出 ────────────────────────────────────────
+class CitationExportRequest(BaseModel):
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    format: str = Field(default="bibtex", description="bibtex / gbt7714")
+
+
+@router.post("/scholar/citations/export")
+async def scholar_citation_export(req: CitationExportRequest) -> Any:
+    from fastapi.responses import Response
+
+    from ..websearch.scholar import to_bibtex, to_gbt7714
+
+    if req.format == "gbt7714":
+        body, name, mime = to_gbt7714(req.entries), "references.txt", "text/plain"
+    else:
+        body, name, mime = to_bibtex(req.entries), "references.bib", "application/x-bibtex"
+    return Response(
+        content=("﻿" + body).encode("utf-8"),
+        media_type=f"{mime}; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+# ── C6 预印本合并 ──────────────────────────────────────────
+@router.post("/scholar/merge-preprints")
+async def scholar_merge_preprints(req: ClusterRequest) -> dict[str, Any]:
+    from ..websearch.scholar import merge_preprints
+
+    before = len(req.entries)
+    out = merge_preprints(list(req.entries))
+    return {
+        "entries": out, "before": before, "after": len(out),
+        "merged": before - len(out),
+        "note": f"{before} 篇合并掉 {before - len(out)} 篇重复的预印本。"
+                "**只有标题归一化后完全相同才合并** —— 用相似度阈值会误合并，"
+                "而误合并用户根本看不出来",
+    }
+
+
+# ── C2 批量 PDF ────────────────────────────────────────────
+class HarvestRequest(BaseModel):
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    apply: bool = Field(default=False, description="false = 干跑，只告诉你打算下什么")
+    ingest: bool = True
+    tags: list[str] | None = None
+    limit: int = Field(default=50, ge=1, le=50)
+
+
+@router.post("/scholar/harvest")
+async def scholar_harvest(req: HarvestRequest, request: Request) -> dict[str, Any]:
+    """
+    C2 —— 批量下载开放获取 PDF 并入库。
+
+    **默认干跑**（`apply=false`）：先告诉你打算下几篇、大概多大，
+    点头了才真下。和 `setup-searxng.mjs` 同一个规矩。
+    """
+    from ..websearch.harvest import harvest, plan
+
+    rt = _rt(request)
+    if not req.apply:
+        return {**plan(req.entries, limit=req.limit), "dryRun": True}
+    if not getattr(rt.config, "allow_network", True):
+        raise HTTPException(status_code=409, detail="联网已关闭，没法下载 PDF")
+
+    out_dir = Path(rt.config.data_dir) / "papers"
+
+    def _progress(done: int, total: int, item: dict[str, Any]) -> None:
+        rt.events.publish("harvest.progress", {
+            "done": done, "total": total, "item": item,
+        })
+
+    return await harvest(
+        req.entries, out_dir=out_dir,
+        pipeline=(rt.pipeline if req.ingest else None),
+        tags=req.tags, limit=req.limit, on_progress=_progress,
+    )
+
+
+# ── C7 主题订阅 ────────────────────────────────────────────
+def _watches(request: Request) -> Any:
+    """
+    订阅仓库。**挂在 runtime 上缓存一个实例** —— 它持有内存里的
+    `seen` 集合，每次现建会把去重状态丢掉，结果是每次跑订阅
+    所有结果都被当成"新的"，这个功能就彻底失效了（而且不报错）。
+    """
+    rt = _rt(request)
+    inst = getattr(rt, "_watch_store", None)
+    if inst is None:
+        from ..websearch.harvest import WatchStore
+
+        inst = WatchStore(Path(rt.config.data_dir) / "watches.json")
+        rt._watch_store = inst           # noqa: SLF001
+    return inst
+
+
+class WatchCreateRequest(BaseModel):
+    query: str
+    label: str = ""
+    engines: list[str] = Field(default_factory=list)
+    preset: str | None = None
+    intervalHours: int = Field(default=24, ge=1, le=720)
+    autoIngest: bool = False
+
+
+@router.get("/watches")
+async def list_watches(request: Request) -> dict[str, Any]:
+    ws = _watches(request)
+    return {"watches": [w.to_dict() for w in ws.watches.values()],
+            "due": [w.id for w in ws.due()]}
+
+
+@router.post("/watches")
+async def create_watch(req: WatchCreateRequest, request: Request) -> dict[str, Any]:
+    ws = _watches(request)
+    w = ws.add(
+        query=req.query, label=req.label, engines=req.engines,
+        preset=req.preset, interval_hours=req.intervalHours,
+        auto_ingest=req.autoIngest,
+    )
+    return w.to_dict()
+
+
+@router.delete("/watches/{wid}")
+async def delete_watch(wid: str, request: Request) -> dict[str, Any]:
+    return {"deleted": _watches(request).remove(wid)}
+
+
+@router.post("/watches/{wid}/run")
+async def run_watch(wid: str, request: Request) -> dict[str, Any]:
+    rt = _rt(request)
+    ws = _watches(request)
+    w = ws.watches.get(wid)
+    if w is None:
+        raise HTTPException(status_code=404, detail="没有这条订阅")
+    if not getattr(rt.config, "allow_network", True):
+        raise HTTPException(status_code=409, detail="联网已关闭")
+    return await ws.run_one(w, _web(request), pipeline=rt.pipeline)
+
+
+@router.post("/watches/run-due")
+async def run_due_watches(request: Request) -> dict[str, Any]:
+    """把所有到点的订阅跑一遍。**串行跑** —— 后台白工不跟前台抢带宽。"""
+    rt = _rt(request)
+    if not getattr(rt.config, "allow_network", True):
+        return {"ran": 0, "note": "联网已关闭，没有跑"}
+    ws = _watches(request)
+    out = []
+    for w in ws.due():
+        try:
+            out.append(await ws.run_one(w, _web(request), pipeline=rt.pipeline))
+        except Exception as exc:  # noqa: BLE001
+            out.append({"watchId": w.id, "error": str(exc)})
+    return {"ran": len(out), "results": out}
+
+
+# ── E2 长期记忆 ｜ E4 差异复读 ─────────────────────────────
+def _memory(request: Request) -> Any:
+    from ..websearch.memory import MemoryStore
+
+    return MemoryStore(_rt(request).db)
+
+
+class RememberRequest(BaseModel):
+    topic: str
+    briefing: dict[str, Any] = Field(default_factory=dict)
+    clusters: list[dict[str, Any]] = Field(default_factory=list)
+    controversy: int | None = None
+
+
+@router.post("/memory/remember")
+async def memory_remember(req: RememberRequest, request: Request) -> dict[str, Any]:
+    return _memory(request).remember(
+        req.topic, req.briefing, clusters=req.clusters, controversy=req.controversy
+    )
+
+
+@router.get("/memory/recall")
+async def memory_recall(request: Request, topic: str, limit: int = 30) -> dict[str, Any]:
+    return _memory(request).recall(topic, limit=max(1, min(200, limit)))
+
+
+@router.get("/memory/site")
+async def memory_site(request: Request, site: str) -> dict[str, Any]:
+    return _memory(request).site_history(site)
+
+
+@router.get("/memory/stats")
+async def memory_stats(request: Request) -> dict[str, Any]:
+    return _memory(request).stats()
+
+
+@router.delete("/memory/topic")
+async def memory_forget(request: Request, topic: str) -> dict[str, Any]:
+    return {"deleted": _memory(request).forget(topic)}
+
+
+class DiffRunsRequest(BaseModel):
+    old: dict[str, Any] = Field(default_factory=dict)
+    new: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/memory/diff")
+async def memory_diff(req: DiffRunsRequest) -> dict[str, Any]:
+    from ..websearch.memory import diff_runs
+
+    return diff_runs(req.old, req.new)
+
+
+# ── A5 文件比对 ────────────────────────────────────────────
+class CompareRequest(BaseModel):
+    a: str
+    b: str
+
+
+@router.post("/compare/files")
+async def compare_files_route(req: CompareRequest) -> dict[str, Any]:
+    from ..analyze.compare import compare_files
+
+    # 比对是纯 CPU 活（大文件 diff 能跑几秒），扔线程池 ——
+    # 占住事件循环会让 WebSocket 心跳断掉，界面以为引擎挂了
+    return await asyncio.to_thread(compare_files, req.a, req.b)
+
+
+class CompareItemsRequest(BaseModel):
+    aItemId: str
+    bItemId: str
+
+
+@router.post("/compare/videos")
+async def compare_videos_route(req: CompareItemsRequest, request: Request) -> dict[str, Any]:
+    from ..analyze.compare import compare_videos
+
+    rt = _rt(request)
+    a = rt.repo.scenes_of(req.aItemId)
+    b = rt.repo.scenes_of(req.bItemId)
+    return await asyncio.to_thread(compare_videos, a, b)
+
+
+# ── A6 章节化 ──────────────────────────────────────────────
+@router.get("/items/{item_id}/chapters")
+async def item_chapters(item_id: str, request: Request, maxChapters: int = 30) -> dict[str, Any]:
+    """
+    A6 —— 给一个视频/音频出章节目录。
+
+    **每次现算不缓存**：算一遍是毫秒级（数据全在库里），
+    而缓存就要处理"转写补跑完了章节要不要重算"这个问题 ——
+    不重算的话用户会看到一份基于空转写生成的等分目录，永远不更新。
+    """
+    from ..analyze.chapters import build_chapters
+
+    rt = _rt(request)
+    row = rt.repo.get_item(item_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有这个条目")
+    scenes = rt.repo.scenes_of(item_id)
+
+    # meta 在库里是一段 JSON 文本。**取不出来就当空的继续**，
+    # 而不是 404 —— 没有时长只会让章节退回等分，功能仍然可用
+    meta: dict[str, Any] = {}
+    try:
+        import json as _json
+        meta = _json.loads(row["meta_json"] or "{}") or {}
+    except (ValueError, TypeError, KeyError, IndexError):
+        meta = {}
+
+    transcript = [
+        {"start_sec": s.get("startSec"), "end_sec": s.get("endSec"),
+         "text": s.get("transcript") or ""}
+        for s in scenes if (s.get("transcript") or "").strip()
+    ]
+    return build_chapters(
+        scenes, transcript,
+        duration_sec=float(meta.get("durationSec") or 0),
+        max_chapters=max(2, min(60, maxChapters)),
+    )
+
+
+# ── D4 图片篡改初筛 ────────────────────────────────────────
+class TamperRequest(BaseModel):
+    paths: list[str] = Field(default_factory=list, max_length=200)
+    earliestSeen: str = ""
+
+
+@router.post("/images/tamper")
+async def images_tamper(req: TamperRequest) -> dict[str, Any]:
+    from ..analyze.tamper import screen, screen_batch
+
+    if len(req.paths) == 1:
+        return await asyncio.to_thread(
+            lambda: screen(req.paths[0], earliest_seen=req.earliestSeen).to_dict()
+        )
+    return await asyncio.to_thread(screen_batch, list(req.paths))
+
+
+# ── E3 研究成果一键入本地库 ─────────────────────────────────
+class SaveToLibraryRequest(BaseModel):
+    payload: dict[str, Any] = Field(default_factory=dict)
+    title: str | None = None
+    template: str = "points"
+    tags: list[str] | None = None
+
+
+@router.post("/research/save-to-library")
+async def research_save_to_library(
+    req: SaveToLibraryRequest, request: Request
+) -> dict[str, Any]:
+    """
+    E3 —— 把一份研究简报存成本地条目，以后**本地搜索也能搜到它**。
+
+    存的是 **Markdown 全文**而不是 JSON：JSON 存进去以后语义检索
+    会把一堆字段名当成内容去向量化，搜「我上次研究的那个结论」
+    永远搜不到。Markdown 是人读的形状，也是检索该看到的形状。
+    """
+    from ..websearch.export import export_research, safe_filename
+
+    rt = _rt(request)
+    title = req.title or str(req.payload.get("query") or "研究简报")
+    content, ext, _mime = export_research(
+        req.payload, fmt="markdown", title=title, template=req.template
+    )
+    out_dir = Path(rt.config.data_dir) / "briefings"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / safe_filename(title, ext)
+    path.write_text(
+        content if isinstance(content, str) else content.decode("utf-8"),
+        encoding="utf-8",
+    )
+    item_id = await asyncio.to_thread(
+        rt.pipeline.ingest_file, path, source="research",
+        tags=(req.tags or ["研究简报"]),
+    )
+    return {
+        "itemId": item_id, "path": str(path), "title": title,
+        "note": "已存进本地库，以后用本地搜索也能搜到这份简报的内容",
+    }
+
+
+# ── G 组指标：目标值与当前实测并排 ──────────────────────────
+@router.get("/metrics/budgets")
+async def metrics_budgets(request: Request) -> dict[str, Any]:
+    """
+    G1~G9 —— 把**目标值**和**这次运行观察到的值**并排给出来。
+
+    🔴 **观察值不等于基准测试结果**。这里报的是引擎跑起来之后
+    自然积累的采样（缓存命中率、引擎耗时中位数…），采样量小的时候
+    抖动很大。真正的达标判定要跑 `engine/tests/bench_*.py`，
+    那是另一件事，**不要拿这个页面上的数字当验收证据**。
+    """
+    from ..metrics import BUDGETS, observe
+
+    return {
+        "budgets": [b.to_dict() for b in BUDGETS],
+        "observed": observe(_rt(request)),
+        "note": "目标值来自 G 组验收标准；观察值是运行期采样，"
+                "**样本少时抖动很大，不能当基准测试结果用**",
     }

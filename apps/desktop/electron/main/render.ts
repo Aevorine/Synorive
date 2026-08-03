@@ -22,10 +22,22 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 const MAX_RENDER_MS = 15_000;
 const HEARTBEAT_MS = 20_000;
 const REGISTER_TIMEOUT_MS = 3_000;
-/** 请求体大小上限 —— 这个服务只应该收到一个 URL，超出说明有人在乱发 */
-const MAX_BODY_BYTES = 4096;
+/**
+ * 请求体大小上限。
+ *
+ * 🔴 C13 之后**不能再是 4KB**：登录态抓取要把整串 cookie 传进来，
+ * 一个登录过的站点动辄十几个 cookie、几 KB。4KB 会让请求被 413 掐掉，
+ * 而调用方看到的只是"抓取失败"，完全想不到是长度限制。
+ */
+const MAX_BODY_BYTES = 256 * 1024;
+
+/** C12 整页截图的高度上限。无限长的页面（无限滚动）会把内存吃光 */
+const MAX_CAPTURE_HEIGHT = 20_000;
+/** C12 截图宽度。固定 1280 而不是跟随窗口 —— 归档要的是可复现，不是好看 */
+const CAPTURE_WIDTH = 1280;
 
 let hiddenWindow: BrowserWindow | null = null;
+let captureWindow: BrowserWindow | null = null;
 let server: Server | null = null;
 let serverPort = 0;
 let serverStarting: Promise<number> | null = null;
@@ -41,14 +53,91 @@ function getHiddenWindow(): BrowserWindow {
       sandbox: true,
       contextIsolation: true,
       images: false, // 只要 DOM 文本，图片只会拖慢加载、占带宽
+      partition: 'render-text', // 和截图窗口分开，cookie 互不串
     },
   });
   return hiddenWindow;
 }
 
-async function renderOnce(url: string, timeoutMs: number): Promise<string> {
-  const wc = getHiddenWindow().webContents;
+/**
+ * C12 截图专用窗口。**必须和取 DOM 那个分开**，两个原因：
+ *
+ * 🔴 ① 那个窗口是 `images: false` 建的。拿它截图会得到一张
+ * **一张图片都没有**的归档 —— 而且不报错、不警告，存下来的 PNG
+ * 看起来就是"这个网页本来就没图"。整页截图归档的价值一大半在版面，
+ * 没有图的版面等于没归档。
+ *
+ * 🔴 ② 截图要 `setSize()` 把窗口撑到整页高。共用一个窗口的话，
+ * 同时在跑的 `/render` 会被莫名其妙地改掉视口尺寸，
+ * 有些站点会因此渲染成移动版布局。
+ */
+function getCaptureWindow(): BrowserWindow {
+  if (captureWindow && !captureWindow.isDestroyed()) return captureWindow;
+  captureWindow = new BrowserWindow({
+    show: false,
+    width: CAPTURE_WIDTH,
+    height: 900,
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      images: true, // 归档要版面，图片必须加载
+      partition: 'render-capture',
+    },
+  });
+  return captureWindow;
+}
+
+/**
+ * C13 —— 把调用方给的 cookie 塞进隐藏窗口的会话。
+ *
+ * 🔴 **写进的是隐藏窗口自己的 session，不是默认 session。**
+ * 用默认 session 的话，这些 cookie 会和用户在应用里其他地方的浏览状态
+ * 混在一起，而且**退出应用之后还留在磁盘上** —— 那是把别人的登录凭证
+ * 无限期存在本机，性质完全变了。隐藏窗口用的是内存分区，进程退出即消失。
+ *
+ * 🔴 **每次抓取前先清一遍。** 不清的话上一次抓 A 站留下的 cookie
+ * 会跟着这一次去访问 B 站 —— 跨站发送凭证，是真正的安全事故。
+ */
+async function applyCookies(
+  win: BrowserWindow,
+  cookies: { name: string; value: string; domain?: string; path?: string }[],
+  url: string,
+): Promise<string[]> {
+  const ses = win.webContents.session;
+  await ses.clearStorageData({ storages: ['cookies'] });
+  const failed: string[] = [];
+  for (const c of cookies) {
+    try {
+      await ses.cookies.set({
+        url,
+        name: c.name,
+        value: c.value,
+        ...(c.domain ? { domain: c.domain } : {}),
+        path: c.path ?? '/',
+      });
+    } catch (e) {
+      // 🔴 逐条记失败**并且要回报给调用方**。静默跳过的话，
+      // 少了关键的那个 session cookie，抓回来的就是登录页 ——
+      // 而调用方拿到一个 200 和一份 HTML，完全看不出哪里不对
+      failed.push(`${c.name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return failed;
+}
+
+/** 抓取前的公共步骤：可选注入 cookie → 加载 → 等异步渲染 */
+async function preparePage(
+  win: BrowserWindow,
+  url: string,
+  timeoutMs: number,
+  cookies?: { name: string; value: string; domain?: string; path?: string }[],
+): Promise<{ wc: Electron.WebContents; cookieFailures: string[] }> {
+  const wc = win.webContents;
   const deadline = Math.min(Math.max(timeoutMs, 1000), MAX_RENDER_MS);
+
+  let cookieFailures: string[] = [];
+  if (cookies?.length) cookieFailures = await applyCookies(win, cookies, url);
+  else await wc.session.clearStorageData({ storages: ['cookies'] });
 
   await Promise.race([
     wc.loadURL(url),
@@ -57,20 +146,91 @@ async function renderOnce(url: string, timeoutMs: number): Promise<string> {
   // 给页面里的异步脚本一点时间把结果渲染出来 ——
   // 搜索结果页多数是 loadURL 返回后又有一波异步请求才把列表填进 DOM 的
   await new Promise((r) => setTimeout(r, 800));
-  return wc.executeJavaScript('document.documentElement.outerHTML');
+  return { wc, cookieFailures };
 }
 
-function renderQueued(url: string, timeoutMs: number): Promise<string> {
-  const run = queue.then(
-    () => renderOnce(url, timeoutMs),
-    () => renderOnce(url, timeoutMs), // 上一个请求失败也不该拖累这一个
-  );
+async function renderOnce(
+  url: string,
+  timeoutMs: number,
+  cookies?: { name: string; value: string; domain?: string; path?: string }[],
+): Promise<{ html: string; cookieFailures: string[] }> {
+  const { wc, cookieFailures } = await preparePage(getHiddenWindow(), url, timeoutMs, cookies);
+  const html = (await wc.executeJavaScript(
+    'document.documentElement.outerHTML',
+  )) as string;
+  return { html, cookieFailures };
+}
+
+/**
+ * C12 —— 整页截图归档。
+ *
+ * 🔴 **必须把窗口撑到整页高度再截，不能滚动拼接。**
+ * 拼接方案在有 `position: fixed` 顶栏的页面上会把顶栏重复画好几遍，
+ * 而且懒加载图片在滚过去之后才开始加载 —— 拼出来的图上半截有图、
+ * 下半截空白。撑高之后一次性截，Chromium 自己会把整页排好。
+ *
+ * 🔴 **高度要封顶。** 无限滚动的页面撑起来能到几十万像素，
+ * 那是一张几个 G 的位图，直接把内存吃光。截断了要**说出来**。
+ */
+async function captureOnce(
+  url: string,
+  timeoutMs: number,
+  cookies?: { name: string; value: string; domain?: string; path?: string }[],
+): Promise<{ png: string; width: number; height: number; truncated: boolean; cookieFailures: string[] }> {
+  const win = getCaptureWindow();
+  // 🔴 **先把窗口复位再加载。** 上一次截图可能把它撑到了两万像素高，
+  // 带着那个尺寸去加载下一个页面会有两个后果：① 响应式站点按超大视口
+  // 渲染成完全不同的布局；② 一整屏两万像素的合成缓冲白占几百兆内存。
+  // 而这两件事都不会报错，只会让第二张截图莫名其妙地和第一张不一样
+  win.setSize(CAPTURE_WIDTH, 900);
+  const { wc, cookieFailures } = await preparePage(win, url, timeoutMs, cookies);
+
+  // 取整页高度。`body` 和 `documentElement` 都要看：不同站点的
+  // 滚动容器不一样，只看一个的话在另一半站点上会拿到视口高度（=只截首屏）
+  const raw = (await wc.executeJavaScript(
+    `Math.max(
+       document.body ? document.body.scrollHeight : 0,
+       document.documentElement ? document.documentElement.scrollHeight : 0,
+       600
+     )`,
+  )) as number;
+  const full = Math.max(600, Math.round(Number(raw) || 600));
+  const height = Math.min(full, MAX_CAPTURE_HEIGHT);
+
+  win.setSize(CAPTURE_WIDTH, height);
+  // 撑高之后要再给一拍：懒加载的图片这时候才进入视口开始加载
+  await new Promise((r) => setTimeout(r, 700));
+
+  const img = await wc.capturePage();
+  const png = img.toPNG();
+  if (png.length === 0) {
+    // 🔴 `capturePage()` 失败时**返回空 buffer 而不抛异常** ——
+    // 不查长度的话会存下一个 0 字节的 .png，而归档记录看起来完全正常
+    throw new Error('截图返回了 0 字节（窗口可能已被销毁，或页面完全空白）');
+  }
+  return {
+    png: png.toString('base64'),
+    width: CAPTURE_WIDTH,
+    height,
+    truncated: full > MAX_CAPTURE_HEIGHT,
+    cookieFailures,
+  };
+}
+
+/**
+ * 串起来跑。**C12 截图也必须走这条队列** ——
+ * 它会 `setSize` 改隐藏窗口的尺寸，和同时在跑的 `/render` 共用同一个窗口，
+ * 不排队的话一个请求会把另一个请求的页面截进去。
+ */
+function runQueued<T>(fn: () => Promise<T>): Promise<T> {
+  const run = queue.then(fn, fn); // 上一个请求失败也不该拖累这一个
   queue = run.catch(() => undefined);
   return run;
 }
 
 function handleRequest(req: IncomingMessage, res: ServerResponse): void {
-  if (req.method !== 'POST' || req.url !== '/render') {
+  const path = req.url ?? '';
+  if (req.method !== 'POST' || (path !== '/render' && path !== '/capture')) {
     res.writeHead(404).end();
     return;
   }
@@ -90,10 +250,23 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     }
     void (async () => {
       try {
-        const parsed = JSON.parse(body || '{}') as { url?: string; timeoutMs?: number };
+        const parsed = JSON.parse(body || '{}') as {
+          url?: string;
+          timeoutMs?: number;
+          /** C13 登录态：调用方给的 cookie。不给就抓匿名页面 */
+          cookies?: { name: string; value: string; domain?: string; path?: string }[];
+        };
         if (!parsed.url) throw new Error('缺少 url');
-        const html = await renderQueued(parsed.url, parsed.timeoutMs ?? 12_000);
-        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ html }));
+        // 🔴 只放行 http/https。不挡的话 `file:///C:/Users/...` 会被原样加载，
+        // 等于给任何能发到这个端口的东西一个读本机文件的入口
+        if (!/^https?:\/\//i.test(parsed.url)) throw new Error('只支持 http/https 网址');
+        const timeoutMs = parsed.timeoutMs ?? 12_000;
+
+        const out =
+          path === '/capture'
+            ? await runQueued(() => captureOnce(parsed.url!, timeoutMs, parsed.cookies))
+            : await runQueued(() => renderOnce(parsed.url!, timeoutMs, parsed.cookies));
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(out));
       } catch (e) {
         res
           .writeHead(200, { 'Content-Type': 'application/json' })
@@ -158,4 +331,8 @@ export function teardown(): void {
   serverStarting = null;
   if (hiddenWindow && !hiddenWindow.isDestroyed()) hiddenWindow.destroy();
   hiddenWindow = null;
+  // 🔴 截图窗口也要收。漏掉的话主进程退不干净 —— 一个 show:false 的
+  // BrowserWindow 照样会让 Electron 认为还有窗口活着
+  if (captureWindow && !captureWindow.isDestroyed()) captureWindow.destroy();
+  captureWindow = null;
 }

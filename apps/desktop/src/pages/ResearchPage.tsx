@@ -23,7 +23,12 @@ import { LinkTrail } from '../components/LinkTrail';
 import { OmniFeed } from '../components/OmniFeed';
 import { ResearchProgress } from '../components/ResearchProgress';
 import { VerificationPanel } from '../components/VerificationPanel';
+import { MemoryPanel } from '../components/MemoryPanel';
+import { WatchPanel } from '../components/WatchPanel';
+import { NumberAudit } from '../components/NumberAudit';
+import { ScholarLab } from '../components/ScholarLab';
 import { api } from '../lib/api';
+import { labApi, streamSearch } from '../lib/labApi';
 import { PAGE_TITLES, useApp } from '../lib/store';
 import {
   webApi,
@@ -85,6 +90,8 @@ export function ResearchPage() {
   // 但**共用同一份状态**——分成两套的话，用户在深挖里选的"只看官方文档"
   // 切回快搜就悄悄失效了，那种不一致最难排查
   const [opts, setOpts] = useState<ResearchOptions>(DEFAULT_RESEARCH_OPTIONS);
+  /** F1「存进我的库」的回执。**成功也要有回执** —— 静默成功和静默失败一样让人不安 */
+  const [savedNote, setSavedNote] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [engineList, setEngineList] = useState<EngineDescriptor[]>([]);
   const [enabledEngines, setEnabledEngines] = useState<Set<string> | null>(null); // null = 用服务端默认
@@ -93,7 +100,30 @@ export function ResearchPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [quickResult, setQuickResult] = useState<WebSearchResponse | null>(null);
+  /**
+   * B1 流式搜索的实时状态：还在等谁、已经回来了谁、到现在多少毫秒。
+   * `null` = 没在流式跑（缓存命中、开了扩写、或者已经结束）。
+   *
+   * **这个东西必须显示出来**：首字节竞速的代价是用户会看到结果一批批长出来，
+   * 不告诉他"还在等 google 和 baidu"的话，他会以为搜完了然后过早地下结论
+   */
+  const [streamState, setStreamState] = useState<{
+    pending: string[];
+    done: string[];
+    ms: number;
+  } | null>(null);
   const [researchResult, setResearchResult] = useState<ResearchResponse | null>(null);
+  /**
+   * E4 差异复读要的「上一次」。
+   *
+   * 🔴 **不传它，`MemoryPanel` 里的差异按钮就永远不渲染** —— 那个组件写着
+   * `previousRun != null && ...`，而这里一直没传，于是 E4 整个功能
+   * 从做完那天起就没有任何入口。代码在、接口在、按钮不出现。
+   *
+   * 🔴 **只在同一个话题内保留。** 拿"量子计算"的上一轮去和"咖啡因"的这一轮比
+   * 会得到一份全是"新出现"的假差异 —— 那比不给差异糟得多。
+   */
+  const [prevRun, setPrevRun] = useState<{ query: string; result: ResearchResponse } | null>(null);
   const [scholarResult, setScholarResult] = useState<ScholarPaper[] | null>(null);
   const [scholarMeta, setScholarMeta] = useState<{
     total: number;
@@ -132,20 +162,72 @@ export function ResearchPage() {
     const engines = enabledEngines ? [...enabledEngines] : undefined;
     try {
       if (mode === 'quick') {
-        const r = await webApi.search(
-          {
-            query: trimmed,
-            limit: 30,
-            engines,
-            timeRange: timeRange || undefined,
-            preset: opts.preset,
-            // 快搜的 expand 默认跟着深挖走，但**快搜要的就是快** ——
-            // 扩写要多花一个维基往返，所以只在用户显式开了跨语言时才带上
-            expand: opts.expand,
-          },
-          controller.signal,
-        );
-        setQuickResult(r);
+        // B1 首字节竞速：哪家引擎先回哪家先画，不等最慢那家。
+        // 实测阵容里最快的 mojeek 通常 400ms 就回来了，而走浏览器渲染的
+        // Google 能跑 7 秒 —— 中间那 6 秒用户以前面对的是一个转圈，
+        // 而结果其实早就有了。
+        //
+        // 🔴 **扩写开着时不走流式**。扩写要先问维基拿变体、再派好几路搜，
+        // 那条链路本身就是"等齐了才有意义"的，硬套流式只会让界面
+        // 先画一版没扩写的结果、几秒后整个换掉 —— 那比等着更难受
+        if (!opts.expand) {
+          setQuickResult(null);
+          setStreamState({ pending: [], done: [], ms: 0 });
+          await streamSearch(
+            {
+              query: trimmed,
+              limit: 30,
+              engines,
+              timeRange: timeRange || null,
+              preset: opts.preset,
+            },
+            (ev) => {
+              if (ev.kind === 'engines') {
+                setStreamState({ pending: ev.pending, done: [], ms: 0 });
+              } else if (ev.kind === 'partial') {
+                setStreamState((s) => ({
+                  pending: ev.waiting,
+                  done: [...(s?.done ?? []), ev.engine],
+                  ms: ev.totalMs,
+                }));
+                // 增量画：把已折叠的结果直接塞进去。**已出现的条目不重排**
+                // （引擎那边保证的），否则屏幕上的东西会一直跳
+                setQuickResult((prev) => ({
+                  ...(prev ?? {
+                    query: trimmed, excluded: [], engines: [],
+                    fromCache: false, partial: true,
+                  }),
+                  query: trimmed,
+                  results: ev.results as unknown as WebResultItem[],
+                  elapsedMs: ev.totalMs,
+                  partial: true,
+                } as WebSearchResponse));
+              } else if (ev.kind === 'final') {
+                setQuickResult(ev.result as unknown as WebSearchResponse);
+                setStreamState(null);
+              } else if (ev.kind === 'error') {
+                setError(ev.error);
+                setStreamState(null);
+              }
+            },
+            controller.signal,
+          );
+        } else {
+          const r = await webApi.search(
+            {
+              query: trimmed,
+              limit: 30,
+              engines,
+              timeRange: timeRange || undefined,
+              preset: opts.preset,
+              // 快搜的 expand 默认跟着深挖走，但**快搜要的就是快** ——
+              // 扩写要多花一个维基往返，所以只在用户显式开了跨语言时才带上
+              expand: opts.expand,
+            },
+            controller.signal,
+          );
+          setQuickResult(r);
+        }
       } else if (mode === 'research') {
         const r = await webApi.research(
           {
@@ -158,6 +240,10 @@ export function ResearchPage() {
             verifyLevel: opts.verifyLevel,
           },
           controller.signal,
+        );
+        // 换掉之前先留一份：同话题才留，换话题就清空（见 prevRun 的注释）
+        setPrevRun(
+          researchResult && query === trimmed ? { query: trimmed, result: researchResult } : null,
         );
         setResearchResult(r);
       } else {
@@ -172,6 +258,11 @@ export function ResearchPage() {
       if ((e as Error).name !== 'AbortError') setError((e as Error).message);
     } finally {
       setLoading(false);
+      // 🔴 **流式状态必须在这里也清一次。** 以前只在收到 `final` / `error`
+      // 事件时清 —— 可是被中断（换查询、切页、断网）时这两个事件都不会来，
+      // 于是「还在等 google、baidu…」这条提示会**永远挂在屏幕上**，
+      // 而实际上一个请求都没有在跑。转圈不停是最容易被当成"程序卡死"的假象
+      setStreamState(null);
     }
   };
 
@@ -260,6 +351,86 @@ export function ResearchPage() {
     (mode === 'quick' && !!quickResult) ||
     (mode === 'research' && !!researchResult) ||
     (mode === 'scholar' && !!scholarResult);
+
+  /**
+   * F1 —— 接住命令面板派来的五条研究命令。
+   *
+   * 🔴 **在补上这段之前，这五条命令一条都不生效。**
+   * `CommandPalette` 老老实实 `dispatchEvent` 了 `syn:research-*`，
+   * 但**全项目没有一个 `addEventListener`** —— 点下去的效果是
+   * 面板关掉、跳到研究页、然后什么也不发生。不报错、不崩溃，
+   * 看起来就像"这个功能就是跳转一下"。
+   *
+   * 🔴 **没有查询词时不能装作跑起来了**：给一句明确的提示，
+   * 让用户知道要先输入。静默返回是这里最容易犯的错。
+   */
+  useEffect(() => {
+    const needQuery = (what: string): boolean => {
+      if (query.trim()) return true;
+      setError(`先在上面输入要${what}的内容 —— 命令面板不知道你想查什么`);
+      return false;
+    };
+
+    const onRun = (e: Event) => {
+      const detail = (e as CustomEvent<{ mode?: string }>).detail ?? {};
+      if (!needQuery('查')) return;
+      // 面板里的「主动核查」不是第四种模式，而是**深挖 + 把核查力度拉满**。
+      // 硬造一个 Mode 会让模式切换条上多出一个按不回来的档
+      if (detail.mode === 'verify') {
+        setOpts((o) => ({ ...o, verifyLevel: 'claim' }));
+      }
+      setMode('research');
+      void runSearch(query, 'research');
+    };
+    const onExport = () => {
+      if (!hasResult) {
+        setError('还没有结果可以导出 —— 先查一次');
+        return;
+      }
+      // 滚到项目条那一排导出按钮并高亮，而不是替他决定导成什么格式
+      document.querySelector('.pb')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    };
+    const onSaveLibrary = () => {
+      if (!researchResult) {
+        setError('存进库的是深挖出来的简报 —— 先跑一次「深挖」');
+        return;
+      }
+      setSavedNote('正在存进库…');
+      void labApi
+        .saveToLibrary(researchResult, query)
+        .then((r) => {
+          setError(null);
+          setSavedNote(r.note);
+        })
+        .catch((err: Error) => {
+          setSavedNote(null);
+          setError(`存进库失败：${err.message}`);
+        });
+    };
+    const scrollTo = (sel: string, miss: string) => () => {
+      const el = document.querySelector(sel);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      else setError(miss);
+    };
+
+    const onRecall = scrollTo('.syn-mem', '「以前查过什么」要先有一次深挖结果才会出现');
+    const onWatch = scrollTo('.syn-watch', '「订阅」要先有一次深挖结果才会出现');
+
+    window.addEventListener('syn:research-run', onRun);
+    window.addEventListener('syn:research-export', onExport);
+    window.addEventListener('syn:research-save-library', onSaveLibrary);
+    window.addEventListener('syn:research-recall', onRecall);
+    window.addEventListener('syn:research-watch', onWatch);
+    return () => {
+      window.removeEventListener('syn:research-run', onRun);
+      window.removeEventListener('syn:research-export', onExport);
+      window.removeEventListener('syn:research-save-library', onSaveLibrary);
+      window.removeEventListener('syn:research-recall', onRecall);
+      window.removeEventListener('syn:research-watch', onWatch);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, hasResult, researchResult]);
+
 
   const subtitle = useMemo(() => {
     if (!query) return '';
@@ -379,6 +550,22 @@ export function ResearchPage() {
         />
       )}
 
+      {/* F1「存进我的库」的回执。**成功也要有回执** ——
+          命令面板点完面板就关了，不给一句话的话用户根本不知道发生过什么 */}
+      {savedNote && (
+        <div className="banner" role="status">
+          {savedNote}
+          <button
+            type="button"
+            className="btn btn--sm"
+            onClick={() => setSavedNote(null)}
+            aria-label="关掉这条提示"
+          >
+            知道了
+          </button>
+        </div>
+      )}
+
       {enginesOpen && (
         <div className="enginepicker">
           {(['web', 'scholar'] as const).map((group) => (
@@ -430,14 +617,41 @@ export function ResearchPage() {
             />
           )}
           {unified && <UnifiedView data={unified} onClose={() => setUnified(null)} />}
+          {/* B1：还在等谁。**必须显示** —— 首字节竞速的代价就是结果会一批批
+              长出来，不说"还在等 google"的话，用户会以为搜完了然后过早下结论 */}
+          {streamState && streamState.pending.length > 0 && (
+            <p className="streamwait">
+              <Loader2 size={13} className="spin" aria-hidden />
+              已经回来 {streamState.done.length} 家（{(streamState.ms / 1000).toFixed(1)}s），
+              还在等：{streamState.pending.join('、')}
+              <span className="streamwait__note">
+                下面的结果会随着它们回来继续长，**已经出现的不会重排**
+              </span>
+            </p>
+          )}
           {!unified && !readResult && mode === 'quick' && quickResult && (
             <QuickResults data={quickResult} />
           )}
           {!unified && !readResult && mode === 'research' && researchResult && (
-            <ResearchSplit query={query} data={researchResult} />
+            <ResearchSplit
+              query={query}
+              data={researchResult}
+              previousRun={prevRun?.query === query ? prevRun.result : null}
+            />
           )}
           {!unified && !readResult && mode === 'scholar' && scholarResult && (
-            <ScholarList papers={scholarResult} />
+            <>
+              <ScholarList papers={scholarResult} />
+              {/* C 组文献工作台。**放在清单下面而不是替换清单** ——
+                  用户先要看到"搜到了什么"，分堆/综述/抽表是拿到清单之后
+                  才会想做的第二步。替换掉清单会让他找不回原始结果 */}
+              {scholarResult.length >= 3 && (
+                <ScholarLab
+                  entries={scholarResult as unknown as Record<string, unknown>[]}
+                  topic={query}
+                />
+              )}
+            </>
           )}
         </PageState>
       </div>
@@ -606,7 +820,41 @@ function WebResultCard({ item, excluded }: { item: WebResultItem; excluded?: boo
 // ════════════════════════════════════════════════════════════
 // 深挖：左摘录 / 右生成 并排
 // ════════════════════════════════════════════════════════════
-function ResearchSplit({ query, data }: { query: string; data: ResearchResponse }) {
+function ResearchSplit({
+  query,
+  data,
+  previousRun,
+}: {
+  query: string;
+  data: ResearchResponse;
+  /** E4：同一话题上一轮的结果。没有就不显示差异按钮 */
+  previousRun?: ResearchResponse | null;
+}) {
+  /**
+   * D2/D5 要正文才判得了，而 `/api/web/research` 的响应里**只有摘录不含全文**
+   * （带全文的话一次深挖能回几兆，全走 IPC 序列化）。所以正文按需现抓，
+   * 攒在这里。抓过的不重抓 —— 用户可能反复点核对。
+   */
+  const [sourceTexts, setSourceTexts] = useState<Record<string, string>>({});
+
+  async function fetchTopTexts(): Promise<void> {
+    const urls = data.results
+      .map((r) => r.url)
+      .filter((u) => u && !sourceTexts[u])
+      .slice(0, 6); // 只抓前 6 篇：再多就要等十几秒，而数字基本都出自最前面那几条
+    const got: Record<string, string> = {};
+    for (const url of urls) {
+      try {
+        const r = await webApi.read({ url, maxChars: 40_000 });
+        if (r.text) got[url] = r.text;
+      } catch {
+        // 单篇抓失败不影响其他 —— 抓不到的那几条会显示成 unverified，
+        // 那正是它该有的状态，不该整个功能报错
+      }
+    }
+    setSourceTexts((prev) => ({ ...prev, ...got }));
+  }
+
   return (
     <>
       {/* S5：每一轮问了什么、为什么问。
@@ -641,6 +889,35 @@ function ResearchSplit({ query, data }: { query: string; data: ResearchResponse 
 
       {/* V2：一致性矩阵。分歧是一对一对给的，矩阵才看得出"谁总跟别人不一样" */}
       <ConsistencyMatrix m={data.briefing.matrix} />
+
+      {/* D2/D5/D6：别照抄的地方。紧跟在核查后面 ——
+          它回答的是同一个问题的另外三个侧面（数字对不对、时间对不对、
+          这说法本身有没有争议），拆开放会让用户读完简报才想起来核对 */}
+      <NumberAudit
+        briefing={data.briefing}
+        results={data.results as unknown as unknown[]}
+        texts={sourceTexts}
+        verification={data.verification}
+        onFetchTexts={fetchTopTexts}
+      />
+
+      {/* E2/E4：这个话题我以前查过什么 + 和上次比只看新增的 */}
+      <MemoryPanel
+        topic={query}
+        previousRun={previousRun ?? undefined}
+        currentRun={data}
+        briefing={data.briefing}
+        clusters={data.results as unknown as unknown[]}
+      />
+
+      {/* C7：把这次检索存成订阅。放在"以前查过什么"的正下方是有意的 ——
+          这两件事是同一个动作的两个方向（回头看 / 往后跟），
+          用户想起要订阅的时机，正是他刚看完"上次查是什么时候"的那一刻。
+          只把这轮真的出过结果的引擎带过去，报错的引擎不该被固化进订阅里天天重试 */}
+      <WatchPanel
+        currentQuery={query}
+        engines={data.engines.filter((e) => e.outcome === 'ok').map((e) => e.id)}
+      />
 
       <div className="briefingsplit">
         <div className="briefingpane">

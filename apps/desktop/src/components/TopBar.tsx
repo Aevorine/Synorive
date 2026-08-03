@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Minus, Search, Square, Copy, X } from 'lucide-react';
-import { useApp } from '../lib/store';
-import { useSearch } from '../lib/useSearch';
+import { useApp, type PageId } from '../lib/store';
+import type { SearchFilters } from '@synorive/shared-types';
+import { useSearch, type Preset } from '../lib/useSearch';
 import { api } from '../lib/api';
+import { Flashback } from './Flashback';
 import iconUrl from '../../resources/icons/icon-64.png';
 
 /**
@@ -12,6 +14,10 @@ import iconUrl from '../../resources/icons/icon-64.png';
  */
 export function TopBar() {
   const [isMax, setIsMax] = useState(false);
+  const setPage = useApp((s) => s.setPage);
+  const setQuery = useSearch((s) => s.setQuery);
+  const setFilters = useSearch((s) => s.setFilters);
+  const setPreset = useSearch((s) => s.setPreset);
 
   useEffect(() => {
     void window.synorive.window.isMaximized().then(setIsMax);
@@ -30,6 +36,27 @@ export function TopBar() {
       </div>
 
       <div className="topbar__actions syn-no-drag">
+        {/* F3 撤销/闪回。放顶栏是因为它必须**跨页面常驻** ——
+            撤销的典型场景恰恰是"我刚跳到别的页面才发现上一步做错了"，
+            挂在某个页面里就永远差一步够不着。
+            快照由 `useSearch.fire()` 产出（查询词 + 筛选 + 预设），
+            这里按同一套字段名还原 —— 两边字段名对不上就会安静地什么都不恢复 */}
+        <Flashback
+          onRestore={(snap) => {
+            setPage(snap.page as PageId);
+            // 🔴 **筛选和预设也要一起还原。** 只填回查询词的话，用户回到
+            // "十分钟前那个界面"看到的是同一个词配着**现在**的筛选 ——
+            // 结果对不上他记忆里的那一屏，而他找不出哪里不一样。
+            // 顺序：先设筛选和预设，最后设查询词（setQuery 会触发搜索，
+            // 反过来的话第一次搜索用的还是旧筛选）
+            const f = snap.state['filters'];
+            if (f && typeof f === 'object') setFilters(f as SearchFilters);
+            const p = snap.state['preset'];
+            if (typeof p === 'string') setPreset(p as Preset);
+            const q = snap.state['query'];
+            if (typeof q === 'string') setQuery(q);
+          }}
+        />
         <div className="wincontrols">
           <button
             className="wincontrols__btn"

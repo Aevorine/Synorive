@@ -28,7 +28,11 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-FORMATS = ("markdown", "html", "json", "docx")
+FORMATS = ("markdown", "html", "json", "docx", "single-html")
+
+#: E1 简报模板。四种排法，**同一批事实换个组织方式**，
+#: 不重新提炼、不改任何一句摘录 —— 换模板永远不该改变内容
+TEMPLATES = ("points", "timeline", "compare", "qa")
 
 
 def export_research(
@@ -37,11 +41,13 @@ def export_research(
     fmt: str = "markdown",
     title: str | None = None,
     include_excluded: bool = False,
+    template: str = "points",
 ) -> tuple[str | bytes, str, str]:
     """
     返回 `(内容, 文件扩展名, MIME)`。
 
     `payload` 是 `/api/web/research` 的响应体（或项目里存的某次 run）。
+    `template` 见 `TEMPLATES`（E1）；`single-html` 是 E6 的离线单文件。
     """
     f = fmt if fmt in FORMATS else "markdown"
     t = (title or payload.get("query") or "研究简报").strip()[:120]
@@ -51,21 +57,144 @@ def export_research(
             "json",
             "application/json; charset=utf-8",
         )
-    md = _to_markdown(payload, title=t, include_excluded=include_excluded)
+    md = _to_markdown(
+        payload, title=t, include_excluded=include_excluded, template=template
+    )
     if f == "markdown":
         return md, "md", "text/markdown; charset=utf-8"
     if f == "html":
         return _to_html(md, title=t), "html", "text/html; charset=utf-8"
+    if f == "single-html":
+        return _to_single_html(payload, md, title=t), "html", "text/html; charset=utf-8"
     return _to_docx(payload, title=t), "docx", (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
 
 
 # ────────────────────────────────────────────────────────────────
+# E1 四种简报模板
+# ────────────────────────────────────────────────────────────────
+def render_template(payload: dict[str, Any], template: str) -> list[str]:
+    """
+    按模板把简报重排成 Markdown 行。
+
+    🔴 **四个模板用的是同一批摘录，一个字都不改**。换模板改的只是
+    「先看什么后看什么」和「怎么分组」。如果换个模板结论就变了，
+    那说明其中至少一个模板在偷偷做提炼 —— 那正是这个项目从头到尾
+    在拒绝的事。
+    """
+    b = payload.get("briefing") or {}
+    tpl = template if template in TEMPLATES else "points"
+    lines: list[str] = []
+
+    consensus = b.get("consensus") or []
+    disputes = b.get("disputes") or []
+    topics = b.get("topics") or []
+
+    if tpl == "timeline":
+        # 时间线式：把所有带日期的摘录按时间排，没日期的单独放最后
+        dated: list[tuple[str, dict[str, Any]]] = []
+        undated: list[dict[str, Any]] = []
+        for grp in (consensus, disputes):
+            for item in grp:
+                for ev in (item.get("evidence") or [item]):
+                    d = str(ev.get("published") or "")
+                    (dated.append((d, ev)) if d else undated.append(ev))
+        dated.sort(key=lambda x: x[0])
+        lines.append("## 时间线")
+        lines.append("")
+        for d, ev in dated:
+            lines.append(f"- **{d[:10]}** {ev.get('text') or ''} "
+                         f"[{ev.get('site') or '来源'}]({ev.get('url') or ''})")
+        if undated:
+            lines += ["", "### 没有日期的", ""]
+            for ev in undated[:20]:
+                lines.append(f"- {ev.get('text') or ''} "
+                             f"[{ev.get('site') or '来源'}]({ev.get('url') or ''})")
+            lines += ["", "> 这些条目的来源页面没有给出发布时间，"
+                          "**不是被隐藏了**，是原站就没写", ""]
+        return lines
+
+    if tpl == "compare":
+        # 对比表式：一行一个说法，列出支持方和反对方
+        lines += ["## 说法对照表", "",
+                  "| 说法 | 这么说的 | 有异议的 |", "|---|---|---|"]
+        for item in disputes:
+            sides = item.get("sides") or item.get("evidence") or []
+            claim = str(item.get("topic") or item.get("keyword") or "")[:40]
+            a = "、".join(str(s.get("site") or "") for s in sides[:3])
+            bside = "、".join(str(s.get("site") or "") for s in sides[3:6])
+            lines.append(f"| {claim} | {a or '—'} | {bside or '—'} |")
+        for item in consensus[:20]:
+            claim = str(item.get("topic") or item.get("keyword") or "")[:40]
+            sites = "、".join(
+                str(e.get("site") or "") for e in (item.get("evidence") or [])[:3]
+            )
+            lines.append(f"| {claim} | {sites or '—'} | 没找到异议 |")
+        lines += ["", "> 「没找到异议」**不等于没有异议** —— "
+                      "只表示这一轮检索里没有出现反驳材料", ""]
+        return lines
+
+    if tpl == "qa":
+        # 问答式：每个主题变成一个问句，摘录当答案
+        lines += ["## 问答", ""]
+        for t in topics or (consensus + disputes):
+            kw = str(t.get("keyword") or t.get("topic") or "").strip()
+            if not kw:
+                continue
+            lines += [f"### 关于「{kw}」，各方是怎么说的？", ""]
+            for ev in (t.get("evidence") or [])[:5]:
+                lines.append(f"- {ev.get('text') or ''} "
+                             f"—— [{ev.get('site') or '来源'}]({ev.get('url') or ''})")
+            lines.append("")
+        return lines
+
+    return []          # points = 走原来的默认排版
+
+
+# ────────────────────────────────────────────────────────────────
 # Markdown（其余格式都从它派生）
 # ────────────────────────────────────────────────────────────────
+def _tail_sections(payload: dict[str, Any], *, include_excluded: bool) -> list[str]:
+    """
+    核查 + 全部来源 + 已排除。**四个模板共用这一段** ——
+    换模板换的是主体的组织方式，出处清单和核查结论一个都不能少。
+    """
+    lines: list[str] = []
+    v = payload.get("verification") or {}
+    if v:
+        lines += ["", "## 核查", "",
+                  f"档位：`{v.get('level')}`　{v.get('note') or ''}", ""]
+        for c in v.get("claims") or []:
+            con = c.get("controversy") or {}
+            lines.append(
+                f"- **{c.get('claim') or ''}** —— 支持 {len(c.get('support') or [])}"
+                f" ／ 反驳 {len(c.get('refute') or [])}"
+                + (f"　争议度 {con.get('score')}" if con.get("score") is not None else "")
+            )
+        lines.append("")
+
+    lines += ["## 全部来源", ""]
+    for i, c in enumerate(payload.get("results") or [], 1):
+        tr = c.get("trust") or {}
+        lines.append(
+            f"{i}. [{c.get('title')}]({c.get('url')}) — {c.get('site')}"
+            f"　`{tr.get('tierLabel') or '未收录'}`"
+        )
+    if include_excluded and payload.get("excluded"):
+        lines += ["", "## 已排除（折叠掉的，附原因）", ""]
+        for c in payload["excluded"]:
+            tr = c.get("trust") or {}
+            lines.append(
+                f"- [{c.get('title')}]({c.get('url')}) — {c.get('site')}"
+                f"：{'；'.join(tr.get('reasons') or [])}"
+            )
+    return lines
+
+
 def _to_markdown(
-    payload: dict[str, Any], *, title: str, include_excluded: bool
+    payload: dict[str, Any], *, title: str, include_excluded: bool,
+    template: str = "points",
 ) -> str:
     b = payload.get("briefing") or {}
     v = payload.get("verification") or {}
@@ -77,6 +206,15 @@ def _to_markdown(
         f"抓取正文 {payload.get('fetched') or 0} 篇",
         "",
     ]
+
+    # E1：非默认模板走另一套排版，然后**照样接上后面的核查和来源清单** ——
+    # 换模板只该换主体的组织方式，不该把核查结果一起换没了
+    if template != "points":
+        alt = render_template(payload, template)
+        if alt:
+            lines += alt
+            lines += _tail_sections(payload, include_excluded=include_excluded)
+            return "\n".join(lines)
 
     # 检索过程（S5 多轮）—— 放最前面。读简报的人有权先知道这些结论是怎么来的
     rounds = payload.get("rounds") or []
@@ -410,3 +548,151 @@ def safe_filename(title: str, ext: str) -> str:
     """
     name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", title).strip(" .") or "研究简报"
     return f"{name[:80]}.{ext}"
+
+
+# ────────────────────────────────────────────────────────────────
+# E6 单文件 HTML（离线可开，证据全内嵌）
+# ────────────────────────────────────────────────────────────────
+#: 单文件版额外的样式：加一个可折叠的「原始证据」区，
+#: 以及 E5 要的**可点引用锚点**
+_SINGLE_EXTRA_CSS = """
+details.syn-raw { margin: 2em 0 0; border-top: 1px solid #d8d2c4; padding-top: 1em; }
+details.syn-raw summary { cursor: pointer; font-size: 14pt; }
+.syn-src { margin: .6em 0; padding: .6em .8em; background: #faf8f3;
+           border-left: 3px solid #c8871b; }
+.syn-src a { word-break: break-all; }
+.syn-meta { color: #6b6558; font-size: 10.5pt; }
+:target { background: #fff6e0; outline: 2px solid #c8871b; }
+/* 指向文件内部证据区的引用链接。**和外链长得不一样**——
+   用户要能一眼看出"这个点了会跳到下面"而不是"点了会开浏览器" */
+a.syn-cite { border-bottom: 1px dashed #c8871b; text-decoration: none; }
+a.syn-cite::after { content: "↓"; font-size: 0.8em; vertical-align: super; color: #c8871b; }
+/* E5 打印成 PDF 时的样式。**证据区必须展开**（默认 open 就是为这个）——
+   `details` 折叠着打印出来会丢掉整个内嵌证据区，而那正是这份文件的价值所在。
+   ⚠️ 上面那条 `display:none` 是早期版本留下的，已改成展开打印。 */
+@media print {
+  details.syn-raw { display: block; }
+  details.syn-raw > summary { list-style: none; }
+  a { color: #0f4c8c; text-decoration: underline; }
+  /* 只给外链补印真实网址：PDF 里链接可点是好的，但**打印出来的纸不能点**，
+     纸上只剩一个"点这里"就等于把来源弄丢了。内部锚点（#src-3）不补，那是噪音 */
+  a[href^="http"]::after { content: " <" attr(href) ">"; font-size: 9pt; word-break: break-all; }
+  /* 内部引用在纸上印出**它指向第几条证据**，而不是印一个跳不动的 `#src-3`。
+     纸不能点，所以必须把"跳过去会看到什么"变成看得见的文字 */
+  a.syn-cite::after { content: " (见证据 " attr(href) ")"; font-size: 9pt; }
+  /* 屏幕上高亮跳转目标用的是底色，纸上换成左侧竖线 —— 底色打印出来是一片灰 */
+  :target { background: transparent; outline: none; border-left: 3px solid #0f4c8c; padding-left: 6px; }
+  .syn-src { break-inside: avoid; }
+}
+"""
+
+
+def _to_single_html(payload: dict[str, Any], md: str, *, title: str) -> str:
+    """
+    E6 —— 一个文件、双击就能开、断网也能看，**证据全部内嵌**。
+
+    和普通 `html` 导出的区别只有一处但很关键：普通版里的出处是
+    **外链**，断网或者对方站点下线之后就点不开了；单文件版把每条出处的
+    标题、站点、发布时间、以及那段被引用的原文**一起写进文件**。
+
+    🔴 **不内嵌图片**。技术上可以转 base64，但一份研究简报里内嵌
+    十几张原站配图会让文件涨到几十兆，而那些图对"这句话谁说的"
+    没有任何证明力 —— 内嵌的是**文字证据**，不是版面。
+
+    🔴 **不内嵌抓来的整篇正文**。只放简报里真正引用到的那几段 ——
+    整篇塞进去既是体积灾难，也把「摘录」悄悄变成了「转载」。
+    """
+    body = _to_html(md, title=title)
+    # `_to_html` 出来是一个完整文档；这里把样式和证据区注入进去。
+    # 用字符串替换而不是重新拼一个文档 —— 拼两次的话两边的排版
+    # 迟早会走岔，而用户看到的是"导出的 HTML 和打印的 PDF 长得不一样"
+    extra = f"<style>{_SINGLE_EXTRA_CSS}</style>"
+    body = body.replace("</head>", f"{extra}</head>", 1)
+
+    parts: list[str] = [
+        '<details class="syn-raw" open><summary>原始证据（内嵌，断网也能看）</summary>'
+    ]
+    seen: set[str] = set()
+    #: url → 它在证据区里的锚点号。给下面的 `_localize_links` 用
+    anchor_by_url: dict[str, int] = {}
+    for i, c in enumerate(payload.get("results") or [], 1):
+        url = str(c.get("url") or "")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        anchor_by_url[url] = i
+        tr = c.get("trust") or {}
+        quotes = [
+            str(e.get("text") or "")
+            for e in _quotes_for(payload, url)
+        ][:4]
+        parts.append(
+            f'<div class="syn-src" id="src-{i}">'
+            f'<div><b>[{i}]</b> {_esc(str(c.get("title") or ""))}</div>'
+            f'<div class="syn-meta">{_esc(str(c.get("site") or ""))}'
+            f'　{_esc(str(c.get("published") or "") or "没有发布时间")}'
+            f'　{_esc(str(tr.get("tierLabel") or "未收录"))}</div>'
+            f'<div><a href="{_esc(url)}">{_esc(url)}</a></div>'
+            + "".join(f"<blockquote>{_esc(q)}</blockquote>" for q in quotes)
+            + "</div>"
+        )
+    parts.append("</details>")
+    parts.append(
+        '<p class="syn-meta">这份文件是自包含的：不请求任何外部资源，'
+        '断网、原站下线之后仍然能看到每句话的出处和被引用的原文。'
+        '**内嵌的是文字证据，不含图片和整篇正文。**</p>'
+    )
+    # 🔴 **这一步以前整个没有，而它是 E5/E6 的全部意义所在。**
+    # 证据区有 `id="src-1"` 这样的锚点，但**没有任何东西指向它们** ——
+    # 正文里用的是直接的外链 `<a href="https://…">`。所以：
+    #   · 离线单文件（E6）：断网之后正文里每个来源都点不开，
+    #     而那份原文其实就嵌在同一个文件的下半部分
+    #   · 可点引用 PDF（E5）：链接确实被 Chromium 写进了 PDF，
+    #     但它们指向**网上**，不是指向这份文件里嵌着的摘录
+    # 两个功能都"能导出、排版正常、一个错都不报"，唯独承诺的那件事没做到。
+    body = _localize_links(body, anchor_by_url)
+    return body.replace("</body>", "".join(parts) + "</body>", 1)
+
+
+def _localize_links(html: str, anchor_by_url: dict[str, int]) -> str:
+    """
+    把正文里指向"已经嵌进来的那些来源"的外链，改成指向文件内部的锚点。
+
+    🔴 **只改有对应锚点的那些。** 没嵌进来的外链原样留着 ——
+    把它也改成 `#src-N` 会得到一个跳不到任何地方的链接，
+    而那比外链更糟：用户点了以为自己点歪了，反复点。
+
+    🔴 **原始网址不能丢。** 改完的链接加上 `data-href`，
+    并保留 `title` 提示原地址；证据区里本来就完整印着这个 URL，
+    所以"这条到底来自哪"这个信息一点没少。
+    """
+    if not anchor_by_url:
+        return html
+
+    def repl(m: re.Match[str]) -> str:
+        url = m[2]
+        n = anchor_by_url.get(url)
+        if n is None:
+            return m[0]
+        # 去掉 target=_blank：跳的是本文件内部，开新窗口毫无意义
+        return f'<a class="syn-cite" href="#src-{n}" data-href="{url}" title="{url}">'
+
+    return re.sub(r'(<a\b[^>]*?\bhref=")([^"]+)("[^>]*>)', repl, html, flags=re.I)
+
+
+def _quotes_for(payload: dict[str, Any], url: str) -> list[dict[str, Any]]:
+    """从简报里把引用了这条 url 的摘录挑出来。"""
+    out: list[dict[str, Any]] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if str(node.get("url") or "") == url and node.get("text"):
+                out.append(node)
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(payload.get("briefing") or {})
+    return out

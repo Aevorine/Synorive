@@ -44,6 +44,72 @@ log = logging.getLogger("synorive.ingest")
 FINGERPRINT_SAMPLE = 1 << 20
 
 
+class JobControl:
+    """
+    F2 —— 一个摄取任务的暂停 / 取消开关。
+
+    🔴 **暂停必须真的能暂停，取消必须真的能取消。**
+    一个点了没反应的按钮比没有按钮更糟：用户会以为自己点错了，
+    反复点，然后放弃，最后连着不信任别的按钮。
+
+    实现上只做一件事：在**每个文件开工前**看一眼开关。
+    所以粒度是"当前这个文件做完就停"，不是"立刻断在半路" ——
+    半路断掉会留下写了一半的索引记录，那是拿一致性换响应速度，不划算。
+    单个文件最长几十秒（长视频转写），点了暂停最坏等这么久。
+
+    `_gate` 是"没暂停"的信号：set = 放行。反过来写（set = 暂停）的话，
+    新建对象的默认状态就是暂停，每次都得记着先 set 一下，迟早忘。
+    """
+
+    __slots__ = ("_gate", "_cancelled")
+
+    def __init__(self) -> None:
+        self._gate = threading.Event()
+        self._gate.set()
+        self._cancelled = False
+
+    def pause(self) -> None:
+        self._gate.clear()
+
+    def resume(self) -> None:
+        self._gate.set()
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        # 🔴 取消时**必须一并放行**：否则正卡在 wait() 上的工作线程
+        # 永远醒不过来，任务表上显示"已取消"而线程池还挂着，
+        # 进程退出时会卡在等线程 —— 不报错、只是关不掉
+        self._gate.set()
+
+    @property
+    def paused(self) -> bool:
+        return not self._gate.is_set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def wait_if_paused(self, poll_s: float = 0.25) -> None:
+        """
+        真的等到被放行（或被取消）为止。
+
+        🔴 **这里曾经写成 `self._gate.wait(timeout)` 一次就返回 —— 那是个
+        「不报错、不崩溃、但功能完全无效」的 bug。** `Event.wait(t)` 到点就返回，
+        **不管开关是不是还关着**。结果是：点了暂停，每个文件只慢 1 秒，
+        任务照跑到底。界面上按钮状态、`paused` 字段全是对的，
+        进度条也在动 —— 唯一错的是它根本没停。
+
+        改成循环轮询：醒来先看一眼开关，还关着就接着睡。
+        用轮询而不是无参 `wait()` 是为了让**取消**这条路多一层保险 ——
+        万一哪天 `cancel()` 忘了 `set()`，最坏是每 0.25 秒醒一次发现该退出，
+        而不是永远挂在那里把线程池和进程退出一起拖死。
+        """
+        while not self._gate.is_set():
+            if self._cancelled:
+                return
+            self._gate.wait(poll_s)
+
+
 @dataclass
 class IngestStats:
     total: int = 0
@@ -51,6 +117,7 @@ class IngestStats:
     failed: int = 0
     skipped: int = 0
     chunks: int = 0
+    cancelled: bool = False
     started_at: float = field(default_factory=time.perf_counter)
     errors: list[tuple[str, str]] = field(default_factory=list)
 
@@ -798,8 +865,12 @@ class IngestPipeline:
                 return "failed"
             self.repo.set_stage(item_id, "extract", "done")
 
+            # A7：音频和视频**必须挂不同的 kind**。以前这里写死 "video"，
+            # 结果一首 mp3 在界面上会被当成视频渲染 —— 去要它的场景缩略图
+            # （音频根本没有），拿到空数组后画出一条空白的缩略条。
+            # 不报错、不崩溃，就是一块永远空着的区域，正是静默失败的形状
             meta = {
-                "kind": "video",
+                "kind": modality,
                 "durationSec": round(info.duration_sec, 2),
                 "width": info.width,
                 "height": info.height,
@@ -811,10 +882,13 @@ class IngestPipeline:
             }
             mins, secs = divmod(int(info.duration_sec), 60)
             bits = [f"{mins}:{secs:02d}"]
-            if info.width:
+            if info.width and modality == "video":
                 bits.append(f"{info.width}×{info.height}")
             if info.scenes:
                 bits.append(f"{len(info.scenes)} 个片段")
+            elif modality == "audio":
+                # 音频没有场景，给一句它自己的描述，否则摘要只剩一个时长
+                bits.append("音频，台词转写后可按句搜")
             self.repo.update_item_fields(
                 item_id,
                 snippet=" · ".join(bits),
@@ -950,9 +1024,21 @@ class IngestPipeline:
         recursive: bool = True,
         source: str = "file",
         tags: list[str] | None = None,
+        control: JobControl | None = None,
+        on_item: Callable[[str, str, str], None] | None = None,
+        on_total: Callable[[int], None] | None = None,
     ) -> IngestStats:
         """
         混合投喂：路径和 URL 都能进来。
+
+        `control` 给 F2 驾驶舱用：暂停 / 取消。不传就是原来的行为。
+        `on_item(path, status, detail)` 每处理完一个就回调一次 ——
+        🔴 **失败清单是驾驶舱存在的主要理由**：一万个文件失败 37 个，
+        不逐条报出来的话进度条走到 100% 看起来就像全成功了。
+
+        `on_total(n)` 在**展开目录之后立刻**回调一次。
+        🔴 少了它，调用方要等这个函数**返回**才知道总共几个文件 ——
+        而那已经是任务结束的时候了。中间几分钟进度条一直是 `0 / 0`。
 
         ⚠️ URL **必须以 str 传，不能包成 Path**。
            `Path("https://example.com/a")` 在 Windows 上会变成
@@ -972,12 +1058,21 @@ class IngestPipeline:
                 files.append(p)
 
         stats = IngestStats(total=len(files) + len(urls))
+        # 展开完目录立刻报总数。**放在 `if not files` 之前** ——
+        # 一个文件都没有时也要报 0，否则调用方那边会一直挂着上一次的总数
+        if on_total is not None:
+            on_total(stats.total)
         if not files and not urls:
             return stats
 
         # 网页串行抓：并发抓会对同一个站点形成一小波请求，
         # 容易被限流甚至封 IP。抓取是 IO 等待为主，串行也不慢。
         for u in urls:
+            if control is not None:
+                control.wait_if_paused()
+                if control.cancelled:
+                    stats.cancelled = True
+                    return stats
             r = self.ingest_url(u, tags=tags)
             if r == "done":
                 stats.done += 1
@@ -986,6 +1081,8 @@ class IngestPipeline:
             else:
                 stats.failed += 1
                 stats.errors.append((u, r))
+            if on_item is not None:
+                on_item(u, r if r in ("done", "skipped") else "failed", "" if r in ("done", "skipped") else r)
         if not files:
             return stats
 
@@ -994,7 +1091,22 @@ class IngestPipeline:
         last_report = [0.0]
 
         def work(p: Path) -> None:
+            # 🔴 检查放在**开工之前**，不是做完之后。放后面的话点了暂停，
+            # 线程池里在跑的那 N 个还会各自再抓一个新文件下来做完才停 ——
+            # 表现是"点了暂停，进度条又往前跳了一截"，用户会以为按钮坏了
+            if control is not None:
+                control.wait_if_paused()
+                if control.cancelled:
+                    with lock:
+                        stats.cancelled = True
+                    return
             r = self.ingest_file(p, source=source, tags=tags)
+            if on_item is not None:
+                on_item(
+                    str(p),
+                    r if r in ("done", "skipped") else "failed",
+                    "" if r in ("done", "skipped") else r,
+                )
             with lock:
                 if r == "done":
                     stats.done += 1

@@ -75,6 +75,16 @@ class EngineConfig:
     都必须带 `X-Synorive-Token` 头且和它一致，见 main.py 的 `_pairing_guard`。
     本机（桌面端自己/MCP/CLI，全部走 127.0.0.1）永远不受这道闸影响。"""
     pairing_token: str | None = None
+    """
+    E15 是否优先用核显（DirectML）跑 ONNX 推理。
+
+    🔴 **这个字段以前根本不存在** —— 桌面端设置页有「启用核显加速」开关，
+    但引擎侧没有任何地方读它，`TextEmbedder(prefer_gpu=...)` 也从来没人传过。
+    结果是那个开关**只换了 onnxruntime 的包，没换实际的执行器**：
+    用户打开它、重启引擎、看到一切正常，而推理还在 CPU 上跑。
+    不报错、不降级、只是白开心一场。
+    """
+    prefer_gpu: bool = False
 
     @property
     def db_path(self) -> Path:
@@ -269,7 +279,9 @@ class Runtime:
         d = self.config.model_dir / "bge-small-zh-v1.5"
         if not (d / "model.onnx").exists():
             return None
-        self._embedder = TextEmbedder(d)  # threads 默认取物理核数
+        # 🔴 `prefer_gpu` 必须传。以前这里没传，于是「启用核显加速」开关
+        # 对查询路径完全无效 —— 开了也还是 CPU，而且没有任何迹象
+        self._embedder = TextEmbedder(d, prefer_gpu=self.config.prefer_gpu)  # threads 默认取物理核数
         return self._embedder
 
     def _get_reranker(self) -> Any:
@@ -284,6 +296,92 @@ class Runtime:
 
         self._reranker = Reranker(self.config.model_dir / "bge-reranker-base")
         return self._reranker
+
+    # ── E15 模型热插拔 ──────────────────────────────────────
+
+    def model_status(self) -> dict[str, Any]:
+        """
+        当前各模型的真实状态：装没装、加载没加载、跑在哪个执行器上。
+
+        🔴 **`loaded` 和 `installed` 是两回事，必须分开报。**
+        模型是懒加载的（构造时不 load），所以"装了但还没加载"是**正常状态**，
+        不是故障。混成一个字段的话，用户会在装完之后看到"未加载"然后
+        以为装失败了，跑去重装一遍。
+        """
+        model_dir = self.config.model_dir
+        emb = self._embedder
+        rr = self._reranker
+        return {
+            "textEmbedder": {
+                "id": "bge-small-zh-v1.5",
+                "installed": (model_dir / "bge-small-zh-v1.5" / "model.onnx").exists(),
+                "loaded": bool(emb is not None and getattr(emb, "ready", False)),
+                "provider": getattr(emb, "provider", None) if emb is not None else None,
+                "dim": getattr(emb, "dim", None) if emb is not None else None,
+                # 🔴 这一条是整个功能最要紧的信息，见 reload_models 的注释
+                "hotSwappable": False,
+                "why": "索引里的向量是这个模型算出来的。换成别的模型，"
+                "**旧向量和新查询不在同一个空间里** —— 搜索不会报错，只会开始返回不相干的结果。"
+                "要换必须整库重新索引",
+            },
+            "reranker": {
+                "id": "bge-reranker-base",
+                "installed": (model_dir / "bge-reranker-base" / "model.onnx").exists(),
+                "loaded": bool(rr is not None and getattr(rr, "ready", False)),
+                "hotSwappable": True,
+                "why": "精排只是把已经搜到的几条重新排序，不写索引，随时可换",
+            },
+            "preferGpu": bool(self.config.prefer_gpu),
+            "note": "「已安装但未加载」是正常的 —— 模型是用到才加载的，不是坏了",
+        }
+
+    def reload_models(self, *, prefer_gpu: bool | None = None) -> dict[str, Any]:
+        """
+        E15 —— **不重启引擎**换执行器 / 重载模型。
+
+        🔴 **能热换的只有「同一个模型换执行器（CPU ↔ 核显）」和「精排模型」。**
+        文本向量模型**不能**在线换成另一个模型：库里几十万条向量都是旧模型算的，
+        换了之后新查询的向量和旧向量根本不在同一个空间里 ——
+        **搜索不会报错**，只会开始返回一堆不相干的东西。
+        这正是那种"运行正常、功能无效"的故障，而且用户几乎不可能自己诊断出来。
+        所以这个方法**只重建会话，不换模型身份**。
+
+        换执行器是安全的：同一份权重、同一个输出空间，只是算的地方从 CPU
+        挪到核显。`ann_index` 的 `model_tag` 不变，索引照用。
+        """
+        changed: list[str] = []
+        if prefer_gpu is not None and self.config.prefer_gpu != prefer_gpu:
+            self.config.prefer_gpu = prefer_gpu
+            changed.append(f"执行器偏好 → {'核显' if prefer_gpu else 'CPU'}")
+
+        # 丢掉旧实例。ONNX 会话的释放靠 GC，这里只需要断引用；
+        # 下一次用到时 `_get_*` 会重新构造并懒加载
+        had_emb = self._embedder is not None
+        had_rr = self._reranker is not None
+        self._embedder = None
+        self._reranker = None
+
+        new_emb = self._get_query_embedder()
+        new_rr = self._get_reranker()
+        if self.search is not None:
+            # 🔴 **必须把新实例塞回检索器。** 只置空 `self._embedder` 的话，
+            # `self.search` 手里还攥着旧的那个 —— 表现是"重载成功了但什么都没变"，
+            # 而且日志上一切正常。装完模型那条路径当年就是这么修的
+            self.search.embedder = new_emb
+            if hasattr(self.search, "reranker"):
+                self.search.reranker = new_rr
+        if had_emb:
+            changed.append("文本向量会话已重建")
+        if had_rr:
+            changed.append("精排会话已重建")
+
+        return {
+            "ok": True,
+            "changed": changed or ["没有需要重建的（模型都还没加载过）"],
+            "status": self.model_status(),
+            "note": "换的是**执行器**不是模型本身 —— 同一份权重、同一个向量空间，索引不用重建。"
+            "新会话是懒加载的：下一次搜索时才真正建起来，那一次会慢 300ms 左右",
+        }
 
     def image_vector_for(self, item_id: str | None, path: str | None) -> Any:
         """
@@ -616,24 +714,89 @@ class Runtime:
         import threading
         import uuid
 
+        from .ingest.pipeline import JobControl
+
         job_id = uuid.uuid4().hex[:16]
-        self._jobs[job_id] = {"status": "running", "total": 0, "done": 0}
+        control = JobControl()
+        # F2 驾驶舱要的三样：还要多久 / 现在卡在哪个 / 哪些失败了。
+        # `items` 只留**失败和跳过**的明细 —— 成功的那几万条留着毫无用处，
+        # 却能把一个后台任务的内存吃到几十兆
+        self._jobs[job_id] = {
+            "status": "running",
+            "total": 0,
+            "done": 0,
+            "failed": 0,
+            "skipped": 0,
+            "control": control,
+            "items": [],
+            "startedAt": time.time(),
+        }
+
+        # 🔴 `note_item` 会被线程池里的多个 worker 同时调用。
+        # `job["done"] += 1` 是「读-改-写」三步，两个线程撞上就会丢计数 ——
+        # 表现是进度条永远差那么几个数，而且**不报错**
+        job_lock = threading.Lock()
+
+        def note_total(total: int) -> None:
+            """
+            🔴 **总数必须在展开目录之后立刻报一次。**
+            以前只在 `ingest_paths` 返回后才写 `total`，而那是整个任务**结束**的时候 ——
+            中间几分钟里驾驶舱拿到的是 `0 / 0`，进度条一直贴在 0%，
+            然后突然跳到 100%。「还要多久」是 F2 存在的头号理由，而它一直是坏的。
+            """
+            job = self._jobs.get(job_id)
+            if job is not None:
+                job["total"] = total
+
+        def note_item(path: str, status: str, detail: str) -> None:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            with job_lock:
+                job["current"] = path
+                # 🔴 计数也要在这里累，不能等任务结束再从 stats 抄一遍 ——
+                # 同一个原因：中途查到的 done 永远是 0
+                if status == "done":
+                    job["done"] = int(job.get("done", 0)) + 1
+                elif status == "skipped":
+                    job["skipped"] = int(job.get("skipped", 0)) + 1
+                else:
+                    job["failed"] = int(job.get("failed", 0)) + 1
+                if status in ("failed", "skipped"):
+                    items = job["items"]
+                    # 上限 500 条：再多用户也不会一条条看，而无上限的列表
+                    # 在一次十万文件的投喂里能自己吃掉几百兆
+                    if len(items) < 500:
+                        items.append({"path": path, "status": status, "error": detail})
+                    else:
+                        job["itemsTruncated"] = True
 
         def run() -> None:
             try:
-                stats = self.pipeline.ingest_paths(paths, recursive=recursive, source=source, tags=tags)
+                stats = self.pipeline.ingest_paths(
+                    paths,
+                    recursive=recursive,
+                    source=source,
+                    tags=tags,
+                    control=control,
+                    on_item=note_item,
+                    on_total=note_total,
+                )
+                job = self._jobs.get(job_id, {})
                 self._jobs[job_id] = {
-                    "status": "done",
+                    **job,
+                    "status": "cancelled" if stats.cancelled else "done",
                     "total": stats.total,
                     "done": stats.done,
                     "failed": stats.failed,
                     "skipped": stats.skipped,
+                    "current": None,
                 }
                 self.events.publish(
                     "ingest.job",
                     {
                         "jobId": job_id,
-                        "status": "done",
+                        "status": "cancelled" if stats.cancelled else "done",
                         "totalItems": stats.total,
                         "doneItems": stats.done,
                         "failedItems": stats.failed,
@@ -642,11 +805,83 @@ class Runtime:
                     },
                 )
             except Exception as e:  # noqa: BLE001
-                self._jobs[job_id] = {"status": "failed", "error": str(e)}
+                # 🔴 **这里以前整个字典替换成 `{"status": "failed", "error": ...}`** ——
+                # 把 `items`（失败清单）、`total/done`、`startedAt`、`control` 全丢了。
+                # 后果是任务崩掉时驾驶舱显示「失败，0 条问题」，而真相是
+                # 前面可能已经有几十条失败明细，全被这一行擦掉了。
+                # **出错的时候恰恰是最需要那份明细的时候。**
+                job = self._jobs.get(job_id, {})
+                self._jobs[job_id] = {**job, "status": "failed", "error": str(e), "current": None}
                 self.events.publish("toast", {"level": "error", "message": f"摄取失败：{e}"})
 
         threading.Thread(target=run, daemon=True, name=f"ingest-{job_id}").start()
         return job_id
+
+    # ── F2 批量驾驶舱：查一个任务 / 暂停 / 继续 / 取消 ────────
+
+    def job_detail(self, job_id: str) -> dict[str, Any] | None:
+        """
+        查一个摄取任务的实时状态。
+
+        🔴 返回的字典里**不能带 `control` 对象** —— 它要被 JSON 序列化发给界面，
+        带上去会直接抛 `TypeError: Object of type JobControl is not JSON serializable`。
+        这类错误发生在响应序列化阶段，FastAPI 会回 500 而不是给出有用信息。
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            return None
+        control = job.get("control")
+        return {
+            "jobId": job_id,
+            "status": job.get("status", "running"),
+            "total": job.get("total", 0),
+            "done": job.get("done", 0),
+            "failed": job.get("failed", 0),
+            "skipped": job.get("skipped", 0),
+            "current": job.get("current"),
+            "startedAt": job.get("startedAt", 0.0),
+            "paused": bool(control.paused) if control is not None else False,
+            "items": list(job.get("items", [])),
+            "itemsTruncated": bool(job.get("itemsTruncated", False)),
+            "error": job.get("error"),
+        }
+
+    def control_job(self, job_id: str, action: str) -> dict[str, Any]:
+        """
+        pause / resume / cancel。
+
+        🔴 **不做乐观更新**：界面上的按钮状态严格跟着这里返回的真实值走。
+        任务已经跑完了还回一个"已暂停"，用户会盯着一个永远不动的进度条。
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            return {"ok": False, "note": "没有这个任务（可能引擎重启过——任务表只在内存里）"}
+        control = job.get("control")
+        if control is None:
+            return {"ok": False, "note": "这个任务不支持暂停（它是旧版本起的）"}
+        if job.get("status") != "running":
+            return {"ok": False, "note": f"任务已经{job.get('status')}了，控制不了", "status": job.get("status")}
+        if action == "pause":
+            control.pause()
+        elif action == "resume":
+            control.resume()
+        elif action == "cancel":
+            control.cancel()
+        else:
+            return {"ok": False, "note": f"不认识的动作：{action}"}
+        return {
+            "ok": True,
+            "paused": control.paused,
+            "cancelled": control.cancelled,
+            # 取消是「当前这批文件做完就停」，不是立刻断在半路 ——
+            # 半路断会留下写了一半的索引记录。这句必须让用户看见，
+            # 否则点了取消进度还在动，会以为没生效
+            "note": "已暂停（正在处理的那个文件会做完）"
+            if action == "pause"
+            else "已继续"
+            if action == "resume"
+            else "已取消（正在处理的那批文件会做完再停）",
+        }
 
     async def install_dependency(self, dep_id: str) -> None:
         try:

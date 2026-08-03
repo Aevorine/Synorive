@@ -534,9 +534,12 @@ export const projectApi = {
     payload?: unknown;
     runId?: string;
     projectId?: string;
-    format: 'markdown' | 'html' | 'json' | 'docx';
+    /** `single-html` 是 E6 的离线单文件：证据全内嵌，断网也能看 */
+    format: 'markdown' | 'html' | 'json' | 'docx' | 'single-html';
     title?: string;
     includeExcluded?: boolean;
+    /** E1 简报模板。**换模板不改任何一句摘录**，只换组织方式 */
+    template?: 'points' | 'timeline' | 'compare' | 'qa';
   }) =>
     call<ExportResult>('/api/research/export', { method: 'POST', body: JSON.stringify(req) }),
 };

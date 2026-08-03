@@ -10,14 +10,14 @@ Then search the open web across multiple engines, cross-check every claim, and g
 where **every sentence is verbatim from a real source**.
 
 Runs fully offline. Your files never leave your machine.
-Exposes 16 tools to **Claude Code** over MCP.
+Exposes 24 tools to **Claude Code** over MCP.
 
 [![Status](https://img.shields.io/badge/status-alpha%20v0.1.0-C8871B)](task-progress.md)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](#怎么跑起来)
 [![Engine](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](engine)
 [![Desktop](https://img.shields.io/badge/desktop-Electron%2041%20%2B%20React%2019-0F4C8C)](apps/desktop)
 [![Offline](https://img.shields.io/badge/works-fully%20offline-1E9E76)](#几个不显然的设计决定)
-[![MCP](https://img.shields.io/badge/MCP-16%20tools-C8871B)](mcp)
+[![MCP](https://img.shields.io/badge/MCP-24%20tools-C8871B)](mcp)
 
 </div>
 
@@ -32,7 +32,7 @@ Exposes 16 tools to **Claude Code** over MCP.
 | 🌐 | **Multi-engine web search** — Bing / Baidu / 360 / Mojeek / Wikipedia, plus Google & DuckDuckGo via a self-hosted SearXNG | **多引擎联网搜索**，自建 SearXNG 后 Google 和 DuckDuckGo 也能用 |
 | 🛡 | **Actively hunts for counter-evidence** — searches for debunkings, traces a claim to its earliest source, flags retracted papers | **主动找打脸证据**：反向搜辟谣、溯源到最早出处、标出已撤稿文献 |
 | 📋 | **Extract-only briefings** — every line is a verbatim quote with its source. Conflicting claims are shown **side by side, undecided** | **只摘录不改写的简报**：每句都逐字来自原文并挂着出处；有分歧就并排放，不替你选 |
-| 🔌 | **16 MCP tools for Claude Code** — let your agent search your library and verify claims for you | **16 个 MCP 工具**，Claude Code 能直接检索你的库、替你核查说法 |
+| 🔌 | **24 MCP tools for Claude Code** — let your agent search your library and verify claims for you | **24 个 MCP 工具**，Claude Code 能直接检索你的库、替你核查说法 |
 | 🔒 | **Privacy fence** — network search and cloud inference are two *separate* switches, because one leaks *what you ask*, the other leaks *what you have* | **隐私围栏**：联网搜索和云端推理是两个开关，前者泄露"我在查什么"，后者泄露"我有什么" |
 
 **Keywords:** local semantic search · multimodal RAG · offline search engine · personal knowledge base ·
@@ -157,9 +157,13 @@ node scripts/install-claude-integration.mjs
 
 装完新开一个 Claude Code 会话，问「我之前存过关于 X 的东西吗」就会自动触发检索。
 
-**16 个工具**：
+**24 个工具**：
 - 本地库：`search` / `ingest` / `analyze` / `get_content` / `similar` / `timeline` / `graph` / `status` / `questions`
 - 联网：`web_search` / `research` / `scholar` / `read_url` / `web_engines` / `verify` / `unified_search`
+- 文献：`scholar_review`（分主题综述，只摘录不改写）/ `scholar_table`（同一指标横向抽表）/
+  `citations`（共被引找奠基论文）/ `harvest`（批量下开放全文并入库，默认干跑）
+- 核对与记忆：`check_numbers`（数字回原文逐个核对）/ `memory`（这个话题以前查过什么）
+- 本地媒体：`compare`（两个文件哪里不一样）/ `chapters`（长视频章节目录）
 
 给 Claude 的返回**强制带可信度分项和出处**，工具描述里写死了能力边界
 （"判断不了这句话本身是不是事实"、"逐字摘录不是改写"、"有反驳材料 ≠ 原说法是假的"）——

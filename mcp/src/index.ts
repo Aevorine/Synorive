@@ -109,6 +109,8 @@ server.registerTool(
       '支持中文语义检索——描述内容也能搜到，不用记文件名。' +
       '查询串里可以直接写筛选指令：type:pdf、date:>2026-01、date:最近7天、' +
       'size:>10mb、in:D:\\项目、tag:重要、src:link、-排除词、"精确短语"。' +
+      '论文可以按章节过滤：section:方法 / section:结果 / section:结论（中英文都认，' +
+      '按子串匹配所以「3.2 Experimental Method」这种带编号的标题也能命中）。' +
       '视频和音频的结果会带上时间点，可以直接跳到那一秒。',
     inputSchema: {
       query: z.string().describe('查询词，可含筛选指令'),
@@ -1144,6 +1146,346 @@ server.registerTool(
       const lines = [`抽了 ${r.framesTried} 帧，候选来源（按命中帧数排序）：`, ''];
       for (const [i, c] of r.candidates.slice(0, 8).entries()) {
         lines.push(`${i + 1}. ${c.title || '（无标题）'}  命中 ${c.matchedKeyframes} 帧`, `   ${c.pageUrl}`);
+      }
+      return text(lines.join('\n'));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+// ════════════════════════════════════════════════════════════
+// 第四轮新增的八个工具（C/D/E/A 组）
+// ════════════════════════════════════════════════════════════
+// 这一批全部遵守同一条：**能力边界写进 description**。
+// 不写的话 Claude 会把「按词面相似度分堆」当成「按语义理解分类」，
+// 把「从摘要里抽的数字」当成「核对过全文」，然后用同样自信的语气转述。
+
+// ⑰ 文献综述（C4）
+server.registerTool(
+  'synorive_scholar_review',
+  {
+    title: '把一批文献整理成分主题的综述（只摘录，不改写）',
+    description:
+      '给一批 synorive_scholar 搜到的文献，按主题聚成几簇，每簇一段，' +
+      '**每句都是从某篇摘要里逐字摘出来的**，句尾 [n] 指回那一篇。\n' +
+      '🔴 它不改写、不概括、不做任何原文没说的推断 —— 所以读起来不如人写的连贯，' +
+      '这是刻意的代价。有分歧的地方会并排摆出，不替谁判断哪边对。\n' +
+      '🔴 分主题用的是**标题和摘要的词面相似度，不是语义模型** —— ' +
+      '换了说法但讲同一件事的，可能被分到两堆里。',
+    inputSchema: {
+      entries: z.array(z.record(z.any())).describe('synorive_scholar 返回的文献条目'),
+      topic: z.string().default('').describe('主题名，只用于标题'),
+      maxSections: z.number().int().min(2).max(12).default(6),
+    },
+  },
+  async ({ entries, topic, maxSections }) => {
+    try {
+      const r = await engine.post<{
+        sections: {
+          heading: string; paperCount: number; yearSpan: string;
+          quotes: { text: string; ref: number; year: string }[];
+          disputes: { a: { text: string; ref: number }; b: { text: string; ref: number } }[];
+        }[];
+        references: { n: number; title: string; url: string; year: string }[];
+        note: string;
+      }>('/api/scholar/review', { entries, topic, maxSections });
+
+      const lines: string[] = [r.note, ''];
+      for (const s of r.sections) {
+        lines.push(`## ${s.heading}　（${s.paperCount} 篇${s.yearSpan ? ` · ${s.yearSpan}` : ''}）`);
+        for (const q of s.quotes) lines.push(`  · ${q.text} [${q.ref}]`);
+        for (const d of s.disputes) {
+          lines.push(`  ⚠️ 这里有分歧，两边都摆出来：`);
+          lines.push(`     A [${d.a.ref}] ${d.a.text}`);
+          lines.push(`     B [${d.b.ref}] ${d.b.text}`);
+        }
+        lines.push('');
+      }
+      lines.push('参考文献：');
+      for (const ref of r.references) lines.push(`  [${ref.n}] ${ref.title}（${ref.year}）${ref.url}`);
+      return text(lines.join('\n'));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+// ⑱ 多篇对齐抽表（C5）
+server.registerTool(
+  'synorive_scholar_table',
+  {
+    title: '同一个指标在 N 篇论文里各是多少，抽成一张表',
+    description:
+      '把一批文献里的准确率/F1/样本量/参数量/耗时等指标抽成表格，方便横向比。\n' +
+      '🔴 **只抽摘要里明确写了的**。摘要没写就是空格 —— 不去正文里猜，' +
+      '也不做单位换算（92% 和 0.92 保持原样并排放）。' +
+      '要更全得先把 PDF 下下来入库再对全文抽一次。\n' +
+      '返回里的 coverage 是填充率，很低就说明这批文献的摘要普遍没写指标，那不是抽取失败。',
+    inputSchema: {
+      entries: z.array(z.record(z.any())),
+      metrics: z.array(z.string()).optional().describe('只要哪几列，不传就全要'),
+    },
+  },
+  async ({ entries, metrics }) => {
+    try {
+      const r = await engine.post<{
+        columns: string[];
+        rows: { title: string; year: string; cells: Record<string, { value: string; unit: string } | null> }[];
+        coverage: number; note: string;
+      }>('/api/scholar/table', { entries, metrics: metrics ?? null, format: 'json' });
+
+      const cols = r.columns.filter((c) => c !== '文献' && c !== '年份');
+      const lines = [r.note, '', ['文献', '年份', ...cols].join(' | '), '---'];
+      for (const row of r.rows) {
+        const vals = cols.map((c) => {
+          const cell = row.cells[c];
+          return cell ? `${cell.value}${cell.unit}` : '—';
+        });
+        lines.push([row.title.slice(0, 40), row.year || '—', ...vals].join(' | '));
+      }
+      return text(lines.join('\n'));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+// ⑲ 引用网络（C3）
+server.registerTool(
+  'synorive_citations',
+  {
+    title: '找一个领域绕不过去的那几篇论文',
+    description:
+      '从一批文献出发，往回展开参考文献、往前展开被引，然后**数共被引次数**。' +
+      '被这批文献共同引用最多的那几篇，基本就是这个领域的奠基工作。\n' +
+      '🔴 这个数是**自己数出来的**，不是谁的推荐榜 —— 但它只反映"你给的这批文献在引谁"，' +
+      '你给的那批要是本身就偏，数出来的奠基论文也会跟着偏。\n' +
+      '🔴 只展开一层。数据来自 OpenAlex，**预印本和中文文献常常查不到**，' +
+      '返回里的 resolved/requested 会告诉你有几篇没解析出来。',
+    inputSchema: {
+      entries: z.array(z.record(z.any())),
+      direction: z.enum(['back', 'forward', 'both']).default('both'),
+      topN: z.number().int().min(3).max(40).default(15),
+    },
+  },
+  async ({ entries, direction, topN }) => {
+    try {
+      const r = await engine.post<{
+        foundations: { title: string; year: string; coCited: number; citations: number; url: string }[];
+        followups: { title: string; year: string; citesSeeds: number; citations: number; url: string }[];
+        resolved: number; requested: number; note: string;
+      }>('/api/scholar/citations', { entries, direction, topN }, 60_000);
+
+      const lines = [r.note, '', `【奠基论文】被这批文献共同引用最多的`];
+      for (const f of r.foundations) {
+        lines.push(`  · ${f.title}（${f.year}）— 被这批里 ${f.coCited} 篇引用，总被引 ${f.citations}`);
+        lines.push(`    ${f.url}`);
+      }
+      if (r.followups.length) {
+        lines.push('', '【后续工作】引用了这批文献的');
+        for (const f of r.followups) {
+          lines.push(`  · ${f.title}（${f.year}）— 引了这批里 ${f.citesSeeds} 篇，总被引 ${f.citations}`);
+        }
+      }
+      return text(lines.join('\n'));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+// ⑳ 批量下载 PDF（C2）
+server.registerTool(
+  'synorive_harvest',
+  {
+    title: '把搜到的开放获取论文批量下下来并入库',
+    description:
+      '**默认干跑**：不传 apply=true 时只告诉你打算下几篇、大概多大，不真下。\n' +
+      '🔴 只下各家源明确标了公开全文的那些。**绝不去猜出版商的下载地址** —— ' +
+      '那既下不到（会拿到登录页）也不合规。付费墙后面的会被跳过并说明原因。\n' +
+      '🔴 单次上限 50 篇、4 并发。学术站点对批量抓取很敏感，打太狠会让整个 IP 被封。\n' +
+      '下完自动入库并走分节索引，之后用 synorive_search 就能搜到全文。',
+    inputSchema: {
+      entries: z.array(z.record(z.any())),
+      apply: z.boolean().default(false).describe('true 才真下；默认干跑'),
+      limit: z.number().int().min(1).max(50).default(20),
+    },
+  },
+  async ({ entries, apply, limit }) => {
+    try {
+      const r = await engine.post<{
+        dryRun?: boolean; count?: number; estimatedMb?: number;
+        downloaded?: number; ingested?: number; failed?: number;
+        items?: { title: string; status: string; reason: string }[];
+        note: string;
+      }>('/api/scholar/harvest', { entries, apply, limit, ingest: true }, 300_000);
+
+      if (r.dryRun) {
+        return text(`${r.note}\n\n要真下的话，把 apply 设成 true 再调一次。`);
+      }
+      const lines = [r.note, ''];
+      for (const it of (r.items ?? []).filter((x) => x.status !== 'ok').slice(0, 15)) {
+        lines.push(`  ✗ ${it.title.slice(0, 50)} —— ${it.reason}`);
+      }
+      return text(lines.join('\n'));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+// ㉑ 长期记忆（E2）
+server.registerTool(
+  'synorive_memory',
+  {
+    title: '这个话题我以前查过什么',
+    description:
+      '开始查一个话题之前先问一句"以前看过什么"。返回的是**逐字摘录 + 出处**，' +
+      '按"被反复见到的次数"排序 —— 反复出现的更可能是这个话题的骨干信息。\n' +
+      '🔴 记忆库里**只存摘录，不存任何总结** —— 存总结等于把一次可能出错的提炼' +
+      '固化成"记忆"，之后每次都在这个可能错的基础上继续，错误会累积且追不回源头。\n' +
+      '🔴 「以前没查过」不代表这个话题没被研究过，只代表这台机器上没有记录。',
+    inputSchema: {
+      topic: z.string().describe('话题（就用查询词即可）'),
+      limit: z.number().int().min(1).max(100).default(30),
+    },
+  },
+  async ({ topic, limit }) => {
+    try {
+      const r = await engine.get<{
+        known: boolean; runCount: number; lastSeen: string; controversy: number | null;
+        facts: { text: string; url: string; site: string; seen_count: number }[];
+        note: string;
+      }>(`/api/memory/recall?topic=${encodeURIComponent(topic)}&limit=${limit}`);
+
+      if (!r.known) return text(`${r.note}。这是第一次查这个话题。`);
+      const lines = [
+        `${r.note}，最近一次 ${r.lastSeen}` +
+          (r.controversy != null ? `，上次的争议度 ${r.controversy}/100` : ''),
+        '',
+      ];
+      for (const f of r.facts) {
+        lines.push(`· ${f.text}`);
+        lines.push(`  —— ${f.site}（见过 ${f.seen_count} 次）${f.url}`);
+      }
+      return text(lines.join('\n'));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+// ㉒ 文件比对（A5）
+server.registerTool(
+  'synorive_compare',
+  {
+    title: '两个文件哪里不一样',
+    description:
+      '文本/代码走行级 diff，图片走感知哈希，二进制只能比到字节层面。' +
+      '两边类型不同时**不硬比**（硬比会得到一个看起来像结论、实际毫无意义的 0%）。\n' +
+      '🔴 只报差异，**不判断哪个版本更好** —— 那是用户的事。\n' +
+      '🔴 图片那一路看的是构图和明暗分布，**看不出局部小改动**：' +
+      '改掉照片里一个小物件，感知哈希距离可能仍然是 0。',
+    inputSchema: {
+      a: z.string().describe('第一个文件的绝对路径'),
+      b: z.string().describe('第二个文件的绝对路径'),
+    },
+  },
+  async ({ a, b }) => {
+    try {
+      const r = await engine.post<{
+        kind?: string; verdict?: string; error?: string; note?: string;
+        similarity?: number; added?: number; removed?: number;
+        hunks?: { tag: string; aStart: number; aLines: string[]; bLines: string[] }[];
+      }>('/api/compare/files', { a, b }, 120_000);
+
+      if (r.error) return text(`比不了：${r.error}`);
+      const lines = [r.verdict ?? '', r.note ?? '', ''];
+      if (r.kind === 'text') {
+        lines.push(`新增 ${r.added} 行，删除 ${r.removed} 行`, '');
+        for (const h of (r.hunks ?? []).slice(0, 12)) {
+          lines.push(`@@ 第 ${h.aStart} 行 (${h.tag})`);
+          for (const l of h.aLines.slice(0, 6)) lines.push(`- ${l}`);
+          for (const l of h.bLines.slice(0, 6)) lines.push(`+ ${l}`);
+        }
+      }
+      return text(lines.filter(Boolean).join('\n'));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+// ㉓ 视频章节（A6）
+server.registerTool(
+  'synorive_chapters',
+  {
+    title: '给一个视频/音频出章节目录',
+    description:
+      '按语音停顿和画面切换把长视频切成有标题的章节，每章带时间码，可直接跳。\n' +
+      '🔴 返回里的 method 一定要看：**method="equal" 表示这是等分的** —— ' +
+      '没有转写也没有足够的场景数据，章节边界不代表内容真的在这里换了话题。\n' +
+      '🔴 章节标题是从转写原文里**挑**出来的，不是生成的。挑不出来就用时间码。',
+    inputSchema: {
+      itemId: z.string(),
+      maxChapters: z.number().int().min(2).max(60).default(30),
+    },
+  },
+  async ({ itemId, maxChapters }) => {
+    try {
+      const r = await engine.get<{
+        chapters: { index: number; timecode: string; title: string; summary: string; titleSource: string }[];
+        method: string; note: string;
+      }>(`/api/items/${encodeURIComponent(itemId)}/chapters?maxChapters=${maxChapters}`);
+
+      const lines = [r.note, ''];
+      for (const c of r.chapters) {
+        lines.push(`${c.timecode}　${c.title}${c.titleSource === 'timecode' ? '（没挑出标题）' : ''}`);
+        if (c.summary) lines.push(`        ${c.summary.slice(0, 100)}`);
+      }
+      return text(lines.join('\n'));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+// ㉔ 数字回原文校对（D5）
+server.registerTool(
+  'synorive_check_numbers',
+  {
+    title: '把一份简报里的数字逐个回原文核对',
+    description:
+      '简报里出现的每个数字，回到它挂的那条出处原文里找一遍。找不到就标出来。' +
+      '这是整条链路上**错得最多、又最没人查**的一环 —— ' +
+      '「增长 23%」和「增长 32%」在版面上长得一模一样。\n' +
+      '🔴 结论只有三档：ok（原文里找到了）/ unverified（这条出处的正文没拿到，没法查）/ ' +
+      'mismatch（正文拿到了但里面没这个数）。**只有 mismatch 值得警惕**。\n' +
+      '🔴 mismatch 也不等于写错了 —— 可能原文换了单位或表述。返回里会给出' +
+      '"最接近的是哪几个数"，那才是真正能拿去改的信息。\n' +
+      '要传 texts（{url: 正文}），可以先用 synorive_read_url 抓。',
+    inputSchema: {
+      briefing: z.record(z.any()).describe('synorive_research 返回里的 briefing'),
+      texts: z.record(z.string()).describe('{出处url: 正文全文}'),
+    },
+  },
+  async ({ briefing, texts }) => {
+    try {
+      const r = await engine.post<{
+        total: number; ok: number; mismatch: number; unverified: number;
+        verdict: string; note: string;
+        checks: { raw: string; status: string; note: string; sourceUrl: string; context: string }[];
+      }>('/api/web/numbers', { briefing, texts });
+
+      const lines = [
+        `${r.verdict}（共 ${r.total} 个数字：对上 ${r.ok}、对不上 ${r.mismatch}、没法查 ${r.unverified}）`,
+        r.note, '',
+      ];
+      for (const c of r.checks.filter((x) => x.status === 'mismatch')) {
+        lines.push(`⚠️ ${c.raw} —— ${c.note}`);
+        lines.push(`    上下文：${c.context}`);
+        lines.push(`    出处：${c.sourceUrl}`);
       }
       return text(lines.join('\n'));
     } catch (e) {

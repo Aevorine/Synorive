@@ -191,6 +191,17 @@ export interface SearchFilters {
   excludeScopes?: string[];
   /** 语言过滤 */
   languages?: string[];
+  /** D10 `type:pdf` 的扩展名过滤，带点（`.pdf`）。OR 关系 */
+  extensions?: string[];
+  /**
+   * L3-plus `section:方法` —— 只搜论文的这些章节。
+   *
+   * 🔴 **子串匹配不是精确相等**：真实章节标题长这样
+   * `3.2 Experimental Method`、`4. Results and Discussion`，
+   * 精确相等的话一条都命中不了，而且是**静默**命中不了
+   * （返回空结果，看起来就像"库里没有相关内容"）。
+   */
+  sections?: string[];
 }
 
 export interface SearchRequest {

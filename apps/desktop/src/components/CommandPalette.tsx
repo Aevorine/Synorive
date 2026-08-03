@@ -20,8 +20,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Clipboard, Command, FolderPlus, FilePlus2, Gauge, Moon, RefreshCw,
-  Search as SearchIcon, Settings as SettingsIcon, Sun, Trash2,
+  BellPlus, Brain, Clipboard, Command, Crop, FileDiff, FileDown, FilePlus2,
+  FlaskConical, FolderPlus, Gauge, Library, Moon, RefreshCw,
+  Search as SearchIcon, Settings as SettingsIcon, ShieldQuestion, Sun, Trash2,
 } from 'lucide-react';
 import { PAGE_TITLES, useApp, type PageId } from '../lib/store';
 import { useSearch } from '../lib/useSearch';
@@ -155,6 +156,113 @@ export function CommandPalette() {
         id: 'search:explain', label: '显示/隐藏排序理由', py: 'xspxly',
         group: '检索', icon: Gauge, run: () => toggleExplain(),
       },
+
+      // ── F1：命令面板扩到研究动作 ─────────────────────
+      // 以前这里只有导航和检索两组，而研究工作台上那些动作
+      // （深挖、核查、导出、订阅）恰恰是**步骤多、藏得深**的那一批 ——
+      // 它们比"转到设置"更需要一个键盘入口
+      {
+        id: 'research:deep',
+        label: '把当前查询拿去深挖',
+        py: 'sw',
+        hint: '多轮递进搜索 + 反向核查，十几秒',
+        group: '研究',
+        icon: FlaskConical,
+        disabledReason: ready ? undefined : '引擎还没就绪',
+        run: () => {
+          setPage('research');
+          // 用事件而不是直接调 API：研究页自己持有"用什么档位、
+          // 开不开扩写"这些状态，从外面绕过它去发请求会跑出一个
+          // 和界面上显示的设置不一致的结果
+          window.dispatchEvent(new CustomEvent('syn:research-run', { detail: { mode: 'deep' } }));
+        },
+      },
+      {
+        id: 'research:verify',
+        label: '核查一个说法',
+        py: 'hcysf',
+        hint: '主动去找反驳材料，两三秒',
+        group: '研究',
+        icon: ShieldQuestion,
+        disabledReason: ready ? undefined : '引擎还没就绪',
+        run: () => {
+          setPage('research');
+          window.dispatchEvent(new CustomEvent('syn:research-run', { detail: { mode: 'verify' } }));
+        },
+      },
+      {
+        id: 'research:export',
+        label: '导出这份简报',
+        py: 'dcjb',
+        hint: 'Markdown / Word / PDF / 离线单文件',
+        group: '研究',
+        icon: FileDown,
+        run: () => {
+          setPage('research');
+          window.dispatchEvent(new CustomEvent('syn:research-export'));
+        },
+      },
+      {
+        id: 'research:save-library',
+        label: '把这份简报存进本地库',
+        py: 'bcjbcjbdk',
+        hint: '存完以后本地搜索也能搜到它',
+        group: '研究',
+        icon: Library,
+        run: () => {
+          setPage('research');
+          window.dispatchEvent(new CustomEvent('syn:research-save-library'));
+        },
+      },
+      {
+        id: 'research:memory',
+        label: '这个话题我以前查过什么',
+        py: 'zghtwyqcgsm',
+        group: '研究',
+        icon: Brain,
+        run: () => {
+          setPage('research');
+          window.dispatchEvent(new CustomEvent('syn:research-recall'));
+        },
+      },
+      {
+        id: 'research:watch',
+        label: '订阅这个主题',
+        py: 'dyzgzt',
+        hint: '定时重跑，只提醒新出现的',
+        group: '研究',
+        icon: BellPlus,
+        run: () => {
+          setPage('research');
+          window.dispatchEvent(new CustomEvent('syn:research-watch'));
+        },
+      },
+      {
+        id: 'tools:screenshot',
+        label: '截图直搜',
+        py: 'jtzs',
+        hint: '拉起系统截图，框选完自动进投喂条',
+        group: '工具',
+        icon: Crop,
+        run: async () => {
+          const r = await window.synorive.hotkeys.screenshot();
+          // 拉不起来时**要说出来**。静默失败在这里特别难查：
+          // 用户按了以后什么都没发生，会以为是自己操作错了
+          if (!r.ok) window.alert(r.note);
+        },
+      },
+      {
+        id: 'tools:compare',
+        label: '比一比两个文件',
+        py: 'bybllgwj',
+        hint: '文本 diff / 图片相似度 / 视频重复片段',
+        group: '工具',
+        icon: FileDiff,
+        run: () => {
+          setPage('analyze');
+          window.dispatchEvent(new CustomEvent('syn:open-compare'));
+        },
+      },
       {
         id: 'theme:toggle',
         label: settings?.theme === 'dark' ? '切到浅色' : '切到深色',
@@ -171,6 +279,37 @@ export function CommandPalette() {
         id: 'theme:system', label: '主题跟随系统', py: 'ztgsxt',
         group: '外观', icon: Sun,
         run: async () => { await window.synorive.settings.patch({ theme: 'system' }); },
+      },
+      // F4：护眼和密度在设置页里有，但那是"改一次就不动"的位置。
+      // 而这两个恰恰是**会随环境反复切**的（白天/夜里、大屏/小屏），
+      // 每次都要翻进设置页四层太重
+      {
+        id: 'eye:cycle',
+        label: '护眼强度换一档',
+        py: 'hyqdhyd',
+        hint: '关 → 低 → 中 → 高，循环',
+        group: '外观',
+        icon: Sun,
+        run: async () => {
+          const order = ['off', 'low', 'medium', 'high'] as const;
+          const cur = settings?.eyeComfort ?? 'off';
+          const next = order[(order.indexOf(cur as (typeof order)[number]) + 1) % order.length]!;
+          await window.synorive.settings.patch({ eyeComfort: next });
+        },
+      },
+      {
+        id: 'density:cycle',
+        label: '信息密度换一档',
+        py: 'xxmdhyd',
+        hint: '宽松 → 标准 → 紧凑，循环',
+        group: '外观',
+        icon: Gauge,
+        run: async () => {
+          const order = ['comfortable', 'standard', 'compact'] as const;
+          const cur = settings?.density ?? 'standard';
+          const next = order[(order.indexOf(cur as (typeof order)[number]) + 1) % order.length]!;
+          await window.synorive.settings.patch({ density: next });
+        },
       },
       {
         id: 'clip:toggle',

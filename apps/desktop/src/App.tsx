@@ -1,8 +1,9 @@
-import { useEffect, type ComponentType } from 'react';
+import { useEffect, useState, type ComponentType } from 'react';
 import { ClipboardPeek } from './components/ClipboardPeek';
 import { EngineSetup } from './components/EngineSetup';
 import { SideBar } from './components/SideBar';
 import { CommandPalette } from './components/CommandPalette';
+import { Onboarding } from './components/Onboarding';
 import { StatusBar } from './components/StatusBar';
 import { TopBar } from './components/TopBar';
 import { AnalyzePage } from './pages/AnalyzePage';
@@ -12,7 +13,7 @@ import { ResearchPage } from './pages/ResearchPage';
 import { SearchPage } from './pages/SearchPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TimelinePage } from './pages/TimelinePage';
-import { setEnginePort } from './lib/api';
+import { api, setEnginePort } from './lib/api';
 import { useApp, useResolvedTheme, type PageId } from './lib/store';
 import { applyAll } from './lib/theme';
 import './styles/global.css';
@@ -20,6 +21,7 @@ import './styles/shell.css';
 import './styles/search.css';
 import './styles/pages.css';
 import './styles/research.css';
+import './styles/lab.css';
 
 /**
  * N7：随手研究浮窗和主窗口共用同一个渲染包，靠 hash 区分。
@@ -95,6 +97,23 @@ function MainApp() {
     if (settings) applyAll(settings, theme);
   }, [settings, theme]);
 
+  // F5：库里有多少条内容。**问失败时保持 null 而不是当成 0** ——
+  // 当成 0 会给一个已经用了半年的用户弹首次引导，那比不弹糟得多
+  const [itemCount, setItemCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (engine?.lifecycle !== 'ready') return;
+    let alive = true;
+    api
+      .stats()
+      .then((s) => alive && setItemCount(Number(s.items ?? 0)))
+      .catch(() => {
+        /* 问不到就不判断，见上面的注释 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [engine?.lifecycle]);
+
   return (
     <div className="shell">
       <TopBar />
@@ -112,6 +131,25 @@ function MainApp() {
       <StatusBar />
       {/* E13：放在最外层，任何页面都能唤起；它自己判断 open 决定渲不渲染 */}
       <CommandPalette />
+      {/* F5 首次引导。**判"首次"用的是库里有没有内容**，不是有没有配置文件 ——
+          配置被删了但库里有一万条的用户，不该再看一遍引导。
+          itemCount 为 null 时它自己不显示（还没问出来，先别判断） */}
+      <Onboarding
+        itemCount={itemCount}
+        onAddFolder={() => {
+          void (async () => {
+            const dirs = await window.synorive.sys.pickFolders();
+            if (dirs.length) {
+              await api.ingest({ targets: dirs, source: 'file', recursive: true });
+            }
+          })();
+        }}
+        onGoSearch={() => {
+          setPage('search');
+          focusSearch();
+        }}
+        onGoPrivacy={() => setPage('settings')}
+      />
     </div>
   );
 }

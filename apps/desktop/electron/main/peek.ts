@@ -80,6 +80,41 @@ export class PeekWindow {
     this.hideTimer = setTimeout(() => this.hide(), AUTO_HIDE_MS);
   }
 
+  /**
+   * A8 —— 复制到一张图时调这个，走以图搜图那一路。
+   *
+   * 🔴 **和 `show()` 分成两条通道，不复用查询词那条。**
+   * 图片的 `dataUrl` 是几百 KB 的 base64；当成查询词传下去会被分词器
+   * 当文本处理，症状是浮窗正常弹出、正常显示"没找到"，
+   * 而真相是它根本没在搜图。静默失败的典型形态。
+   *
+   * 🔴 **图片一路永不联网**，哪怕用户开了 `peekWeb`。
+   * 文字查询发出去的是一句话，图片发出去的是**一张可能包含任何东西的截图** ——
+   * 那个隐私代价的量级完全不同，不该被同一个开关覆盖。
+   * 要网上反查得回主窗口里显式点。
+   */
+  showImage(dataUrl: string, preview: string): void {
+    if (!dataUrl.startsWith('data:image/')) return;
+    // 太大的图不走浮窗：base64 过 4MB 时 IPC 序列化本身就要几百毫秒，
+    // 而浮窗的全部价值就在于"快得像没发生过"
+    if (dataUrl.length > 4 * 1024 * 1024) return;
+
+    const win = this.ensure();
+    const payload = { image: dataUrl, preview, web: false };
+    const send = () => win.webContents.send('peek:image', payload);
+    if (win.webContents.isLoading()) {
+      win.webContents.once('did-finish-load', send);
+    } else {
+      send();
+    }
+
+    this.place(win);
+    win.showInactive();
+
+    if (this.hideTimer) clearTimeout(this.hideTimer);
+    this.hideTimer = setTimeout(() => this.hide(), AUTO_HIDE_MS);
+  }
+
   hide(): void {
     if (this.hideTimer) {
       clearTimeout(this.hideTimer);

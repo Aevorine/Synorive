@@ -443,6 +443,187 @@ class MetaSearch:
             usable.append(e)
         return usable, skipped
 
+    # ── B1 首字节竞速 ───────────────────────────────────────
+    async def search_stream(
+        self,
+        query: str,
+        *,
+        engines: list[str] | None = None,
+        limit: int = 20,
+        lang: str = "zh",
+        region: str = "",
+        time_range: str | None = None,
+        use_cache: bool = True,
+        deadline_s: float = TOTAL_DEADLINE_S,
+    ) -> Any:
+        """
+        B1 —— **哪家先回哪家先画**，不等最慢那家。
+
+        这是一个异步生成器，每次 `yield` 一个事件：
+
+            {"kind": "engines", "pending": [...]}       开跑，告诉界面在等谁
+            {"kind": "partial", "engine": "bing", ...}  某家回来了，附当前已折叠结果
+            {"kind": "final",   "result": {...}}        全部结束（或到点）
+
+        **为什么这值得单独做一条路径**：现有的 `search()` 要等整波结束才返回，
+        而一波里最慢那家（走浏览器渲染的 Google 能跑 7 秒）决定了用户看到
+        第一个字的时间。实测阵容里最快的 mojeek 通常 400ms 就回来了 ——
+        **中间那 6 秒用户面对的是一个转圈，而结果其实早就有了**。
+
+        🔴 **折叠是增量做的，不是每次全量重算**。每来一家就把它的结果并进
+        已有的簇里；全量重排会让已经画在屏幕上的条目跳来跳去，
+        那比等结果更让人烦躁。所以已出现的簇**只增不重排**，
+        真正的最终排序在 `final` 事件里一次给到。
+        """
+        query = (query or "").strip()
+        if not query:
+            yield {"kind": "final", "result": MetaSearchResult(
+                query="", clusters=[], replies=[], elapsed_ms=0).to_dict()}
+            return
+
+        picked, pre_skipped = self._pick(engines)
+        if self.lineup_size and engines is None and len(picked) > self.lineup_size:
+            picked, benched = self.scheduler.lineup(picked, size=self.lineup_size)
+            pre_skipped += [
+                EngineReply(engine=eid, outcome=ParseOutcome.EMPTY, error=why)
+                for eid, why in benched
+            ]
+
+        ck = self._cache_key(query, picked, limit, lang, region, time_range)
+        if use_cache:
+            hit = self._cache_get(ck)
+            if hit is not None:
+                # 缓存命中直接给 final，**不伪造 partial 事件** ——
+                # 假装它是一家家回来的只会让界面上的动画骗人
+                yield {"kind": "final", "result": hit.to_dict(), "fromCache": True}
+                return
+
+        needs_longer = any(e.needs_browser for e in picked)
+        effective_deadline = (
+            max(deadline_s, RENDER_TIMEOUT_S + 2.0) if needs_longer else deadline_s
+        )
+
+        yield {
+            "kind": "engines",
+            "pending": [e.id for e in picked],
+            "skipped": [
+                {"id": r.engine, "error": r.error} for r in pre_skipped
+            ],
+        }
+
+        t0 = time.monotonic()
+        replies: list[EngineReply] = list(pre_skipped)
+        pooled: list[WebResult] = []
+
+        if picked:
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=httpx.Timeout(ENGINE_TIMEOUT, connect=5.0),
+            ) as client:
+                tasks = {
+                    asyncio.create_task(
+                        self._one(client, e, query, limit=limit, lang=lang,
+                                  region=region, time_range=time_range),
+                        name=e.id,
+                    ): e
+                    for e in picked
+                }
+                pending = set(tasks.keys())
+                while pending:
+                    left = effective_deadline - (time.monotonic() - t0)
+                    if left <= 0:
+                        break
+                    done, pending = await asyncio.wait(
+                        pending, timeout=left, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if not done:
+                        break
+                    for t in done:
+                        try:
+                            rep = t.result()
+                        except Exception as exc:      # noqa: BLE001
+                            eid = tasks[t].id
+                            self._breaker.record(eid, ok=False)
+                            rep = EngineReply(
+                                engine=eid, outcome=ParseOutcome.BROKEN,
+                                error=f"{type(exc).__name__}: {exc}")
+                        replies.append(rep)
+                        pooled += rep.results
+                        # 增量折叠：只对目前收到的结果折一次，给界面一版能画的
+                        clusters = self._fold_and_rank(pooled)
+                        yield {
+                            "kind": "partial",
+                            "engine": rep.engine,
+                            "outcome": rep.outcome.value,
+                            "count": len(rep.results),
+                            "elapsedMs": rep.elapsed_ms,
+                            "totalMs": int((time.monotonic() - t0) * 1000),
+                            "results": [c.to_dict() for c in clusters[:limit]],
+                            "waiting": [tasks[p].id for p in pending],
+                        }
+                # 到点没回来的照实记一条超时，理由同 `_fan_out`
+                for t in pending:
+                    t.cancel()
+                    eid = tasks[t].id
+                    replies.append(EngineReply(
+                        engine=eid, outcome=ParseOutcome.BROKEN,
+                        error=f"超时（>{effective_deadline:.1f}s），本轮放弃"))
+                    self._breaker.record(eid, ok=False)
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+
+        for r in replies:
+            if r.engine:
+                self.scheduler.observe(r.engine, r.outcome, r.elapsed_ms)
+        self.scheduler.save()
+
+        await self._resolve_redirects(replies)
+        pooled = [r for rep in replies for r in rep.results]
+        result = MetaSearchResult(
+            query=query,
+            clusters=self._fold_and_rank(pooled),
+            replies=sorted(replies, key=lambda r: r.engine),
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+        )
+        if use_cache:
+            self._cache_put(ck, result)
+        yield {"kind": "final", "result": result.to_dict()}
+
+    # ── B4 缓存预热 ─────────────────────────────────────────
+    async def prewarm(
+        self, queries: list[str], *, limit: int = 20, lang: str = "zh"
+    ) -> dict[str, Any]:
+        """
+        B4 —— 冷启动时把几个常用词先搜一遍填进缓存。
+
+        🔴 **串行跑，不并发**。预热是后台的白工，它唯一不该做的事就是
+        跟用户当下的那次搜索抢带宽和连接数。串行慢十几秒无所谓 ——
+        没人在等它。
+
+        🔴 **只在联网开关是开的时候才该被调用**，判断在调用方
+        （`runtime.warmup_async`）。这里不重复判，避免两处逻辑走岔。
+        """
+        ok = 0
+        errs: list[str] = []
+        for q in [x.strip() for x in queries if x and x.strip()][:8]:
+            try:
+                await self.search(q, limit=limit, lang=lang, use_cache=True)
+                ok += 1
+            except Exception as exc:      # noqa: BLE001
+                errs.append(f"{q}: {type(exc).__name__}")
+        return {"warmed": ok, "errors": errs, "cacheEntries": len(self._cache)}
+
+    def cache_stats(self) -> dict[str, Any]:
+        """给 G7 指标用：缓存里有多少条、最老的一条还有多久过期。"""
+        now = time.monotonic()
+        ages = [now - ts for ts, _v in self._cache.values()]
+        return {
+            "entries": len(self._cache),
+            "ttlSeconds": CACHE_TTL_S,
+            "oldestAgeSeconds": int(max(ages)) if ages else 0,
+            "capacity": CACHE_MAX,
+        }
+
     async def _fan_out(
         self,
         query: str,
@@ -772,3 +953,110 @@ def _fold_key(r: WebResult) -> str:
 
 def _fingerprint(*parts: Any) -> str:
     return hashlib.sha1("\x1f".join(str(p) for p in parts).encode()).hexdigest()[:24]
+
+
+# ────────────────────────────────────────────────────────────────
+# B7 站点独立性
+# ────────────────────────────────────────────────────────────────
+#: 同一家公司的多个域名。**手工维护的短名单，不追求全** ——
+#: 目的是把最常见的"看起来是三个站其实是一家"揭出来，
+#: 而不是建一个永远维护不完的股权关系库
+_SAME_OWNER: dict[str, str] = {
+    "sina.com.cn": "新浪", "sina.cn": "新浪", "weibo.com": "新浪",
+    "qq.com": "腾讯", "tencent.com": "腾讯",
+    "163.com": "网易", "126.com": "网易",
+    "sohu.com": "搜狐", "focus.cn": "搜狐",
+    "baidu.com": "百度", "baijiahao.baidu.com": "百度",
+    "toutiao.com": "字节", "ixigua.com": "字节", "douyin.com": "字节",
+    "medium.com": "Medium", "substack.com": "Substack",
+    "csdn.net": "CSDN", "51cto.com": "51CTO",
+}
+
+#: 通稿分发平台。这些站上的内容**默认不算独立来源** ——
+#: 它们的商业模式就是把同一份稿子发到尽可能多的地方
+_SYNDICATION = (
+    "prnewswire", "businesswire", "globenewswire", "美通社",
+    "eastmoney.com/a/", "finance.sina", "cnfol", "stockstar",
+)
+
+
+def _registrable(site: str) -> str:
+    """
+    取可注册域。**只做两段和三段（.com.cn / .co.uk）两种情况** ——
+    完整的公共后缀列表有几千条且每月都在变，为了一个"给个大概判断"的
+    功能去背那张表不划算，判错的代价只是少合并一组。
+    """
+    host = str(site or "").lower().strip().lstrip("www.")
+    parts = [p for p in host.split(".") if p]
+    if len(parts) <= 2:
+        return ".".join(parts)
+    if parts[-2] in ("com", "net", "org", "gov", "edu", "co", "ac") and len(parts[-1]) <= 3:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def site_independence(clusters: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    B7 —— 同一个说法，**有几个真正独立的站在说**。
+
+    「几个引擎搜到」和「几个站在说」是两回事（坑 43 的结论），
+    而「几个站在说」和「几个**独立**的站在说」又是第三回事：
+    三个新浪系的站发同一条，独立来源数是 1 不是 3。
+
+    返回每个簇的 `independence` 字段：
+        `sites`        去重后的站点数
+        `owners`       归并同一集团后的数量  ← **这个才是"独立来源"**
+        `syndicated`   其中有几个是通稿分发平台
+        `verdict`      一句人话
+
+    🔴 **独立来源少 ≠ 消息是假的**。独家报道天然只有一个来源，
+    而那往往是最有价值的那条。所以这里只报事实，不做可信度加减。
+    """
+    out: list[dict[str, Any]] = []
+    for c in clusters:
+        sites = set()
+        for s in (c.get("sites") or []):
+            if s:
+                sites.add(_registrable(str(s)))
+        best = c.get("best") or {}
+        if best.get("site"):
+            sites.add(_registrable(str(best["site"])))
+
+        owners = set()
+        syndicated = 0
+        for s in sites:
+            owners.add(_SAME_OWNER.get(s, s))
+            if any(k in s for k in _SYNDICATION):
+                syndicated += 1
+
+        n = len(owners)
+        if n <= 1:
+            verdict = "只有一个独立来源在说这件事"
+        elif syndicated and syndicated >= n - 1:
+            verdict = f"{n} 个来源里 {syndicated} 个是通稿分发平台，实际独立性存疑"
+        elif n >= 4:
+            verdict = f"{n} 个互相独立的来源都在说"
+        else:
+            verdict = f"{n} 个独立来源"
+
+        out.append({
+            "url": str(best.get("url") or ""),
+            "title": str(best.get("title") or ""),
+            "sites": sorted(sites),
+            "siteCount": len(sites),
+            "owners": sorted(owners),
+            "ownerCount": n,
+            "syndicated": syndicated,
+            "verdict": verdict,
+        })
+
+    lone = sum(1 for x in out if x["ownerCount"] <= 1)
+    return {
+        "items": out,
+        "loneSourceCount": lone,
+        "note": (
+            f"{len(out)} 组结果里有 {lone} 组只有单一独立来源。"
+            "**单一来源不代表是假的** —— 独家报道天然如此，"
+            "而且往往正是最有价值的那条。这里只报数，不加减可信度"
+        ),
+    }

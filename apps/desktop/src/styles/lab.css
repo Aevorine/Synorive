@@ -1,0 +1,1895 @@
+/**
+ * 第四轮新增组件的样式
+ * ====================================================================
+ * 一条铁律：**这个文件里不许出现任何色值和裸字号**，全走
+ * `var(--syn-*)`。`scripts/check-hardcoded-style.mjs` 会扫，
+ * 写了直接构建失败 —— 界面统一靠机制不靠自觉。
+ *
+ * 字体也一样：中文宋体、西文 Times New Roman 由 `--syn-ff-body`
+ * 逐字符回退，标题走 `--syn-ff-display`。这里**不重新声明 font-family**，
+ * 声明一次就多一处会走岔的地方。
+ */
+
+/* ── 通用：转圈动画 ─────────────────────────────────── */
+.syn-spin {
+  animation: syn-spin 1s linear infinite;
+}
+@keyframes syn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── F6 虚拟滚动 ───────────────────────────────────── */
+.syn-vl-spacer {
+  position: relative;
+  width: 100%;
+}
+.syn-vl-window {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  will-change: transform;
+}
+.syn-lazy-img {
+  position: relative;
+  overflow: hidden;
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-sm);
+}
+.syn-lazy-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.syn-lazy-img-fail {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+
+/* ── C 组 文献工作台 ───────────────────────────────── */
+.syn-lab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-md);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+}
+.syn-lab-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-sm);
+}
+.syn-lab-title {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-section-title);
+  letter-spacing: var(--syn-ls-display);
+  margin: 0;
+}
+.syn-lab-count,
+.syn-lab-meta {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+}
+.syn-lab-meta {
+  margin-inline-start: var(--syn-space-sm);
+}
+.syn-lab-merge {
+  margin-inline-start: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  font-size: var(--syn-fs-caption);
+  padding: var(--syn-space-xxs) var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg);
+  color: var(--syn-color-text-secondary);
+  cursor: pointer;
+}
+.syn-lab-merge:hover {
+  background: var(--syn-color-bg-hover);
+}
+
+.syn-lab-tabs {
+  display: flex;
+  gap: var(--syn-space-xxs);
+  border-bottom: 1px solid var(--syn-color-border);
+}
+.syn-lab-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  padding: var(--syn-space-xs) var(--syn-space-md);
+  border: none;
+  background: none;
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-body);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.syn-lab-tab.is-on {
+  color: var(--syn-color-primary);
+  border-bottom-color: var(--syn-color-primary);
+  font-weight: var(--syn-fw-medium);
+}
+.syn-lab-tab:focus-visible {
+  outline: 2px solid var(--syn-color-border-focus);
+  outline-offset: -2px;
+}
+
+.syn-lab-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+/* note 用小一号但不发灰到看不见 —— 它写的是能力边界，
+   是这一屏里最不该被忽略的一句话 */
+.syn-lab-note,
+.syn-chap-note,
+.syn-audit-note,
+.syn-mem-note,
+.syn-cmp-note {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  line-height: var(--syn-lh-relaxed);
+  margin: 0;
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  background: var(--syn-color-bg-sunken);
+  border-inline-start: 2px solid var(--syn-color-primary-subtle);
+  border-radius: var(--syn-radius-sm);
+}
+.syn-lab-busy,
+.syn-chap-busy {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+}
+.syn-lab-err,
+.syn-audit-err,
+.syn-cmp-err,
+.syn-chap-err,
+.syn-mem-err {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}
+
+.syn-lab-cluster,
+.syn-lab-section {
+  padding: var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-md);
+}
+.syn-lab-cluster h3,
+.syn-lab-section h3,
+.syn-lab-h3 {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-card-title);
+  margin: 0 0 var(--syn-space-xs);
+}
+.syn-lab-kw,
+.syn-lab-rep {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  margin: 0;
+}
+.syn-lab-quote {
+  margin: var(--syn-space-xs) 0;
+  line-height: var(--syn-lh-relaxed);
+}
+.syn-lab-ref {
+  color: var(--syn-color-primary);
+  margin-inline-start: var(--syn-space-xxs);
+  text-decoration: none;
+}
+.syn-lab-dispute {
+  margin-block-start: var(--syn-space-sm);
+  padding: var(--syn-space-sm);
+  background: var(--syn-color-warning-subtle);
+  border-radius: var(--syn-radius-sm);
+}
+.syn-lab-dispute p {
+  margin: var(--syn-space-xxs) 0;
+}
+.syn-lab-dispute-tag {
+  display: block;
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-warning);
+  font-weight: var(--syn-fw-medium);
+}
+
+.syn-lab-tablewrap {
+  overflow-x: auto;
+}
+.syn-lab-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-caption);
+}
+.syn-lab-table th,
+.syn-lab-table td {
+  border: 1px solid var(--syn-color-border);
+  padding: var(--syn-space-xxs) var(--syn-space-xs);
+  text-align: start;
+  white-space: nowrap;
+}
+.syn-lab-table th {
+  background: var(--syn-color-bg-sunken);
+  font-weight: var(--syn-fw-semibold);
+}
+.syn-lab-td-title {
+  max-width: var(--syn-layout-search-max);
+  white-space: normal;
+}
+.syn-lab-node {
+  margin: var(--syn-space-xxs) 0;
+  line-height: var(--syn-lh-normal);
+}
+.syn-lab-primary,
+.syn-cmp-go,
+.syn-onb-primary {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-xs) var(--syn-space-lg);
+  border: none;
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-primary);
+  color: var(--syn-color-text-inverse);
+  font-size: var(--syn-fs-body);
+  cursor: pointer;
+}
+.syn-lab-primary:disabled,
+.syn-cmp-go:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.syn-lab-done,
+.syn-mem-saved {
+  color: var(--syn-color-success);
+  font-size: var(--syn-fs-caption);
+}
+.syn-lab-skipped {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+}
+
+/* ── F2 批量驾驶舱 ─────────────────────────────────── */
+.syn-cockpit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-md);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+  box-shadow: var(--syn-shadow-md);
+}
+.syn-cockpit-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-sm);
+}
+.syn-cockpit-head h2 {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-section-title);
+  margin: 0;
+}
+.syn-cockpit-count {
+  font-family: var(--syn-ff-tabular);
+  color: var(--syn-color-text-secondary);
+}
+.syn-cockpit-x {
+  margin-inline-start: auto;
+  border: none;
+  background: none;
+  color: var(--syn-color-text-muted);
+  cursor: pointer;
+}
+.syn-cockpit-bar {
+  height: var(--syn-space-xs);
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-pill);
+  overflow: hidden;
+}
+.syn-cockpit-bar-fill {
+  height: 100%;
+  background: var(--syn-color-primary);
+  transition: width var(--syn-dur-normal) var(--syn-ease-standard);
+}
+.syn-cockpit-line {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  margin: 0;
+}
+.syn-cockpit-failed {
+  color: var(--syn-color-danger);
+}
+/* 当前文件允许换行且用等宽 —— 卡住时这是唯一有用的信息 */
+.syn-cockpit-current {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  word-break: break-all;
+  margin: 0;
+}
+.syn-cockpit-actions {
+  display: flex;
+  gap: var(--syn-space-xs);
+  flex-wrap: wrap;
+}
+.syn-cockpit-actions button,
+.syn-audit-actions button,
+.syn-mem-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  padding: var(--syn-space-xxs) var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg);
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-caption);
+  cursor: pointer;
+}
+.syn-cockpit-actions button:hover,
+.syn-audit-actions button:hover,
+.syn-mem-actions button:hover {
+  background: var(--syn-color-bg-hover);
+}
+.syn-cockpit-danger,
+.syn-mem-danger {
+  color: var(--syn-color-danger);
+}
+.syn-cockpit-tabs {
+  display: flex;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+}
+.syn-cockpit-tabs button {
+  border: none;
+  background: none;
+  color: var(--syn-color-text-secondary);
+  cursor: pointer;
+  padding: var(--syn-space-xxs);
+}
+.syn-cockpit-tabs button.is-on {
+  color: var(--syn-color-primary);
+  font-weight: var(--syn-fw-medium);
+}
+.syn-cockpit-list {
+  max-height: var(--syn-layout-detail-panel);
+  overflow-y: auto;
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+}
+.syn-cockpit-item {
+  display: flex;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-xxs) var(--syn-space-xs);
+  font-size: var(--syn-fs-micro);
+  margin: 0;
+  border-bottom: 1px solid var(--syn-color-border);
+}
+.syn-cockpit-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.syn-cockpit-item.is-failed .syn-cockpit-item-name {
+  color: var(--syn-color-danger);
+}
+.syn-cockpit-item.is-done .syn-cockpit-item-name {
+  color: var(--syn-color-text-muted);
+}
+/* A1 占位卡片：斜体 + 弱化，一眼看出「这条还没真开始」——
+   和已完成的用同一个灰会让人以为它已经处理过了 */
+.syn-cockpit-item.is-pending .syn-cockpit-item-name {
+  color: var(--syn-color-text-secondary);
+  font-style: italic;
+}
+.syn-cockpit-item.is-pending .syn-cockpit-item-name::after {
+  content: '　排队中';
+  color: var(--syn-color-text-muted);
+  font-style: normal;
+  font-size: var(--syn-fs-micro);
+}
+.syn-cockpit-item.is-skipped .syn-cockpit-item-name {
+  color: var(--syn-color-warning);
+}
+.syn-cockpit-item-err {
+  color: var(--syn-color-danger);
+  flex: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.syn-cockpit-empty {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+}
+
+/* ── D 组 审计面板 ─────────────────────────────────── */
+.syn-audit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+.syn-audit-title {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-section-title);
+  margin: 0;
+}
+.syn-audit-warn {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-warning);
+}
+.syn-audit-actions {
+  display: flex;
+  gap: var(--syn-space-xs);
+  flex-wrap: wrap;
+}
+/* 提示语里的行内按钮：它出现的位置就是用户读到"查不了"的那一刻，
+   把补救动作放在那里，而不是让他自己去别处找 */
+.syn-audit-inline {
+  margin-inline-start: var(--syn-space-xs);
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--syn-color-primary);
+  font-size: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.syn-audit-block {
+  padding: var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-md);
+}
+.syn-audit-block h3 {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-card-title);
+  margin: 0 0 var(--syn-space-xs);
+}
+.syn-audit-tally {
+  margin-inline-start: var(--syn-space-sm);
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-caption);
+}
+.syn-audit-tally em {
+  font-style: normal;
+  margin-inline-end: var(--syn-space-sm);
+}
+.syn-audit-tally .is-ok {
+  color: var(--syn-color-success);
+}
+.syn-audit-tally .is-bad {
+  color: var(--syn-color-danger);
+}
+.syn-audit-tally .is-unk {
+  color: var(--syn-color-text-muted);
+}
+.syn-audit-num {
+  display: grid;
+  gap: var(--syn-space-xxs);
+  padding: var(--syn-space-xs);
+  margin: var(--syn-space-xs) 0;
+  border-radius: var(--syn-radius-sm);
+}
+.syn-audit-num.is-mismatch {
+  background: var(--syn-color-danger-subtle);
+}
+.syn-audit-num.is-unverified {
+  background: var(--syn-color-bg-sunken);
+}
+.syn-audit-num b {
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-emphasis);
+}
+.syn-audit-ctx {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+}
+.syn-audit-why {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+}
+.syn-audit-ok {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  color: var(--syn-color-success);
+  font-size: var(--syn-fs-caption);
+}
+.syn-audit-conflict {
+  padding: var(--syn-space-xs);
+  margin: var(--syn-space-xs) 0;
+  background: var(--syn-color-warning-subtle);
+  border-radius: var(--syn-radius-sm);
+  font-size: var(--syn-fs-caption);
+}
+.syn-audit-conflict p {
+  margin: var(--syn-space-xxs) 0;
+}
+.syn-audit-gap {
+  font-weight: var(--syn-fw-semibold);
+  color: var(--syn-color-warning);
+}
+.syn-audit-claim {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--syn-space-xs);
+  align-items: baseline;
+  margin: var(--syn-space-xs) 0;
+}
+.syn-audit-score {
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-emphasis);
+  color: var(--syn-color-text-muted);
+}
+.syn-audit-claim.is-high .syn-audit-score {
+  color: var(--syn-color-warning);
+}
+.syn-audit-claim-text {
+  line-height: var(--syn-lh-normal);
+}
+
+/* ── A6 章节目录 ───────────────────────────────────── */
+.syn-chap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+}
+.syn-chap-title {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-card-title);
+  margin: 0;
+}
+.syn-chap-title span {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+}
+.syn-chap-warn {
+  display: flex;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  background: var(--syn-color-warning-subtle);
+  color: var(--syn-color-warning);
+  border-radius: var(--syn-radius-sm);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+}
+.syn-chap-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.syn-chap-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--syn-space-xs) var(--syn-space-sm);
+  width: 100%;
+  text-align: start;
+  padding: var(--syn-space-xs);
+  border: none;
+  background: none;
+  color: var(--syn-color-text);
+  cursor: pointer;
+  border-radius: var(--syn-radius-sm);
+}
+.syn-chap-item:hover:not(:disabled) {
+  background: var(--syn-color-bg-hover);
+}
+.syn-chap-item:disabled {
+  cursor: default;
+}
+.syn-chap-tc {
+  font-family: var(--syn-ff-tabular);
+  color: var(--syn-color-primary);
+}
+.syn-chap-name {
+  font-weight: var(--syn-fw-medium);
+}
+.syn-chap-noname {
+  font-style: normal;
+  font-weight: var(--syn-fw-normal);
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+.syn-chap-sum {
+  grid-column: 2;
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  line-height: var(--syn-lh-normal);
+}
+.syn-chap-empty {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+}
+
+/* ── A5 比一比 ─────────────────────────────────────── */
+.syn-cmp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+.syn-cmp-title {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-section-title);
+  margin: 0;
+}
+.syn-cmp-slots {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--syn-space-sm);
+}
+.syn-cmp-slot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+  padding: var(--syn-space-sm);
+  border: 1px dashed var(--syn-color-border-strong);
+  border-radius: var(--syn-radius-md);
+}
+.syn-cmp-slot.is-filled {
+  border-style: solid;
+  background: var(--syn-color-bg-selected);
+}
+.syn-cmp-slot label {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+}
+.syn-cmp-slot input {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  padding: var(--syn-space-xxs);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg);
+  color: var(--syn-color-text);
+}
+.syn-cmp-verdict {
+  font-size: var(--syn-fs-emphasis);
+  margin: 0;
+}
+.syn-cmp-stat {
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  margin: 0;
+}
+.syn-cmp-hunks {
+  max-height: var(--syn-layout-detail-panel);
+  overflow: auto;
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+}
+.syn-cmp-hunk {
+  border-bottom: 1px solid var(--syn-color-border);
+  padding: var(--syn-space-xxs);
+}
+.syn-cmp-hunk-head {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  margin: 0;
+}
+.syn-cmp-del,
+.syn-cmp-add {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.syn-cmp-del {
+  background: var(--syn-color-danger-subtle);
+}
+.syn-cmp-add {
+  background: var(--syn-color-success-subtle);
+}
+
+/* ── E 组 记忆面板 ─────────────────────────────────── */
+.syn-mem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-md);
+}
+.syn-mem-title {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-card-title);
+  margin: 0;
+}
+.syn-mem-empty,
+.syn-mem-meta {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  margin: 0;
+}
+.syn-mem-facts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+}
+.syn-mem-facts li {
+  display: grid;
+  gap: var(--syn-space-xxs);
+  padding-inline-start: var(--syn-space-sm);
+  border-inline-start: 2px solid var(--syn-color-border);
+}
+.syn-mem-text {
+  line-height: var(--syn-lh-relaxed);
+}
+.syn-mem-src {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-primary);
+}
+.syn-mem-seen {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+}
+.syn-mem-actions {
+  display: flex;
+  gap: var(--syn-space-xs);
+  flex-wrap: wrap;
+}
+.syn-mem-diff {
+  padding: var(--syn-space-sm);
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-sm);
+}
+.syn-mem-diff h4 {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-card-title);
+  margin: 0 0 var(--syn-space-xs);
+}
+.syn-mem-diff-h {
+  font-size: var(--syn-fs-caption);
+  font-weight: var(--syn-fw-semibold);
+  color: var(--syn-color-text-secondary);
+  margin: var(--syn-space-xs) 0 var(--syn-space-xxs);
+}
+.syn-mem-diff-row {
+  display: flex;
+  gap: var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  margin: 0;
+}
+.syn-mem-diff-nums {
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-caption);
+  margin: 0;
+}
+.syn-mem-gone {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  margin-block-start: var(--syn-space-xs);
+}
+
+/* ── F5 首次引导 ───────────────────────────────────── */
+.syn-onb-mask {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--syn-color-scrim);
+  z-index: var(--syn-z-modal);
+}
+.syn-onb {
+  position: relative;
+  width: var(--syn-layout-search-max);
+  max-width: 90vw;
+  padding: var(--syn-space-xl);
+  background: var(--syn-color-bg-elevated);
+  border-radius: var(--syn-radius-lg);
+  box-shadow: var(--syn-shadow-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+.syn-onb-x {
+  position: absolute;
+  inset-block-start: var(--syn-space-sm);
+  inset-inline-end: var(--syn-space-sm);
+  border: none;
+  background: none;
+  color: var(--syn-color-text-muted);
+  cursor: pointer;
+}
+.syn-onb-step {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  margin: 0;
+}
+.syn-onb-title {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-page-title);
+  letter-spacing: var(--syn-ls-display);
+  margin: 0;
+}
+.syn-onb-body {
+  line-height: var(--syn-lh-relaxed);
+  color: var(--syn-color-text-secondary);
+  margin: 0;
+}
+.syn-onb-actions {
+  display: flex;
+  gap: var(--syn-space-sm);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.syn-onb-ghost {
+  border: none;
+  background: none;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+  cursor: pointer;
+}
+.syn-onb-ghost:hover {
+  color: var(--syn-color-text);
+}
+.syn-onb-dots {
+  display: flex;
+  gap: var(--syn-space-xs);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.syn-onb-dots li {
+  width: var(--syn-space-xs);
+  height: var(--syn-space-xs);
+  border-radius: 50%;
+  background: var(--syn-color-border-strong);
+}
+.syn-onb-dots li.is-on {
+  background: var(--syn-color-primary);
+}
+
+/* C9 引用格式导出。和「合并预印本」同一排，但**不抢主色** ——
+   它是随时可用的辅助动作，不是这一屏的主线 */
+.syn-lab-cite {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  margin-inline-start: var(--syn-space-xs);
+  padding: var(--syn-space-xxs) var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg);
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+  cursor: pointer;
+}
+.syn-lab-cite:hover:not(:disabled) {
+  border-color: var(--syn-color-primary);
+  color: var(--syn-color-primary);
+}
+.syn-lab-cite:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   C7 主题订阅
+   「该跑了」用警告色而不是主色 —— 主色在这个界面里到处都是，
+   再拿它标状态就分不出「这是按钮」还是「这是提醒」
+   ============================================================ */
+.syn-watch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-md);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-md);
+  background: var(--syn-color-bg-elevated);
+}
+.syn-watch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.syn-watch-title {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  margin: 0;
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-semibold);
+  color: var(--syn-color-text);
+}
+.syn-watch-due {
+  padding: var(--syn-space-xxs) var(--syn-space-xs);
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-warning-subtle);
+  color: var(--syn-color-warning);
+  font-size: var(--syn-fs-micro);
+}
+.syn-watch-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-sm);
+  border: 1px dashed var(--syn-color-border-strong);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-sunken);
+}
+.syn-watch-q {
+  font-weight: var(--syn-fw-medium);
+  color: var(--syn-color-text);
+}
+.syn-watch-field,
+.syn-watch-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+}
+.syn-watch-field input[type='number'] {
+  width: var(--syn-space-xxxl);
+  padding: var(--syn-space-xxs);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg);
+  color: var(--syn-color-text);
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-caption);
+}
+.syn-watch-hint {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+.syn-watch-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  padding: var(--syn-space-xs) var(--syn-space-md);
+  border: 1px solid var(--syn-color-primary);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-primary);
+  color: var(--syn-color-text-inverse);
+  font-size: var(--syn-fs-caption);
+  cursor: pointer;
+}
+.syn-watch-primary:hover:not(:disabled) {
+  background: var(--syn-color-primary-hover);
+}
+.syn-watch-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.syn-watch-err {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}
+.syn-watch-empty {
+  margin: 0;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+}
+.syn-watch-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.syn-watch-item {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-inline-start: var(--syn-space-xxs) solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg);
+}
+.syn-watch-item.is-due {
+  border-inline-start-color: var(--syn-color-warning);
+}
+.syn-watch-item button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: var(--syn-space-xxs);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-elevated);
+  color: var(--syn-color-text-secondary);
+  cursor: pointer;
+}
+.syn-watch-item button:hover:not(:disabled) {
+  border-color: var(--syn-color-primary);
+  color: var(--syn-color-primary);
+}
+.syn-watch-item button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.syn-watch-item button.syn-watch-danger:hover:not(:disabled) {
+  border-color: var(--syn-color-danger);
+  color: var(--syn-color-danger);
+}
+.syn-watch-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+  min-width: 0;
+}
+.syn-watch-label {
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.syn-watch-meta {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+.syn-watch-result {
+  color: var(--syn-color-success);
+  font-size: var(--syn-fs-micro);
+}
+.syn-watch-note {
+  margin: 0;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+}
+
+/* ============================================================
+   F3 撤销与闪回
+   放在顶栏里，所以整体尺寸压到 caption 级 —— 它是常驻控件，
+   不该跟页面标题抢视觉重量
+   ============================================================ */
+.syn-fb {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+}
+.syn-fb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  max-width: var(--syn-layout-side-bar-collapsed);
+  padding: var(--syn-space-xxs) var(--syn-space-xs);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-elevated);
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.syn-fb-btn:hover:not(:disabled) {
+  border-color: var(--syn-color-primary);
+  color: var(--syn-color-primary);
+}
+.syn-fb-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.syn-fb-count {
+  padding: 0 var(--syn-space-xxs);
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-primary-subtle);
+  color: var(--syn-color-primary);
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-micro);
+}
+.syn-fb-pop {
+  position: absolute;
+  inset-block-start: calc(100% + var(--syn-space-xxs));
+  inset-inline-end: 0;
+  z-index: var(--syn-z-dropdown);
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+  width: var(--syn-layout-detail-panel);
+  max-height: var(--syn-layout-search-max);
+  overflow-y: auto;
+  padding: var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border-strong);
+  border-radius: var(--syn-radius-md);
+  background: var(--syn-color-bg-elevated);
+  box-shadow: var(--syn-shadow-lg);
+}
+.syn-fb-pop-note {
+  margin: 0 0 var(--syn-space-xxs);
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+}
+.syn-fb-snap {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-xs);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg);
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-caption);
+  text-align: start;
+  cursor: pointer;
+}
+.syn-fb-snap:hover {
+  border-color: var(--syn-color-primary);
+  background: var(--syn-color-bg-hover);
+}
+.syn-fb-time {
+  color: var(--syn-color-text-muted);
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-micro);
+}
+.syn-fb-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.syn-fb-page {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+.syn-fb-toast {
+  padding: var(--syn-space-xxs) var(--syn-space-xs);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-success-subtle);
+  color: var(--syn-color-success);
+  font-size: var(--syn-fs-micro);
+}
+.syn-fb-toast--err {
+  background: var(--syn-color-danger-subtle);
+  color: var(--syn-color-danger);
+}
+
+/* ============================================================
+   A2 秒开预览：等距缩略带 + 音量波形
+   缩略带横向滚动而不是换行 —— 它表达的是"时间轴"，
+   换行会把一条线打断成几行，时间关系就读不出来了
+   ============================================================ */
+.syn-peek {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+.syn-peek-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--syn-space-sm);
+}
+.syn-peek-hint {
+  flex: 1 1 auto;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+}
+.syn-peek-ms {
+  padding: var(--syn-space-xxs) var(--syn-space-xs);
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-success-subtle);
+  color: var(--syn-color-success);
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-micro);
+}
+.syn-peek-err {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}
+.syn-peek-meta {
+  margin: 0;
+  color: var(--syn-color-text-secondary);
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-caption);
+}
+.syn-peek-strip {
+  display: flex;
+  gap: var(--syn-space-xxs);
+  overflow-x: auto;
+  padding-bottom: var(--syn-space-xxs);
+}
+.syn-peek-cell {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+}
+.syn-peek-cell img {
+  display: block;
+  width: var(--syn-layout-side-bar-collapsed);
+  height: auto;
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-sunken);
+}
+.syn-peek-cell figcaption {
+  color: var(--syn-color-text-muted);
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-micro);
+  text-align: center;
+}
+/* 波形：一排贴底的条子。用 flex-end 对齐，条子才是"从底往上长" */
+.syn-peek-wave {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: var(--syn-space-xxl);
+  padding: var(--syn-space-xxs);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-sunken);
+  overflow: hidden;
+}
+.syn-peek-bar-i {
+  flex: 1 1 0;
+  min-width: 1px;
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-primary);
+}
+.syn-peek-note {
+  margin: 0;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+}
+
+/* ============================================================
+   A3 一图四路
+   四格等宽网格：四路是**并列**关系，谁也不比谁重要，
+   给其中一格更大的位置就是在暗示一个不存在的优先级
+   ============================================================ */
+.syn-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+.syn-lanes-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--syn-space-sm);
+}
+.syn-lanes-hint {
+  flex: 1 1 auto;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+}
+.syn-lanes-err {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}
+.syn-lanes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--syn-layout-detail-panel), 1fr));
+  gap: var(--syn-space-sm);
+}
+.syn-lane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+  min-width: 0;
+  padding: var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-md);
+  background: var(--syn-color-bg);
+}
+.syn-lane-title {
+  margin: 0;
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-semibold);
+  color: var(--syn-color-text);
+}
+.syn-lane-big {
+  margin: 0;
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-page-title);
+  font-weight: var(--syn-fw-bold);
+  color: var(--syn-color-primary);
+}
+.syn-lane-sub {
+  margin: 0;
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+}
+.syn-lane-text {
+  margin: 0;
+  max-height: var(--syn-space-xxxl);
+  overflow-y: auto;
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.syn-lane-empty {
+  margin: 0;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+}
+.syn-lane-err {
+  margin: 0;
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+}
+.syn-lane-note {
+  margin: 0;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+}
+.syn-lanes-note {
+  margin: 0;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+
+/* B2 三家反查：接在四路网格下面，用一条上边线分开 ——
+   它是「同一张图的另一个问题」，不是四路里的第五路 */
+.syn-multi {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+  margin-top: var(--syn-space-sm);
+  padding-top: var(--syn-space-sm);
+  border-top: 1px solid var(--syn-color-border);
+}
+.syn-multi-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  padding-inline-start: var(--syn-space-md);
+  font-size: var(--syn-fs-caption);
+}
+.syn-multi-list a {
+  color: var(--syn-color-primary);
+  overflow-wrap: anywhere;
+}
+
+
+/* ============================================================
+   E9 近重复清理
+   二次确认条用危险色框起来 —— 删除没有回收站，
+   它和上面那些普通面板必须一眼看得出不是一类东西
+   ============================================================ */
+.syn-dup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+.syn-dup-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--syn-space-sm);
+}
+.syn-dup-sum {
+  color: var(--syn-color-text-secondary);
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-caption);
+}
+.syn-dup-err {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}
+.syn-dup-done {
+  margin: 0;
+  color: var(--syn-color-success);
+  font-size: var(--syn-fs-caption);
+}
+.syn-dup-empty,
+.syn-dup-note {
+  margin: 0;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+}
+.syn-dup-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+  max-height: var(--syn-layout-search-max);
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.syn-dup-group {
+  padding: var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-md);
+  background: var(--syn-color-bg);
+}
+.syn-dup-ghead {
+  margin: 0 0 var(--syn-space-xs);
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+}
+.syn-dup-item {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-xxs);
+  border-radius: var(--syn-radius-sm);
+  cursor: pointer;
+}
+.syn-dup-item:hover {
+  background: var(--syn-color-bg-hover);
+}
+.syn-dup-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--syn-fs-caption);
+}
+.syn-dup-meta {
+  color: var(--syn-color-text-muted);
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-micro);
+}
+.syn-dup-keep {
+  padding: 0 var(--syn-space-xxs);
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-success-subtle);
+  color: var(--syn-color-success);
+  font-size: var(--syn-fs-micro);
+}
+.syn-dup-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-sm);
+  border: 1px solid var(--syn-color-danger);
+  border-radius: var(--syn-radius-md);
+  background: var(--syn-color-danger-subtle);
+}
+.syn-dup-confirm p {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+}
+.syn-dup-titles {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+.syn-dup-confirm button {
+  padding: var(--syn-space-xs) var(--syn-space-md);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-elevated);
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-caption);
+  cursor: pointer;
+}
+.syn-dup-confirm button.syn-dup-danger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  border-color: var(--syn-color-danger);
+  background: var(--syn-color-danger);
+  color: var(--syn-color-text-inverse);
+}
+.syn-dup-confirm button.syn-dup-danger:hover:not(:disabled) {
+  background: var(--syn-color-danger-hover);
+}
+
+
+/* ============================================================
+   F7 全局快捷键实况
+   抢不到首选键的那几行要一眼看得出来 —— 这块界面存在的唯一理由
+   就是把一个静默失败喊出来，做得太低调等于白做
+   ============================================================ */
+.hk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+.hk__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.hk__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-inline-start: var(--syn-space-xxs) solid var(--syn-color-success);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg);
+}
+.hk__row--dead {
+  border-inline-start-color: var(--syn-color-danger);
+}
+.hk__label {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-caption);
+}
+.hk__dead {
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}
+.hk__fallback {
+  padding: 0 var(--syn-space-xxs);
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-warning-subtle);
+  color: var(--syn-color-warning);
+  font-size: var(--syn-fs-micro);
+}
+.hk__hint,
+.hk__note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+}
+.hk__err {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}
+
+
+/* ============================================================
+   E15 模型面板
+   「不能在线换模型」那条警告用警告色而不是普通说明色 ——
+   它解释的是一个换了不报错、只是结果悄悄变差的陷阱
+   ============================================================ */
+.mp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+  margin-top: var(--syn-space-sm);
+}
+.mp__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mp__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg);
+}
+.mp__name {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  color: var(--syn-color-text);
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-caption);
+}
+.mp__tag {
+  padding: 0 var(--syn-space-xxs);
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-bg-sunken);
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+.mp__tag--on {
+  background: var(--syn-color-success-subtle);
+  color: var(--syn-color-success);
+}
+.mp__tag--warn {
+  background: var(--syn-color-warning-subtle);
+  color: var(--syn-color-warning);
+}
+.mp__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--syn-space-sm);
+}
+.mp__hint {
+  margin: 0;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+}
+.mp__warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border-inline-start: 2px solid var(--syn-color-warning);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-warning-subtle);
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+}
+.mp__ok {
+  margin: 0;
+  color: var(--syn-color-success);
+  font-size: var(--syn-fs-micro);
+}
+.mp__err {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}
+
+
+/* ============================================================
+   C12/C13 整页归档
+   cookie 警告用危险色的边框而不是普通提示 —— 用户在那个框里粘的是
+   能直接冒充他登录的东西，弱化显示等于把风险藏起来
+   ============================================================ */
+.ash {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+.ash__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--syn-space-sm);
+}
+.ash__url {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg);
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-body);
+}
+.ash__url:focus-visible {
+  outline: none;
+  border-color: var(--syn-color-border-focus);
+  box-shadow: var(--syn-shadow-focus);
+}
+.ash__check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+  cursor: pointer;
+}
+.ash__cookies {
+  width: 100%;
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-sunken);
+  color: var(--syn-color-text);
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-caption);
+  resize: vertical;
+}
+.ash__warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border: 1px solid var(--syn-color-danger);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-danger-subtle);
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+}
+.ash__err {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}
+.ash__out {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+}
+.ash__meta {
+  margin: 0;
+  color: var(--syn-color-text-secondary);
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-caption);
+}
+.ash__img {
+  display: block;
+  width: 100%;
+  max-height: var(--syn-layout-search-max);
+  object-fit: contain;
+  object-position: top;
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-sunken);
+}
+
+
+/* ============================================================
+   E17 同步面板
+   「同步不可用」那条用危险色整块框起来 —— 它说的是
+   「你以为在同步，其实一条都没推出去」，弱化显示等于藏起故障
+   ============================================================ */
+.sy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+.sy__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--syn-space-sm);
+}
+.sy__pass,
+.sy__salt {
+  flex: 1 1 var(--syn-layout-side-bar);
+  min-width: 0;
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg);
+  color: var(--syn-color-text);
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-caption);
+}
+.sy__pass:focus-visible,
+.sy__salt:focus-visible {
+  outline: none;
+  border-color: var(--syn-color-border-focus);
+  box-shadow: var(--syn-shadow-focus);
+}
+.sy__meta {
+  margin: 0;
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+}
+.sy__meta code,
+.sy__fp code {
+  padding: 0 var(--syn-space-xxs);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-sunken);
+  font-family: var(--syn-ff-mono);
+}
+.sy__fp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+  padding: var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-sunken);
+}
+.sy__fp p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  margin: 0;
+  font-size: var(--syn-fs-caption);
+}
+.sy__hint {
+  margin: 0;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+}
+.sy__warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--syn-space-xs);
+  margin: 0;
+  padding: var(--syn-space-sm);
+  border: 1px solid var(--syn-color-danger);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-danger-subtle);
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+}
+.sy__warn code {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+}
+.sy__err {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  margin: 0;
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}

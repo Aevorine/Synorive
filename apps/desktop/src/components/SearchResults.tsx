@@ -12,6 +12,7 @@ import {
 import type { Modality, SearchHit } from '@synorive/shared-types';
 import { layout } from '@synorive/design-tokens';
 import { useApp } from '../lib/store';
+import { useKeyNav } from '../lib/keynav';
 import { api } from '../lib/api';
 
 const MODALITY_ICON: Record<Modality, typeof FileText> = {
@@ -37,12 +38,15 @@ export function SearchResults({
   hits,
   onAsk,
   onScenes,
+  onPreview,
 }: {
   hits: SearchHit[];
   /** N6：给每条文档一个「能回答什么」入口。不传就不显示这个按钮 */
   onAsk?: (itemId: string, title: string) => void;
   /** N3：给每条视频一个「看镜头」入口，带上命中的秒数直接定位过去 */
   onScenes?: (itemId: string, locator: string, title: string, sec?: number) => void;
+  /** F8：Space 预览。不传就只是不响应 Space，其余键照常 */
+  onPreview?: (hit: SearchHit) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const density = useApp((s) => s.settings?.density ?? 'standard');
@@ -56,8 +60,34 @@ export function SearchResults({
     overscan: 6,
   });
 
+  /**
+   * F8 键盘全流程可达。
+   *
+   * 🔴 **滚动必须交给 virtualizer 而不是 `scrollIntoView`。**
+   * 用 ↓ 一路按下去，选中项会走出可视区，而虚拟列表里它**根本不在 DOM 里** ——
+   * 这时 `scrollIntoView` 是个空操作，症状是"按了没反应"，
+   * 而且只在列表长的时候出现。这正是静默失败的形状。
+   */
+  const openHit = (i: number): void => {
+    const hit = hits[i];
+    if (!hit) return;
+    void api.recordOpen(hit.item.id);
+    if (hit.item.source === 'link') void window.synorive.sys.openExternal(hit.item.locator);
+    else void window.synorive.sys.openPath(hit.item.locator);
+  };
+
+  const { index: active } = useKeyNav({
+    count: hits.length,
+    onOpen: openHit,
+    onPreview: (i) => {
+      const hit = hits[i];
+      if (hit) onPreview?.(hit);
+    },
+    onScrollTo: (i) => virtualizer.scrollToIndex(i, { align: 'auto' }),
+  });
+
   return (
-    <div ref={parentRef} className="results" role="list">
+    <div ref={parentRef} className="results" role="listbox" aria-label="搜索结果">
       <div className="results__inner" style={{ height: `${virtualizer.getTotalSize()}px` }}>
         {virtualizer.getVirtualItems().map((v) => {
           const hit = hits[v.index];
@@ -68,7 +98,13 @@ export function SearchResults({
               className="results__row"
               style={{ height: `${v.size}px`, transform: `translateY(${v.start}px)` }}
             >
-              <ResultCard hit={hit} rank={v.index + 1} onAsk={onAsk} onScenes={onScenes} />
+              <ResultCard
+                hit={hit}
+                rank={v.index + 1}
+                active={v.index === active}
+                onAsk={onAsk}
+                onScenes={onScenes}
+              />
             </div>
           );
         })}
@@ -80,11 +116,14 @@ export function SearchResults({
 function ResultCard({
   hit,
   rank,
+  active,
   onAsk,
   onScenes,
 }: {
   hit: SearchHit;
   rank: number;
+  /** F8：键盘选中态。**必须同时写 aria-selected**——读屏软件看不到 CSS 高亮 */
+  active?: boolean;
   onAsk?: (itemId: string, title: string) => void;
   onScenes?: (itemId: string, locator: string, title: string, sec?: number) => void;
 }) {
@@ -104,14 +143,15 @@ function ResultCard({
 
   return (
     <article
-      className="card"
-      role="listitem"
-      tabIndex={0}
+      className={`card${active ? ' card--active' : ''}`}
+      role="option"
+      aria-selected={!!active}
+      tabIndex={active ? 0 : -1}
       onDoubleClick={open}
       onKeyDown={(e) => {
         if (e.key === 'Enter') open();
       }}
-      title="双击打开　Enter 打开"
+      title="双击打开　↑↓ 选　Enter 打开　Space 预览"
     >
       <span className="card__rank">{rank}</span>
       <Icon className="card__icon" size={17} strokeWidth={1.6} />

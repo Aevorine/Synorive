@@ -1095,6 +1095,18 @@
 
 .pb__pick,
 .pb__btn,
+/* E1 排法下拉。跟格式按钮同一套外观，让人一眼看出它们是一组的 */
+.pb__tpl {
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-md);
+  background: var(--syn-color-bg);
+  color: var(--syn-color-text-secondary);
+  font-family: var(--syn-ff-body);
+  font-size: var(--syn-fs-caption);
+  cursor: pointer;
+}
+
 .pb__fmt {
   display: inline-flex;
   align-items: center;
@@ -1655,4 +1667,26 @@
     animation: none;
     background: var(--syn-color-warning-subtle);
   }
+}
+
+/* B1 首字节竞速：还在等哪几家。
+   放在结果列表**上面**——它是对下面那批结果的限定条件，
+   放下面等于用户读完了才知道"这还没搜完" */
+.streamwait {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--syn-space-xs);
+  margin: 0 0 var(--syn-space-sm);
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  background: var(--syn-color-info-subtle);
+  border-radius: var(--syn-radius-sm);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+}
+
+.streamwait__note {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+  flex-basis: 100%;
 }

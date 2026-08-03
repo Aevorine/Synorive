@@ -8,6 +8,9 @@ import type {
   FontScheme,
 } from '@synorive/shared-types';
 import { PrivacyFence } from '../components/PrivacyFence';
+import { HotkeyReport } from '../components/HotkeyReport';
+import { ModelPanel } from '../components/ModelPanel';
+import { SyncPanel } from '../components/SyncPanel';
 import { PAGE_TITLES, useApp } from '../lib/store';
 
 const CLOUD_PROVIDERS: { id: CloudConfig['provider']; label: string; hint: string }[] = [
@@ -148,14 +151,33 @@ export function SettingsPage() {
 
           <Toggle
             label="启用核显加速"
-            hint="用 Intel/AMD 核显跑推理，图片分析可能快 2~3 倍。开关会切换 onnxruntime 的版本，
-                  切完要重启引擎。没装 DirectML 版时这个开关不起作用（分析中心里可以装）。"
+            hint="用 Intel/AMD 核显跑推理，图片分析可能快 2~3 倍。没装 DirectML 版 onnxruntime 时
+                  拿不到核显会自动退回 CPU（不报错）。改完点下面的「重载」当场生效，不用重启引擎。"
             checked={settings.enableGpuAcceleration}
             onChange={(v) => patch({ enableGpuAcceleration: v })}
           />
+
+          {/* E15 模型热插拔。放在核显开关正下方 ——
+              它就是那个开关的「立即生效」按钮，隔远了没人会去点 */}
+          <ModelPanel preferGpu={settings.enableGpuAcceleration} />
         </section>
 
         {/* ── 后台行为 ────────────────────────────────── */}
+        {/* F7：全局快捷键的**真实**注册结果。
+            `globalShortcut.register()` 抢不到时返回 false 而不抛异常 ——
+            失败是静默的，所以只能靠这块界面把它喊出来 */}
+        {/* E17/6.5：端到端加密同步。放在快捷键前面 ——
+            它涉及密钥和隐私，属于用户会主动来找的那一类设置 */}
+        <section className="panel">
+          <h2 className="panel__title">手机同步（端到端加密）</h2>
+          <SyncPanel />
+        </section>
+
+        <section className="panel">
+          <h2 className="panel__title">全局快捷键</h2>
+          <HotkeyReport />
+        </section>
+
         <section className="panel">
           <h2 className="panel__title">后台行为</h2>
 

@@ -135,6 +135,11 @@ class Filters:
     exclude_scopes: list[str] = field(default_factory=list)
     #: D10 的 type:pdf 走这里 —— 扩展名不是 modality，库里 pdf 的 modality 是 text
     extensions: list[str] = field(default_factory=list)
+    #: L3-plus 的 section:方法 走这里。
+    #: 🔴 **它是唯一一个落在 chunks 上而不是 items 上的筛选** ——
+    #: 章节是块的属性不是文件的属性（一个 PDF 里同时有摘要和方法）。
+    #: 所以 `sql()` 对它有两套写法，见那里的注释
+    sections: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> Filters:
@@ -150,6 +155,7 @@ class Filters:
             scopes=list(d.get("scopes") or []),
             exclude_scopes=list(d.get("excludeScopes") or []),
             extensions=list(d.get("extensions") or []),
+            sections=list(d.get("sections") or []),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -171,6 +177,7 @@ class Filters:
             "scopes": self.scopes,
             "excludeScopes": self.exclude_scopes,
             "extensions": self.extensions,
+            "sections": self.sections,
         }
 
     def merged_with(self, other: dict[str, Any] | None) -> Filters:
@@ -194,6 +201,7 @@ class Filters:
             scopes=list({*self.scopes, *o.scopes}),
             exclude_scopes=list({*self.exclude_scopes, *o.exclude_scopes}),
             extensions=list({*self.extensions, *o.extensions}),
+            sections=list({*self.sections, *o.sections}),
         )
 
     @property
@@ -202,14 +210,42 @@ class Filters:
             (
                 self.modalities, self.sources, self.tags, self.time_from, self.time_to,
                 self.size_min, self.size_max, self.scopes, self.exclude_scopes,
-                self.extensions,
+                self.extensions, self.sections,
             )
         )
 
-    def sql(self, alias: str = "i") -> tuple[str, list[Any]]:
-        """拼成 WHERE 片段。返回 (子句, 参数)。"""
+    def sql(self, alias: str = "i", chunk_alias: str | None = None) -> tuple[str, list[Any]]:
+        """
+        拼成 WHERE 片段。返回 (子句, 参数)。
+
+        `chunk_alias` 是 L3-plus 的 `section:` 专用：
+        **传了就在块上过滤，没传就退化成在条目上过滤**。
+
+        🔴 这两者不是同一件事，退化是有损的：
+        - 传了 `c` → `c.section LIKE '%method%'`，命中的**这一块**必须在方法章节
+        - 没传 → `i.id IN (SELECT item_id FROM chunks WHERE section LIKE ...)`，
+          只保证这篇论文**有**方法章节，命中的块可能在别的章节
+        块级召回（keyword / vector）一律传 `c`；条目级的路径（trigram 只查标题、
+        `recall_by_filter` 根本没有查询词）拿不到块，只能走后者。
+        **宁可退化也不放弃过滤** —— 完全忽略 `sections` 会让 trigram 那一路
+        召回一批不在指定章节的东西，然后混进最终排序，用户看不出是哪一路带进来的。
+        """
         parts: list[str] = []
         args: list[Any] = []
+
+        if self.sections:
+            # 🔴 `LIKE` 前后都要 `%`：真实章节标题是 `3.2 Experimental Method`，
+            # 只在末尾加 `%` 的话一条都匹配不到，而且是**静默**匹配不到
+            pats = [f"%{s.lower()}%" for s in self.sections]
+            if chunk_alias:
+                ors = " OR ".join(f"LOWER({chunk_alias}.section) LIKE ?" for _ in pats)
+                parts.append(f"({ors})")
+            else:
+                ors = " OR ".join("LOWER(section) LIKE ?" for _ in pats)
+                parts.append(
+                    f"{alias}.id IN (SELECT item_id FROM chunks WHERE section IS NOT NULL AND ({ors}))"
+                )
+            args += pats
 
         if self.modalities:
             parts.append(f"{alias}.modality IN ({','.join('?' * len(self.modalities))})")
@@ -342,7 +378,8 @@ class SearchEngine:
             return []
 
         conn = self.db.connect()
-        where, args = filters.sql("i")
+        # L3-plus：这一路是块级召回，`section:` 要落在**命中的那一块**上
+        where, args = filters.sql("i", chunk_alias="c")
         sql = f"""
             SELECT c.rowid AS chunk_rowid, c.item_id, c.text, c.channel, c.page, c.start_sec,
                    c.section, bm25(chunks_fts) AS score
@@ -457,7 +494,8 @@ class SearchEngine:
         rowids = [rid for rid, _ in pairs]
         dist = dict(pairs)
 
-        where, args = filters.sql("i")
+        # 同上：向量召回也是块级的，`section:` 落在块上
+        where, args = filters.sql("i", chunk_alias="c")
         marks = ",".join("?" * len(rowids))
         detail = conn.execute(
             f"""

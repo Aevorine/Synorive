@@ -78,7 +78,37 @@ const api = {
    */
   peek: {
     onQuery: (cb: (p: { query: string; web: boolean }) => void) => on(IPC.peekQuery, cb),
+    /** A8 复制了一张图 —— 和 onQuery 分开，因为图走的是完全另一条检索路径 */
+    onImage: (cb: (p: { image: string; preview: string; web: boolean }) => void) =>
+      on(IPC.peekImage, cb),
     close: (): Promise<void> => ipcRenderer.invoke(IPC.peekClose),
+  },
+
+  /** F7 全局快捷键 ｜ A4 截图直搜 */
+  hotkeys: {
+    /**
+     * 真实注册结果。**`active` 可能和你设的键不一样，也可能是 null** ——
+     * 设置页必须照实显示，不能显示"我们想注册的那个"
+     */
+    report: (): Promise<
+      { id: string; label: string; active: string | null; usedFallback: boolean; tried: string[] }[]
+    > => ipcRenderer.invoke(IPC.hotkeyReport),
+    /** A4 手动拉起系统截图。截完的图由剪贴板哨兵接住 */
+    screenshot: (): Promise<{ ok: boolean; note: string }> =>
+      ipcRenderer.invoke(IPC.screenshotCapture),
+  },
+
+  /**
+   * E5 打印成引用可点的 PDF。
+   * `ok:false` 且 `error` 为空 = 用户在保存对话框点了取消，**不是错误**，
+   * 界面不该为此弹红字
+   */
+  doc: {
+    exportPdf: (
+      html: string,
+      name: string,
+    ): Promise<{ ok: boolean; path?: string; error?: string }> =>
+      ipcRenderer.invoke(IPC.exportPdf, { html, name }),
   },
 
   theme: {

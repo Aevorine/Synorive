@@ -47,6 +47,20 @@ export const IPC = {
   peekQuery: 'peek:query',
   /** 浮窗自己请求关闭（点了叉、或按 Esc） */
   peekClose: 'peek:close',
+  /** A8 复制了一张图 → 浮窗按图搜（和 peekQuery 分开：一个给文字一个给图） */
+  peekImage: 'peek:image',
+
+  /** F7 全局快捷键的**真实**注册结果。抢不到首选键时界面要照实显示 */
+  hotkeyReport: 'hotkey:report',
+  /** A4 手动触发一次截图直搜（快捷键之外，命令面板里也能点） */
+  screenshotCapture: 'hotkey:screenshot',
+
+  /**
+   * E5 把一段 HTML 打成 PDF，且**保留可点的引用锚点**。
+   * 必须走主进程：渲染层的 `window.print()` 走的是系统打印驱动，
+   * 那条路会把 `<a href>` 拍成纯文字，导出的 PDF 里点引用号毫无反应。
+   */
+  exportPdf: 'export:pdf',
 
   /** 首次运行自举：自己找 Python、建 venv、装引擎 */
   engineBootstrap: 'engine:bootstrap',

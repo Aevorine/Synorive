@@ -13,6 +13,7 @@
     in:D:\\项目          只在这些目录里搜
     tag:重要             带这些标签
     src:link             来源（file/link/clipboard/chat-export/mail/mobile/api）
+    section:方法         只搜论文的这些章节（L3-plus，见下）
     -草稿                排除含这个词的
     "精确短语"           整段精确匹配
 
@@ -20,6 +21,19 @@
 写错的指令（`date:去年夏天`）不报错、不吞掉整条查询，而是当普通查询词处理。
 搜索框是高频输入位置，一个语法错误就返回"语法错误"是很糟的体验 ——
 用户会觉得"这破搜索连字都不让我随便打"。
+
+## L3-plus `section:` —— 只搜论文的某几个章节
+
+在 `chunks.section` 上过滤（分节信息在 L3 就已经存进去了，
+之前只用来做排序浮现和结果标注，没有显式过滤入口）。
+
+🔴 **按子串匹配，不按精确相等。** 真实论文的章节标题长这样：
+`3.2 Experimental Method`、`4. Results and Discussion`、`材料与方法`。
+要求精确相等的话，`section:method` 一条都匹配不到 ——
+而那种失败是**静默**的：返回空结果，看起来就像"这个库里没有相关内容"。
+
+🔴 **认不出来的词当原样子串用，不报错。** `section:第三章` 匹配不上任何
+预设别名，但用户很可能真的就想找标题里带"第三章"的块。宽容优先。
 """
 
 from __future__ import annotations
@@ -31,11 +45,17 @@ from typing import Any
 
 #: `key:value` —— 冒号支持中文全角，值里允许引号包起来的空格
 _DIRECTIVE = re.compile(
-    r"""(?P<key>type|date|size|in|tag|src|类型|时间|大小|目录|标签|来源)
+    r"""(?<![\w一-鿿])          # 🔴 指令必须**独立成词**，见下
+        (?P<key>type|date|size|in|tag|src|section|sec|类型|时间|大小|目录|标签|来源|章节)
         [:：]
         (?P<value>"[^"]*"|'[^']*'|[^\s]+)""",
     re.I | re.X,
 )
+# 🔴 那个逆向断言不是装饰。少了它，`in` / `sec` 这种短 key 会在**单词中间**命中：
+#    搜 `domain:example.com` → 从第 4 个字符起匹配到 `in:example.com`，
+#    于是这条查询被悄悄变成"只在 example.com 这个目录里搜"，
+#    剩下 `doma` 当关键词。**不报错、不提示，就是搜不到东西。**
+#    同类的还有 `margin:0`、`begin:x`、`spec:v2`（`sec` 差一点就中）。
 
 _KEY_ALIAS = {
     "类型": "type",
@@ -44,6 +64,44 @@ _KEY_ALIAS = {
     "目录": "in",
     "标签": "tag",
     "来源": "src",
+    "章节": "section",
+    "sec": "section",
+}
+
+#: L3-plus：用户敲的章节词 → 一组**子串**匹配模式。
+#: 中英文都收，因为同一个库里中英文论文都有，用户不该被迫记住"这篇是英文的"。
+#:
+#: 🔴 值是子串不是完整标题：真实论文的标题是 `3.2 Experimental Method`、
+#: `4. Results and Discussion`、`材料与方法`，精确匹配一条都命中不了。
+_SECTION_ALIAS: dict[str, tuple[str, ...]] = {
+    "abstract": ("abstract", "摘要"),
+    "摘要": ("abstract", "摘要"),
+    "intro": ("introduction", "引言", "前言"),
+    "introduction": ("introduction", "引言", "前言"),
+    "引言": ("introduction", "引言", "前言"),
+    "前言": ("introduction", "引言", "前言"),
+    "related": ("related work", "related studies", "相关工作", "文献综述", "研究现状"),
+    "相关工作": ("related work", "related studies", "相关工作", "文献综述", "研究现状"),
+    "background": ("background", "背景"),
+    "背景": ("background", "背景"),
+    "method": ("method", "approach", "materials and", "方法", "材料与方法", "实验设计"),
+    "methods": ("method", "approach", "materials and", "方法", "材料与方法", "实验设计"),
+    "方法": ("method", "approach", "materials and", "方法", "材料与方法", "实验设计"),
+    "result": ("result", "finding", "结果", "实验结果"),
+    "results": ("result", "finding", "结果", "实验结果"),
+    "结果": ("result", "finding", "结果", "实验结果"),
+    "experiment": ("experiment", "evaluation", "实验", "评估"),
+    "实验": ("experiment", "evaluation", "实验", "评估"),
+    "discussion": ("discussion", "讨论", "分析"),
+    "讨论": ("discussion", "讨论", "分析"),
+    "conclusion": ("conclusion", "结论", "总结"),
+    "结论": ("conclusion", "结论", "总结"),
+    "limitation": ("limitation", "threats to validity", "局限", "不足"),
+    "局限": ("limitation", "threats to validity", "局限", "不足"),
+    "reference": ("reference", "bibliograph", "参考文献", "引用文献"),
+    "参考文献": ("reference", "bibliograph", "参考文献", "引用文献"),
+    "appendix": ("appendix", "supplement", "附录", "补充材料"),
+    "附录": ("appendix", "supplement", "附录", "补充材料"),
 }
 
 #: 扩展名 → modality。用户敲 type:pdf 想要的是"PDF 文件"，
@@ -150,7 +208,33 @@ def _apply(key: str, value: str, filters: dict[str, Any]) -> bool:
             return False
         filters.setdefault("sources", []).extend(good)
         return True
+    if key == "section":
+        return _apply_section(value, filters)
     return False
+
+
+def _apply_section(value: str, filters: dict[str, Any]) -> bool:
+    """
+    L3-plus。`section:方法,结果` → 一堆子串模式，OR 关系。
+
+    🔴 **认不出来的词也照收**（当原样子串用）。`section:第三章` 匹配不上
+    任何预设别名，但用户很可能就想找标题里带"第三章"的块 ——
+    这时候返回 False 会让整个指令退化成普通查询词，
+    表现是"我明明写了 section: 它却当成关键词去搜了"，更让人困惑。
+    """
+    pats: list[str] = []
+    for part in value.split(","):
+        p = part.strip().lower()
+        if not p:
+            continue
+        pats.extend(_SECTION_ALIAS.get(p, (p,)))
+    if not pats:
+        return False
+    # 去重但保序 —— 顺序影响 describe() 里显示的第一个词，那个词是用户敲的
+    seen: set[str] = set()
+    uniq = [x for x in pats if not (x in seen or seen.add(x))]
+    filters.setdefault("sections", []).extend(uniq)
+    return True
 
 
 def _apply_type(value: str, filters: dict[str, Any]) -> bool:
@@ -291,6 +375,12 @@ def describe(parsed: ParsedQuery) -> list[str]:
         out.append("来源：" + "、".join(f["sources"]))
     if f.get("tags"):
         out.append("标签：" + "、".join(f["tags"]))
+    if f.get("sections"):
+        # 只显示第一个（别名表里排头的是规范名），别把 6 条同义写法全糊上去 ——
+        # 那是实现细节，用户敲的是「方法」不是「method/approach/材料与方法/…」
+        secs = f["sections"]
+        tail = f"（连同 {len(secs) - 1} 种同义写法一起匹配）" if len(secs) > 1 else ""
+        out.append(f"章节：{secs[0]}{tail}")
     if f.get("scopes"):
         out.append("目录：" + "、".join(f["scopes"]))
     if f.get("timeFrom") or f.get("timeTo"):

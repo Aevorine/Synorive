@@ -39,6 +39,12 @@ export interface EngineLaunchOptions {
   concurrency: number;
   /** 隐私围栏：允许把内容送云端（云端简报生成 R8、图片描述 C4 都受它管） */
   allowCloud: boolean;
+  /**
+   * E15 优先用核显跑推理。
+   * 🔴 这个字段以前**没有传给引擎的路径** —— 设置里存着，但既不在
+   * `EngineOptions` 里，也没有对应的命令行参数，于是开了等于没开
+   */
+  enableGpuAcceleration: boolean;
   /** C4：图片详细描述——还要 allowCloud 为真且设置页配好了视觉模型才会真的调用 */
   enableImageDescription: boolean;
   /** C5：本地人脸检测与聚类，默认关 */
@@ -363,6 +369,10 @@ export class EngineManager {
     // 用户在设置页打开"云端增强"或"人脸检测与聚类"，实际上什么都不会发生，
     // 因为 EngineConfig 对应的字段永远是构造函数默认值 False。
     // 界面上的开关变了却没有连到后端，是最容易被忽略的一类"半成品功能"。
+    // E15：以前这个设置**根本没传给引擎** —— 设置页开了核显加速，
+    // 引擎侧却没有任何地方读它，推理照样在 CPU 上跑。开关只换了
+    // onnxruntime 的包，没换实际的执行器，而且完全没有迹象
+    if (this.opts.enableGpuAcceleration) args.push('--prefer-gpu');
     if (this.opts.allowCloud) args.push('--allow-cloud');
     if (this.opts.enableImageDescription) args.push('--enable-image-description');
     if (this.opts.enableFaceClustering) args.push('--enable-face-clustering');

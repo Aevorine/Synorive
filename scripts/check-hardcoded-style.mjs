@@ -139,10 +139,71 @@ for (const dir of SCAN_DIRS) {
   }
 }
 
+// ────────────────────────────────────────────────────────────────
+// F9 —— 锚点 5 令牌自检
+// ────────────────────────────────────────────────────────────────
+// 上面那一轮只保证「业务代码里没有字面量」。但那不足以保证
+// **界面真的是宋体小四 + Times New Roman** —— 只要令牌本身写错了，
+// 全应用会整整齐齐地一起错，而且扫描器一个字都不会报。
+//
+// 这是"检查了但检查的不是要害"的典型：合规率 100%，结论却可能是错的。
+// 所以这一段直接去读令牌文件，断言那几个值本身对不对。
+const TOKENS = join(ROOT, 'packages', 'design-tokens', 'dist', 'tokens.css');
+
+/** 锚点 5 要求的字号（1pt = 1.3333px），容差 0.5px 给四舍五入 */
+const REQUIRED_SIZES = [
+  ['--syn-fs-body', 16, '正文＝小四'],
+  ['--syn-fs-emphasis', 18.67, '强调＝四号'],
+  ['--syn-fs-section-title', 21.33, '区块标题＝三号'],
+  ['--syn-fs-page-title', 24, '页面标题＝小二'],
+];
+
+let anchorFails = 0;
+try {
+  const css = readFileSync(TOKENS, 'utf8');
+
+  const grab = (name) => {
+    const m = new RegExp(`${name}\\s*:\\s*([^;]+);`).exec(css);
+    return m ? m[1].trim() : null;
+  };
+
+  for (const [name, want, why] of REQUIRED_SIZES) {
+    const raw = grab(name);
+    const got = raw ? Number.parseFloat(raw) : NaN;
+    if (!Number.isFinite(got) || Math.abs(got - want) > 0.5) {
+      anchorFails += 1;
+      console.error(`✗ 令牌 ${name} = ${raw ?? '（没找到）'}，锚点 5 要求 ${want}px（${why}）`);
+    }
+  }
+
+  // 西文 Times New Roman 必须**排在最前**：字体是逐字符回退的，
+  // 排在宋体后面的话西文会先被宋体的内嵌西文字形吃掉，
+  // 症状是"看着是有衬线，但不是 Times New Roman"——极难用肉眼发现
+  for (const name of ['--syn-ff-body', '--syn-ff-display', '--syn-ff-tabular']) {
+    const raw = grab(name) ?? '';
+    if (!/^"Times New Roman"/.test(raw)) {
+      anchorFails += 1;
+      console.error(`✗ 令牌 ${name} 的第一顺位不是 "Times New Roman"：${raw || '（没找到）'}`);
+    }
+    if (!/SimSun|宋体|Serif SC/.test(raw)) {
+      anchorFails += 1;
+      console.error(`✗ 令牌 ${name} 里没有中文宋体回退：${raw || '（没找到）'}`);
+    }
+  }
+} catch (e) {
+  anchorFails += 1;
+  console.error(`✗ 读不到令牌文件 ${relative(ROOT, TOKENS)}：${e.message}`);
+  console.error('   （令牌是构建产物，先跑一次 npm run build --workspace=@synorive/design-tokens）');
+}
+
 console.log('-'.repeat(64));
 console.log(`扫描 ${scanned} 个文件`);
 if (violations > 0) {
   console.error(`✗ 发现 ${violations} 处硬编码样式 —— 一律改成 var(--syn-*) 令牌`);
-  process.exit(1);
 }
+if (anchorFails > 0) {
+  console.error(`✗ 锚点 5 令牌自检失败 ${anchorFails} 项 —— 字体/字号规则本身就写错了`);
+}
+if (violations > 0 || anchorFails > 0) process.exit(1);
 console.log('✓ 零硬编码色值与字号，全部走设计令牌（验收标准 B4 通过）');
+console.log('✓ 锚点 5：正文小四／强调四号／西文 Times New Roman 优先，令牌值本身也对（F9）');

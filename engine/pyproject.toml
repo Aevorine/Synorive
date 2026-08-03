@@ -38,6 +38,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# E17 端到端加密同步（桌面 ↔ 安卓）
+#
+# 🔴 **没有它就一律拒绝同步，不做任何降级。**
+# 加密这块唯一不能干的事就是"库没装就用个简单办法顶一下" ——
+# 自己拼的密码算法跑起来完全正常、不报错、密文看着也像密文，
+# 而它根本不安全。这类失败用户永远发现不了。
+# KDF 用 stdlib 的 hashlib.scrypt（不需要额外依赖），只有 AES-GCM 要这个包。
+sync = [
+    "cryptography>=43.0",
+]
 # 文档解析（二期）
 docs = [
     "pymupdf>=1.25",

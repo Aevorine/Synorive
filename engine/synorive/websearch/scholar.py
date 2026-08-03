@@ -338,8 +338,300 @@ class PubMedSource(BaseEngine):
         return r2.status_code, (ParseOutcome.OK if out else ParseOutcome.BROKEN), out
 
 
+class SemanticScholarSource(BaseEngine):
+    """C1 —— 语义学者。免 Key（有速率限制），字段最全的一家之一。"""
+
+    id = "semanticscholar"
+    label = "Semantic Scholar"
+    kind = "api"
+    group = "scholar"
+    note = "语义学者。摘要、被引、开放获取 PDF 一次给全，计算机与生医覆盖最好"
+
+    def build(self, query, *, limit, lang, region, time_range, key):
+        fields = (
+            "title,abstract,year,publicationDate,venue,citationCount,"
+            "externalIds,openAccessPdf,authors"
+        )
+        url = (
+            "https://api.semanticscholar.org/graph/v1/paper/search"
+            f"?query={quote_plus(query)}&limit={min(100, max(1, limit))}&fields={fields}"
+        )
+        headers = {"User-Agent": UA, "Accept": "application/json"}
+        # 有 Key 就带上 —— 免 Key 时 429 很常见，那是限流不是故障
+        if key:
+            headers["x-api-key"] = key
+        return httpx.Request("GET", url, headers=headers)
+
+    def parse(self, resp):
+        try:
+            items = resp.json().get("data") or []
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            return ParseOutcome.BROKEN, []
+        if not items:
+            return ParseOutcome.EMPTY, []
+        out: list[WebResult] = []
+        for i, it in enumerate(items, 1):
+            ext = it.get("externalIds") or {}
+            oa = it.get("openAccessPdf") or {}
+            doi = str(ext.get("DOI") or "")
+            pid = str(it.get("paperId") or "")
+            url = (
+                f"https://doi.org/{doi}" if doi
+                else f"https://www.semanticscholar.org/paper/{pid}"
+            )
+            authors = [(a.get("name") or "") for a in (it.get("authors") or [])]
+            r = _mk(
+                self.id, i, it.get("title") or "", url, it.get("abstract") or "",
+                doi=doi, authors=[a for a in authors if a][:8],
+                year=str(it.get("year") or ""), venue=it.get("venue") or "",
+                citations=it.get("citationCount") or 0,
+                pdf=oa.get("url") or "",
+                arxivId=str(ext.get("ArXiv") or ""),
+                # C6 预印本合并的原料：有 arXiv 号却没 DOI，基本就是还没正式发表
+                preprint=bool(ext.get("ArXiv") and not doi),
+                source="Semantic Scholar",
+            )
+            if r:
+                r.published = it.get("publicationDate")
+                out.append(r)
+        return (ParseOutcome.OK, out) if out else (ParseOutcome.BROKEN, [])
+
+
+class EuropePmcSource(BaseEngine):
+    """
+    C1 —— Europe PMC。**bioRxiv / medRxiv 的预印本走这条线拿**。
+
+    为什么不直接接 bioRxiv 官方接口：它的 `/details/biorxiv/` 只能按日期区间
+    翻页，**根本没有关键词检索**。想按主题找预印本，官方接口帮不上忙。
+    Europe PMC 把 bioRxiv、medRxiv 的预印本全收了并且支持全文检索，
+    还顺带给 PMC 全文链接 —— 这才是能用的那条路。
+    """
+
+    id = "europepmc"
+    label = "Europe PMC"
+    kind = "api"
+    group = "scholar"
+    note = "生医文献 + bioRxiv/medRxiv 预印本。带全文链接，很多能直接读正文"
+
+    def build(self, query, *, limit, lang, region, time_range, key):
+        url = (
+            "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+            f"?query={quote_plus(query)}&format=json&resultType=core"
+            f"&pageSize={min(100, max(1, limit))}"
+        )
+        return httpx.Request("GET", url, headers={"User-Agent": UA,
+                                                  "Accept": "application/json"})
+
+    def parse(self, resp):
+        try:
+            items = ((resp.json().get("resultList") or {}).get("result")) or []
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            return ParseOutcome.BROKEN, []
+        if not items:
+            return ParseOutcome.EMPTY, []
+        out: list[WebResult] = []
+        for i, it in enumerate(items, 1):
+            doi = str(it.get("doi") or "")
+            pmcid = str(it.get("pmcid") or "")
+            if doi:
+                url = f"https://doi.org/{doi}"
+            elif pmcid:
+                url = f"https://europepmc.org/article/PMC/{pmcid}"
+            else:
+                url = (f"https://europepmc.org/article/"
+                       f"{it.get('source', 'MED')}/{it.get('id', '')}")
+            pdf = ""
+            for ft in ((it.get("fullTextUrlList") or {}).get("fullTextUrl") or []):
+                if str(ft.get("documentStyle")) == "pdf":
+                    pdf = str(ft.get("url") or "")
+                    break
+            authors = [
+                a.strip() for a in str(it.get("authorString") or "").split(",") if a.strip()
+            ]
+            r = _mk(
+                self.id, i, it.get("title") or "", url, it.get("abstractText") or "",
+                doi=doi, year=str(it.get("pubYear") or ""),
+                venue=it.get("journalTitle") or "",
+                citations=it.get("citedByCount") or 0,
+                authors=authors[:8], pdf=pdf, pmcid=pmcid,
+                # PPR 是 Europe PMC 给预印本的来源码
+                preprint=(str(it.get("source") or "") == "PPR"),
+                source="Europe PMC",
+            )
+            if r:
+                r.published = it.get("firstPublicationDate")
+                out.append(r)
+        return (ParseOutcome.OK, out) if out else (ParseOutcome.BROKEN, [])
+
+
+class OpenAireSource(BaseEngine):
+    """
+    C1 —— OpenAIRE。欧盟资助成果聚合，**社科与人文的覆盖比另外几家好**。
+
+    ⚠️ 它的 JSON 是从 XML 机械转过来的，嵌套七八层，同一个字段时而是对象
+    时而是数组。所以下面全程走 `_oa_text` / `_oa_list` 防御性取值 ——
+    直接写 `d["a"]["b"][0]` 在这家身上必炸，而且炸得毫无规律可循。
+    """
+
+    id = "openaire"
+    label = "OpenAIRE"
+    kind = "api"
+    group = "scholar"
+    default_on = False
+    note = "欧盟开放科研聚合。社科人文覆盖较好，但返回结构很乱，偶尔会漏字段"
+
+    def build(self, query, *, limit, lang, region, time_range, key):
+        url = (
+            "https://api.openaire.eu/search/publications"
+            f"?keywords={quote_plus(query)}&format=json&size={min(50, max(1, limit))}"
+        )
+        return httpx.Request("GET", url, headers={"User-Agent": UA,
+                                                  "Accept": "application/json"})
+
+    def parse(self, resp):
+        try:
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            return ParseOutcome.BROKEN, []
+        results = _oa_list(
+            ((data.get("response") or {}).get("results") or {}).get("result")
+        )
+        if not results:
+            return ParseOutcome.EMPTY, []
+        out: list[WebResult] = []
+        for i, it in enumerate(results, 1):
+            entity = (it.get("metadata") or {}).get("oaf:entity") or {}
+            work = entity.get("oaf:result") or {}
+            title = _oa_text(work.get("title"))
+            doi = ""
+            for pid in _oa_list(work.get("pid")):
+                if _oa_attr(pid, "classid").lower() == "doi":
+                    doi = _oa_text(pid)
+                    break
+            url = f"https://doi.org/{doi}" if doi else _oa_instance_url(work)
+            if not url:
+                continue
+            authors = [_oa_text(a) for a in _oa_list(work.get("creator"))]
+            date = _oa_text(work.get("dateofacceptance"))
+            r = _mk(
+                self.id, i, title, url, _oa_text(work.get("description")),
+                doi=doi, year=date[:4], authors=[a for a in authors if a][:8],
+                source="OpenAIRE",
+            )
+            if r:
+                r.published = date or None
+                out.append(r)
+        return (ParseOutcome.OK, out) if out else (ParseOutcome.BROKEN, [])
+
+
+class CoreSource(BaseEngine):
+    """
+    C1 —— CORE。全球开放获取仓储聚合，**两亿多篇全文**，量最大的一家。
+
+    要 Key，但 **core.ac.uk 免费注册就给**（不是付费墙）。所以
+    `needs_key=True` 配 `default_on=False`：没填 Key 时 `_pick` 会明确挡下
+    并说明原因，而不是每次都去撞一个必然 401 的请求。
+    """
+
+    id = "core"
+    label = "CORE"
+    kind = "api"
+    group = "scholar"
+    needs_key = True
+    default_on = False
+    note = "开放获取全文聚合，量最大（两亿+）。要 Key，但 core.ac.uk 免费注册就给"
+
+    def build(self, query, *, limit, lang, region, time_range, key):
+        url = (
+            "https://api.core.ac.uk/v3/search/works"
+            f"?q={quote_plus(query)}&limit={min(100, max(1, limit))}"
+        )
+        return httpx.Request("GET", url, headers={
+            "User-Agent": UA, "Accept": "application/json",
+            "Authorization": f"Bearer {key or ''}",
+        })
+
+    def parse(self, resp):
+        try:
+            items = resp.json().get("results") or []
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            return ParseOutcome.BROKEN, []
+        if not items:
+            return ParseOutcome.EMPTY, []
+        out: list[WebResult] = []
+        for i, it in enumerate(items, 1):
+            doi = str(it.get("doi") or "")
+            url = f"https://doi.org/{doi}" if doi else str(it.get("downloadUrl") or "")
+            if not url:
+                srcs = it.get("sourceFulltextUrls") or []
+                url = str(srcs[0]) if isinstance(srcs, list) and srcs else ""
+            if not url:
+                continue
+            authors = [
+                (a.get("name") or "") for a in (it.get("authors") or [])
+                if isinstance(a, dict)
+            ]
+            r = _mk(
+                self.id, i, it.get("title") or "", url, it.get("abstract") or "",
+                doi=doi, year=str(it.get("yearPublished") or ""),
+                authors=[a for a in authors if a][:8],
+                pdf=str(it.get("downloadUrl") or ""),
+                venue=str(it.get("publisher") or ""),
+                source="CORE",
+            )
+            if r:
+                r.published = it.get("publishedDate")
+                out.append(r)
+        return (ParseOutcome.OK, out) if out else (ParseOutcome.BROKEN, [])
+
+
+# ── OpenAIRE 专用的防御性取值（它的 JSON 形状不稳定）────────────────
+def _oa_list(v: Any) -> list[Any]:
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return [x for x in v if x is not None]
+    return [v]
+
+
+def _oa_text(v: Any) -> str:
+    """从 `"x"` / `{"$": "x"}` / `[{"$": "x"}, …]` 三种形状里都能取出文本。"""
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, dict):
+        return str(v.get("$") or v.get("content") or "").strip()
+    if isinstance(v, list):
+        for x in v:
+            t = _oa_text(x)
+            if t:
+                return t
+    return ""
+
+
+def _oa_attr(v: Any, name: str) -> str:
+    if isinstance(v, dict):
+        return str(v.get(f"@{name}") or v.get(name) or "")
+    return ""
+
+
+def _oa_instance_url(work: dict[str, Any]) -> str:
+    """没有 DOI 时退回找一个能打开的落地页。找不到就返回空串，由调用方丢弃。"""
+    for inst in _oa_list(work.get("instance")):
+        if not isinstance(inst, dict):
+            continue
+        for wr in _oa_list(inst.get("webresource")):
+            u = _oa_text(wr.get("url") if isinstance(wr, dict) else wr)
+            if u.startswith(("http://", "https://")):
+                return u
+    return ""
+
+
 SCHOLAR_ENGINES = (
     ArxivSource(), CrossrefSource(), OpenAlexSource(), DoajSource(), PubMedSource(),
+    # C1 扩容：5 家 → 9 家
+    SemanticScholarSource(), EuropePmcSource(), OpenAireSource(), CoreSource(),
 )
 
 
@@ -405,3 +697,204 @@ def merge_scholar(results: list[WebResult]) -> list[dict[str, Any]]:
         d["rank"] = i
         d["sourceCount"] = len(d["sources"])
     return out
+
+
+# ────────────────────────────────────────────────────────────────
+# C6 预印本与正式版合并
+# ────────────────────────────────────────────────────────────────
+#: 标题归一化时要扔掉的噪声：版本号、期刊排版前缀、方括号标注
+_TITLE_NOISE = re.compile(
+    r"(\bv\d+\b|\[preprint\]|\[预印本\]|\(preprint\)|supplementary|附录)", re.I
+)
+
+
+def _title_norm(title: str) -> str:
+    """
+    标题归一化。**只留字母数字和汉字**，因为各家对副标题分隔符
+    （`:` `—` `--`）、大小写、连字符的处理都不一样，
+    同一篇论文在五家源里能长出五个不同的标题字符串。
+    """
+    t = _TITLE_NOISE.sub(" ", str(title or "").lower())
+    return re.sub(r"[^a-z0-9一-鿿]+", "", t)[:90]
+
+
+def merge_preprints(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    C6 —— 把预印本和它的正式发表版算成**一篇**。
+
+    `merge_scholar()` 按 DOI 折叠，但**预印本经常没有 DOI，
+    或者拿到的是 arXiv 自己签发的 DOI（和正式版的完全不同）**。
+    结果就是同一项工作在列表里出现两次，一次挂 arXiv 一次挂期刊 ——
+    用户看到的"找到 40 篇"里可能有 8 篇是重复的。
+
+    **合并方向永远是「预印本并进正式版」，不是反过来**：
+    正式版有期刊名、卷期页码、正式的 DOI，是引用时该写的那一份；
+    预印本的价值是「可能有免费全文」和「更早的时间戳」，
+    所以只把 `pdf` 和 `preprintDate` 这两样搬过去，别的字段一律不覆盖。
+
+    🔴 判据保守是刻意的：只有**标题归一化后完全相同**才合并。
+    用相似度阈值会把「XX 方法综述」和「XX 方法综述（第二部分）」并成一篇——
+    错误合并比重复显示糟得多，因为用户根本看不出少了一篇。
+    """
+    if not entries:
+        return []
+
+    by_title: dict[str, list[int]] = {}
+    for i, e in enumerate(entries):
+        key = _title_norm(e.get("title") or "")
+        if len(key) >= 10:          # 太短的标题不参与合并，误合并风险太高
+            by_title.setdefault(key, []).append(i)
+
+    dropped: set[int] = set()
+    for _key, idxs in by_title.items():
+        if len(idxs) < 2:
+            continue
+        # 正式版 = 有 DOI 且不是 arXiv 自签的那个；找不到就保留排名最前的
+        formal = None
+        for i in idxs:
+            meta = entries[i].get("meta") or {}
+            doi = str(meta.get("doi") or "")
+            if doi and not doi.lower().startswith("10.48550"):   # arXiv 自签前缀
+                formal = i
+                break
+        if formal is None:
+            formal = idxs[0]
+
+        target = entries[formal]
+        tmeta = target.setdefault("meta", {})
+        for i in idxs:
+            if i == formal:
+                continue
+            src = entries[i]
+            smeta = src.get("meta") or {}
+            # 只搬这三样，别的一律不覆盖正式版
+            if not tmeta.get("pdf") and smeta.get("pdf"):
+                tmeta["pdf"] = smeta["pdf"]
+            if smeta.get("arxivId") and not tmeta.get("arxivId"):
+                tmeta["arxivId"] = smeta["arxivId"]
+            if src.get("published") and (
+                not tmeta.get("preprintDate") or src["published"] < tmeta["preprintDate"]
+            ):
+                tmeta["preprintDate"] = src["published"]
+            # 来源列表取并集，好让界面上仍然显示"这几家都收录了"
+            for s in src.get("sources") or []:
+                if s not in target.setdefault("sources", []):
+                    target["sources"].append(s)
+            dropped.add(i)
+
+        if dropped:
+            tmeta["mergedPreprint"] = True
+
+    out = [e for i, e in enumerate(entries) if i not in dropped]
+    for i, d in enumerate(out, 1):
+        d["rank"] = i
+        d["sourceCount"] = len(d.get("sources") or [])
+    return out
+
+
+# ────────────────────────────────────────────────────────────────
+# C9 引用格式导出：BibTeX / GB-T 7714
+# ────────────────────────────────────────────────────────────────
+def _bib_key(entry: dict[str, Any]) -> str:
+    """`第一作者姓 + 年份 + 标题首词`，全部降成 ASCII 安全字符。"""
+    meta = entry.get("meta") or {}
+    authors = meta.get("authors") or []
+    first = str(authors[0]) if authors else ""
+    surname = re.sub(r"[^A-Za-z]", "", first.split()[-1] if first.split() else "") or "anon"
+    year = re.sub(r"[^0-9]", "", str(meta.get("year") or ""))[:4] or "nd"
+    word = ""
+    for w in re.findall(r"[A-Za-z]{4,}", str(entry.get("title") or "")):
+        word = w.lower()
+        break
+    return f"{surname.lower()}{year}{word}"[:40]
+
+
+def _bib_escape(s: str) -> str:
+    # BibTeX 里这几个是控制字符，不转义会让整个 .bib 文件解析失败
+    return (
+        str(s or "")
+        .replace("\\", r"\textbackslash{}")
+        .replace("{", r"\{").replace("}", r"\}")
+        .replace("&", r"\&").replace("%", r"\%").replace("$", r"\$")
+        .replace("#", r"\#").replace("_", r"\_")
+        .strip()
+    )
+
+
+def to_bibtex(entries: list[dict[str, Any]]) -> str:
+    """
+    C9 —— 导出 BibTeX。
+
+    条目类型只在 `@article` 和 `@misc` 之间二选一：有期刊名就是 article，
+    没有就是 misc（预印本、会议论文、技术报告全归这里）。
+    **不去猜 `@inproceedings`** —— 猜错了会让参考文献里出现不存在的会议名，
+    那比统一标成 misc 让用户自己改要糟。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for e in entries:
+        meta = e.get("meta") or {}
+        key = _bib_key(e)
+        n = 1
+        base = key
+        while key in seen:                 # 同姓同年同首词的会撞，加后缀区分
+            n += 1
+            key = f"{base}{chr(96 + n)}"
+        seen.add(key)
+
+        venue = str(meta.get("venue") or "")
+        fields: list[tuple[str, str]] = [
+            ("title", _bib_escape(e.get("title") or "")),
+            ("author", " and ".join(_bib_escape(a) for a in (meta.get("authors") or []))),
+            ("year", re.sub(r"[^0-9]", "", str(meta.get("year") or ""))[:4]),
+        ]
+        if venue:
+            fields.append(("journal", _bib_escape(venue)))
+        if meta.get("doi"):
+            fields.append(("doi", str(meta["doi"])))
+        if e.get("url"):
+            fields.append(("url", str(e["url"])))
+        if meta.get("arxivId"):
+            fields.append(("eprint", str(meta["arxivId"])))
+            fields.append(("archivePrefix", "arXiv"))
+
+        body = ",\n".join(f"  {k} = {{{v}}}" for k, v in fields if v)
+        out.append(f"@{'article' if venue else 'misc'}{{{key},\n{body}\n}}")
+    return "\n\n".join(out) + ("\n" if out else "")
+
+
+def to_gbt7714(entries: list[dict[str, Any]]) -> str:
+    """
+    C9 —— 导出 GB/T 7714-2015（国标参考文献格式），中文论文要用的那种。
+
+    格式：`[序号] 作者. 题名[文献类型标志]. 刊名, 年: 页码. DOI`
+    作者超过 3 个按国标写「, 等」（英文写 `, et al.`）。
+    文献类型只区分 `[J]`（期刊）和 `[EB/OL]`（网络电子资源）——
+    和 BibTeX 那边同样的理由：猜不准的宁可标成最通用的那个。
+    """
+    lines: list[str] = []
+    for i, e in enumerate(entries, 1):
+        meta = e.get("meta") or {}
+        authors = [str(a) for a in (meta.get("authors") or []) if a]
+        is_cn = bool(re.search(r"[一-鿿]", "".join(authors[:1]) or ""))
+        if len(authors) > 3:
+            who = ", ".join(authors[:3]) + ("， 等" if is_cn else ", et al")
+        else:
+            who = ", ".join(authors)
+        venue = str(meta.get("venue") or "")
+        year = re.sub(r"[^0-9]", "", str(meta.get("year") or ""))[:4]
+        kind = "[J]" if venue else "[EB/OL]"
+        parts = [f"[{i}]"]
+        if who:
+            parts.append(f"{who}.")
+        parts.append(f"{e.get('title') or ''}{kind}.")
+        if venue:
+            parts.append(f"{venue}," if year else f"{venue}.")
+        if year:
+            parts.append(f"{year}.")
+        if meta.get("doi"):
+            parts.append(f"DOI:{meta['doi']}.")
+        elif e.get("url"):
+            parts.append(str(e["url"]) + ".")
+        lines.append(" ".join(p for p in parts if p.strip()))
+    return "\n".join(lines) + ("\n" if lines else "")

@@ -6,6 +6,11 @@ import { BrowserWindow, app, dialog, globalShortcut, ipcMain, nativeTheme, shell
 import type { AppSettings } from '@synorive/shared-types';
 import { IPC, type ClipEntry, type EngineProcessState } from '../shared/ipc-contract.js';
 import { ClipboardWatcher } from './clipboard.js';
+import {
+  launchScreenCapture,
+  registerHotkeys,
+  type HotkeyReport,
+} from './hotkeys.js';
 import { PeekWindow } from './peek.js';
 import {
   clearCloudKey,
@@ -15,6 +20,7 @@ import {
   saveCloudKey,
 } from './cloud-keys.js';
 import { EngineManager } from './engine.js';
+import { exportPdf } from './pdf.js';
 import { teardown as teardownRenderer } from './render.js';
 import { ensureDataDirs, loadSettings, patchSettings } from './settings.js';
 import { TrayController, setLaunchAtLogin } from './tray.js';
@@ -30,6 +36,8 @@ let engine: EngineManager | null = null;
 let clip: ClipboardWatcher | null = null;
 /** N7 随手研究浮窗。默认关，所以默认是 null —— 开了才建 */
 let peek: PeekWindow | null = null;
+/** F7/A4：全局快捷键的**真实**注册结果，界面靠它显示实际生效的键 */
+let hotkeyReport: HotkeyReport[] = [];
 let settings: AppSettings = loadSettings();
 
 // ── 单实例：第二次启动就把已有窗口拉到前面 ─────────────────────
@@ -99,6 +107,13 @@ function startClipboard(): void {
       // 密钥类内容在 ClipboardWatcher 里已经被静默丢弃，走不到这儿
       if (settings.clipboardPeek && e.kind === 'text') {
         peek?.show(e.content);
+      }
+      // A8：复制了一张图也弹浮窗，走以图搜图那一路。
+      // **和文字分成两条通道**而不是复用 `show(content)` ——
+      // 图片的 content 是一个几百 KB 的 data URL，
+      // 当查询词塞进去会被当成文本去分词，症状是浮窗永远查不到东西
+      if (settings.clipboardPeek && e.kind === 'image') {
+        peek?.showImage(e.content, e.preview);
       }
     },
     onAutoArchive: (e) => void archiveClip(e),
@@ -175,6 +190,7 @@ function startEngine(): void {
     modelDir: settings.modelDir,
     concurrency: settings.concurrency,
     allowCloud: settings.cloud.enabled,
+    enableGpuAcceleration: settings.enableGpuAcceleration ?? false,
     enableImageDescription: settings.enableImageDescription,
     enableFaceClustering: settings.enableFaceClustering,
     lanPairingEnabled: settings.lanPairingEnabled,
@@ -380,6 +396,18 @@ function registerIpc(): void {
   });
   ipcMain.handle(IPC.clipDismiss, (_e, id: string) => clip?.remove(id));
   ipcMain.handle(IPC.peekClose, () => peek?.hide());
+
+  // F7：把**真实**注册结果交给界面。设置页显示的必须是实际生效的键，
+  // 不是我们希望生效的那个 —— 显示错的比不显示更糟
+  ipcMain.handle(IPC.hotkeyReport, () => hotkeyReport);
+  // A4：命令面板里也能触发截图，不是只有快捷键那一条路
+  ipcMain.handle(IPC.screenshotCapture, () => launchScreenCapture());
+
+  // E5：引用可点的 PDF。渲染层把引擎生成的 single-html 交过来，
+  // 这边用 Chromium 自己的 PDF 后端打印 —— 只有它会保留 <a> 的链接注解
+  ipcMain.handle(IPC.exportPdf, (_e, req: { html: string; name: string }) =>
+    exportPdf(req?.html ?? '', req?.name ?? '研究简报'),
+  );
   ipcMain.handle(IPC.clipClear, () => {
     clip?.clear();
     // ⚠️ 必须广播，否则界面自己那份状态不会跟着清 —— 用户点了「全部清掉」，
@@ -474,11 +502,37 @@ app.whenReady().then(() => {
   startClipboard();
   applyPeekSetting();
 
-  // 全局快捷键：任何时候唤起搜索
-  globalShortcut.register('CommandOrControl+Alt+Space', () => {
-    showWindow();
-    win?.webContents.send(IPC.engineEvent, { type: 'ui.focus-search' });
-  });
+  // F7 全局唤起 + A4 截图直搜。**注册结果要留下来**：
+  // 界面上要显示"你想要的 Alt+空格被别的软件占了，现在用的是 Ctrl+Alt+空格"，
+  // 不然用户按了没反应，永远查不出为什么
+  hotkeyReport = registerHotkeys([
+    {
+      id: 'focus-search',
+      label: '任何时候唤起搜索',
+      accelerator: 'Alt+Space',
+      fallbacks: ['CommandOrControl+Alt+Space', 'CommandOrControl+Shift+Space'],
+      run: () => {
+        showWindow();
+        win?.webContents.send(IPC.engineEvent, { type: 'ui.focus-search' });
+      },
+    },
+    {
+      id: 'screenshot-search',
+      label: '截图直搜',
+      accelerator: 'CommandOrControl+Alt+S',
+      fallbacks: ['CommandOrControl+Shift+Alt+S'],
+      run: () => {
+        void launchScreenCapture();
+      },
+    },
+  ]);
+  for (const r of hotkeyReport) {
+    if (!r.active) {
+      console.warn(`[hotkey] 「${r.label}」一个键都没抢到，试过：${r.tried.join(' / ')}`);
+    } else if (r.usedFallback) {
+      console.warn(`[hotkey] 「${r.label}」退到了 ${r.active}（首选被别的软件占了）`);
+    }
+  }
 
   // --tray-only 是开机自启时带的，静默进托盘不弹窗口
   const trayOnly = process.argv.includes('--tray-only');

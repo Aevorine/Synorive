@@ -252,6 +252,9 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
                         "可以重复传多次")
     p.add_argument("--trust-profile", default="",
                    help="V5：可信度权重的 JSON 串。空 = 用默认档")
+    p.add_argument("--prefer-gpu", action="store_true",
+                   help="E15：优先用核显（DirectML）跑推理。装了 onnxruntime-directml 才有效；"
+                        "拿不到核显会自动退回 CPU，不报错")
     p.add_argument("--log-level", default="info")
     a = p.parse_args(argv)
 
@@ -293,6 +296,7 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
         web_lineup_size=max(0, a.web_lineup),
         verify_level=a.verify_level,
         trust_profile=trust_profile,
+        prefer_gpu=a.prefer_gpu,
     )
 
 

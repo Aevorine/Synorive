@@ -3,6 +3,8 @@ import { FolderPlus, Loader2, Search as SearchIcon } from 'lucide-react';
 import { ClipboardTray } from '../components/ClipboardTray';
 import { QuestionsPanel } from '../components/QuestionsPanel';
 import { SceneStrip } from '../components/SceneStrip';
+import { ChapterList } from '../components/ChapterList';
+import { QueryChips } from '../components/QueryChips';
 import { Recovery } from '../components/Recovery';
 import { RankingPanel } from '../components/RankingPanel';
 import { SearchResults } from '../components/SearchResults';
@@ -58,6 +60,11 @@ export function SearchPage() {
       <div className="searchlayout">
         <div className="searchlayout__main">
           {error && <div className="banner banner--error">搜索出错：{error}</div>}
+
+          {/* D10/L3-plus：把「这句话被理解成了什么」摆在结果**上面**。
+              摆下面等于没摆 —— 用户看完一屏少得莫名其妙的结果才发现
+              原来有个筛选在起作用，那时候困惑已经产生了 */}
+          <QueryChips />
 
           {/* 没搜东西的时候才显示剪贴板 —— 搜索中它会抢走结果的位置 */}
           {!searched && <ClipboardTray />}
@@ -144,6 +151,11 @@ export function SearchPage() {
             </button>
           </header>
           <SceneStrip itemId={scening.id} locator={scening.locator} focusSec={scening.sec} />
+          {/* A6：同 LibraryPage —— 点一章把缩略条焦点挪过去 */}
+          <ChapterList
+            itemId={scening.id}
+            onJump={(sec) => setScening((s) => (s ? { ...s, sec } : s))}
+          />
         </aside>
       )}
 
