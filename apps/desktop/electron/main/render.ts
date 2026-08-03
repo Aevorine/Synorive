@@ -36,27 +36,67 @@ const MAX_CAPTURE_HEIGHT = 20_000;
 /** C12 截图宽度。固定 1280 而不是跟随窗口 —— 归档要的是可复现，不是好看 */
 const CAPTURE_WIDTH = 1280;
 
-let hiddenWindow: BrowserWindow | null = null;
+/**
+ * `/render` 的并行通道数。
+ *
+ * 🔴 **这个数必须和 `engine/synorive/websearch/meta.py` 里的
+ * `RENDER_PARALLEL` 对上。** 它原来等价于 1（所有请求共用一个隐藏窗口、
+ * 排在同一条队列上），后果是实测出来的一个必然失败：
+ *
+ *   引擎那边 Google 和 Yandex **同时**发起渲染请求，各自带着 12 秒预算。
+ *   这边第一个开始渲染，第二个在队列里等 —— 它**一秒都没开始渲染**，
+ *   可它的 12 秒已经在走了。等轮到它时预算基本见底，必定超时。
+ *   于是界面上一家报"超时，本轮放弃"、另一家报"没有返回渲染结果"，
+ *   看起来像两家引擎都坏了，实际上是它们互相把对方挤死了。
+ *   **两家浏览器渲染引擎永远不可能在同一轮里都成功。**
+ *
+ * 2 是按"目前只有 Google / Yandex 两家要渲染"定的。每条通道是一个
+ * 常驻的隐藏窗口，空着也占内存，所以不无脑往大了开。
+ */
+const RENDER_LANES = 2;
+
+/**
+ * 一条渲染通道。
+ *
+ * 🔴 **每条通道有自己的 `partition`，这不是可选的**：`preparePage`
+ * 每次抓取前都会 `clearStorageData({storages:['cookies']})`，
+ * 共用一个分区的话，A 请求清 cookie 会把 B 请求刚注入的登录态一起清掉 ——
+ * 而 B 拿回来的会是一个"未登录"的页面，**不报错**，只是内容不对。
+ * 分区隔开之后每条通道就是一个独立的浏览器配置，互不可见。
+ */
+interface RenderLane {
+  win: BrowserWindow | null;
+  partition: string;
+  /** 这条通道上正在跑的那个请求；空闲时是 null */
+  busy: Promise<unknown> | null;
+}
+
+const lanes: RenderLane[] = Array.from({ length: RENDER_LANES }, (_, i) => ({
+  win: null,
+  partition: `render-text-${i}`,
+  busy: null,
+}));
+
 let captureWindow: BrowserWindow | null = null;
 let server: Server | null = null;
 let serverPort = 0;
 let serverStarting: Promise<number> | null = null;
 let heartbeat: ReturnType<typeof setInterval> | null = null;
-/** 同一个隐藏窗口不能同时 loadURL 两次，用这个把并发请求串成队列 */
-let queue: Promise<unknown> = Promise.resolve();
+/** 截图共用一个窗口且要 setSize，必须串起来跑。渲染不再走这条队列 */
+let captureQueue: Promise<unknown> = Promise.resolve();
 
-function getHiddenWindow(): BrowserWindow {
-  if (hiddenWindow && !hiddenWindow.isDestroyed()) return hiddenWindow;
-  hiddenWindow = new BrowserWindow({
+function getLaneWindow(lane: RenderLane): BrowserWindow {
+  if (lane.win && !lane.win.isDestroyed()) return lane.win;
+  lane.win = new BrowserWindow({
     show: false,
     webPreferences: {
       sandbox: true,
       contextIsolation: true,
       images: false, // 只要 DOM 文本，图片只会拖慢加载、占带宽
-      partition: 'render-text', // 和截图窗口分开，cookie 互不串
+      partition: lane.partition, // 和截图窗口、和别的通道都分开，cookie 互不串
     },
   });
-  return hiddenWindow;
+  return lane.win;
 }
 
 /**
@@ -150,11 +190,12 @@ async function preparePage(
 }
 
 async function renderOnce(
+  lane: RenderLane,
   url: string,
   timeoutMs: number,
   cookies?: { name: string; value: string; domain?: string; path?: string }[],
 ): Promise<{ html: string; cookieFailures: string[] }> {
-  const { wc, cookieFailures } = await preparePage(getHiddenWindow(), url, timeoutMs, cookies);
+  const { wc, cookieFailures } = await preparePage(getLaneWindow(lane), url, timeoutMs, cookies);
   const html = (await wc.executeJavaScript(
     'document.documentElement.outerHTML',
   )) as string;
@@ -218,13 +259,39 @@ async function captureOnce(
 }
 
 /**
- * 串起来跑。**C12 截图也必须走这条队列** ——
- * 它会 `setSize` 改隐藏窗口的尺寸，和同时在跑的 `/render` 共用同一个窗口，
+ * C12 截图串起来跑：截图共用一个窗口，而且要 `setSize` 把它撑到整页高，
  * 不排队的话一个请求会把另一个请求的页面截进去。
  */
-function runQueued<T>(fn: () => Promise<T>): Promise<T> {
-  const run = queue.then(fn, fn); // 上一个请求失败也不该拖累这一个
-  queue = run.catch(() => undefined);
+function runCaptureQueued<T>(fn: () => Promise<T>): Promise<T> {
+  const run = captureQueue.then(fn, fn); // 上一个请求失败也不该拖累这一个
+  captureQueue = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * 挑一条空闲的渲染通道跑；全忙就等最早空出来的那条。
+ *
+ * 通道内部仍然是串行的（同一个 BrowserWindow 不能同时 `loadURL` 两次），
+ * 但通道之间是并行的 —— 这正是 Google 和 Yandex 同时来的时候需要的。
+ */
+async function runOnLane<T>(fn: (lane: RenderLane) => Promise<T>): Promise<T> {
+  let target = lanes.find((l) => l.busy === null);
+  while (!target) {
+    // 全忙：等任意一条跑完。用 `catch` 兜住是因为我们只关心"空出来了"，
+    // 上一个请求成没成功与这一个无关
+    await Promise.race(lanes.map((l) => l.busy ?? Promise.resolve()).map((p) => p.catch(() => undefined)));
+    target = lanes.find((l) => l.busy === null);
+  }
+  const lane = target;
+  const run = fn(lane);
+  // 🔴 `busy` 必须在 finally 里清，而且要**确认清的是自己那一次**。
+  // 直接 `target.busy = null` 会把后一个请求刚挂上去的 promise 清掉，
+  // 于是那条通道被当成空闲、又派进来一个请求 —— 同一个窗口两个 loadURL，
+  // 回来的 HTML 是哪个页面的全看运气
+  const tracked: Promise<unknown> = run.catch(() => undefined).finally(() => {
+    if (lane.busy === tracked) lane.busy = null;
+  });
+  lane.busy = tracked;
   return run;
 }
 
@@ -264,8 +331,8 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 
         const out =
           path === '/capture'
-            ? await runQueued(() => captureOnce(parsed.url!, timeoutMs, parsed.cookies))
-            : await runQueued(() => renderOnce(parsed.url!, timeoutMs, parsed.cookies));
+            ? await runCaptureQueued(() => captureOnce(parsed.url!, timeoutMs, parsed.cookies))
+            : await runOnLane((lane) => renderOnce(lane, parsed.url!, timeoutMs, parsed.cookies));
         res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(out));
       } catch (e) {
         res
@@ -329,8 +396,11 @@ export function teardown(): void {
   server = null;
   serverPort = 0;
   serverStarting = null;
-  if (hiddenWindow && !hiddenWindow.isDestroyed()) hiddenWindow.destroy();
-  hiddenWindow = null;
+  for (const lane of lanes) {
+    if (lane.win && !lane.win.isDestroyed()) lane.win.destroy();
+    lane.win = null;
+    lane.busy = null;
+  }
   // 🔴 截图窗口也要收。漏掉的话主进程退不干净 —— 一个 show:false 的
   // BrowserWindow 照样会让 Electron 认为还有窗口活着
   if (captureWindow && !captureWindow.isDestroyed()) captureWindow.destroy();

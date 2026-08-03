@@ -34,7 +34,15 @@ from urllib.parse import urlparse
 import httpx
 
 from ..ingest.web import url_fingerprint
-from .engines import BaseEngine, EngineReply, ParseOutcome, WebResult, all_engines, get_engine
+from .engines import (
+    BaseEngine,
+    EngineReply,
+    ParseOutcome,
+    WebResult,
+    all_engines,
+    get_engine,
+    split_parse,
+)
 from .scheduler import EngineScheduler
 
 log = logging.getLogger("synorive.websearch")
@@ -88,6 +96,25 @@ GRACE_AFTER_ENOUGH_S = 0.35
 #: 熔断：连续 N 次解析失败就停用一段时间
 BREAK_AFTER = 3
 BREAK_COOLDOWN_S = 900.0
+
+#: 桌面端能同时渲染几个页面。
+#:
+#: 🔴 **这个数必须和 `apps/desktop/electron/main/render.ts` 里的
+#: `RENDER_LANES` 对上。** 对不上的后果是实测栽过的那个：
+#: 渲染端只有一条通道时，Google 和 Yandex 同时发起，第二个在队列里
+#: **一秒都没开始渲染**，可它这边的 12 秒预算已经在走了 ——
+#: 于是它必定超时，而报出来的话是"超时，本轮放弃"，
+#: 看起来像是这家引擎慢，其实是它压根没轮上。
+#: 两家浏览器引擎因此永远不可能在同一轮里都成功。
+RENDER_PARALLEL = 2
+#: 渲染引擎的整轮预算 = 每批 12s × 需要几批 + 这个余量。
+#:
+#: 🔴 余量原来是 2.0s，而 `RenderBroker.render` 自己的硬截止是
+#: `RENDER_TIMEOUT_S + 1.5 = 13.5s` —— 中间只剩 0.5 秒。
+#: 同一个事件循环里还有五六家引擎在用 lxml 同步解析大页面，
+#: 吃掉这 0.5 秒轻而易举，于是渲染结果**刚要回来就被判超时**。
+#: 加宽到 4s 不是"调大点试试"，是让这两个截止时间之间有真实的空隙。
+RENDER_DEADLINE_MARGIN_S = 4.0
 
 #: 结果缓存（P9）：同一查询 10 分钟内不重复出网
 CACHE_TTL_S = 600.0
@@ -148,6 +175,22 @@ class MetaSearchResult:
         }
 
 
+def _render_deadline(deadline_s: float, picked: list[BaseEngine]) -> float:
+    """
+    这一轮的总截止时间。有浏览器渲染引擎时要放宽 —— 放宽多少**取决于
+    渲染端能并行几个**，不是固定值。
+
+    两家渲染引擎、渲染端只有两条通道 = 一批跑完，放宽到 12+4；
+    四家、两条通道 = 得跑两批，放宽到 24+4。按家数算而不是拍一个数，
+    才不会在"用户多开了一家"的时候悄悄退回必然超时的状态。
+    """
+    n = sum(1 for e in picked if e.needs_browser)
+    if n <= 0:
+        return deadline_s
+    batches = math.ceil(n / max(1, RENDER_PARALLEL))
+    return max(deadline_s, RENDER_TIMEOUT_S * batches + RENDER_DEADLINE_MARGIN_S)
+
+
 class _Breaker:
     """
     每家引擎一个熔断器。
@@ -171,18 +214,32 @@ class _Breaker:
             self._fails[engine_id] = 0
         return False
 
-    def record(self, engine_id: str, ok: bool) -> None:
+    def record(self, engine_id: str, ok: bool) -> bool:
+        """
+        记一次成败，**返回这一次是不是把它熔断了**。
+
+        🔴 加这个返回值是为了不再撒谎。原来失败消息里写死一句
+        "这家已暂时熔断"，可 `BREAK_AFTER` 是 3 —— 第一次、第二次失败时
+        这句话是**假的**，引擎下一轮照跑。用户看到"已熔断"却发现它还在被调用，
+        只会得出"这个提示不可信"的结论，而那正是最贵的一种代价：
+        以后真熔断了他也不会信。
+        """
         if ok:
             self._fails[engine_id] = 0
-            return
+            return False
         n = self._fails.get(engine_id, 0) + 1
         self._fails[engine_id] = n
-        if n >= BREAK_AFTER:
+        if n >= BREAK_AFTER and engine_id not in self._open_until:
             self._open_until[engine_id] = time.monotonic() + BREAK_COOLDOWN_S
             log.warning(
                 "引擎 %s 连续 %d 次解析失败，熔断 %d 分钟 —— 多半是对方改版了",
                 engine_id, n, int(BREAK_COOLDOWN_S / 60),
             )
+            return True
+        return False
+
+    def fails(self, engine_id: str) -> int:
+        return self._fails.get(engine_id, 0)
 
     def state(self) -> dict[str, Any]:
         now = time.monotonic()
@@ -193,6 +250,63 @@ class _Breaker:
             }
             for eid in set(self._fails) | set(self._open_until)
         }
+
+
+# ────────────────────────────────────────────────────────────────
+# 失败消息
+#
+# 单独拎出来是因为这几句话是**用户唯一能看到的东西**。搜索失败时
+# 界面上就剩这一行字，它写得准不准，直接决定用户下一步是去改设置、
+# 去等一会儿、还是去改一个根本没坏的选择器。
+# ────────────────────────────────────────────────────────────────
+def _challenge_message(status: int, reason: str) -> str:
+    """
+    被挡下来了。**「被限流」和「被要求人机验证」不是一回事**，
+    而区分它们的信号就是 HTTP 状态码：
+
+      429 / 403  对方在协议层明说了"你太快了" —— 等一等真的会好
+      其它（多半是 200）  页面本身是一张验证码/安全验证页 ——
+                        等不一定管用，可能要降并发、换时间，甚至换条路
+
+    引擎自己给了 `reason` 就用它的，它比这里知道得具体。
+    """
+    if reason:
+        return reason
+    if status in (403, 429):
+        return f"被限流（HTTP {status}）—— 稍后会自动恢复，不是这家坏了"
+    return f"被要求人机验证（页面回了验证码，HTTP {status}）—— 降低频率或换个时间就能恢复"
+
+
+def _timeout_message(engine: BaseEngine, deadline_s: float) -> str:
+    """
+    超时。**渲染类引擎要单说**：它们的耗时里有一段是在桌面端的渲染通道
+    里排队，说一句"超时，本轮放弃"会让人以为是网络慢，
+    而实际能做的事完全不同（关掉另一家渲染引擎、或者干脆别同时开两家）。
+    """
+    if engine.needs_browser:
+        return (
+            f"浏览器渲染没在 {deadline_s:.0f}s 内跑完，本轮放弃 —— "
+            "同时开多家渲染引擎（Google / Yandex）时它们要排队，"
+            "只留一家会明显更稳。这次不计入这家的失败次数"
+        )
+    return f"超时（>{deadline_s:.1f}s），本轮放弃"
+
+
+def _broken_message(reason: str, just_opened: bool, fails: int) -> str:
+    """
+    真出问题了。三段拼起来：**具体原因 + 还剩几次就熔断 + 现在的状态**。
+
+    原来只有一句写死的"页面结构不认识了 —— 多半是对方改版，这家已暂时熔断"，
+    两处都不准：原因未必是改版（可能是要求 JS、可能是端点废了），
+    而"已暂时熔断"在前两次失败时是假的。
+    """
+    head = reason or "页面结构不认识了 —— 多半是对方改版"
+    if just_opened:
+        return f"{head}（连续失败 {fails} 次，已熔断 {int(BREAK_COOLDOWN_S / 60)} 分钟）"
+    left = max(0, BREAK_AFTER - fails)
+    if left:
+        return f"{head}（第 {fails} 次失败，再失败 {left} 次就会暂停这家）"
+    return head
 
 
 class MetaSearch:
@@ -266,9 +380,7 @@ class MetaSearch:
         # `_fan_out` 会在 4s 整点把它当成"超时的慢引擎"直接砍掉——
         # 实测过一次：Google 请求本身在真实浏览器里跑，7.2s 才有结果，
         # 但整轮 4s 就报了"超时（>4.0s），本轮放弃"，等于这条通道从来没机会跑完。
-        # 只要选中的引擎里有一个要浏览器渲染，就把总预算放宽到能装下它
-        needs_longer = any(e.needs_browser for e in picked)
-        effective_deadline = max(deadline_s, RENDER_TIMEOUT_S + 2.0) if needs_longer else deadline_s
+        effective_deadline = _render_deadline(deadline_s, picked)
 
         # X2 早退：够 N 家就先走，不陪最慢的那家耗到硬截止。
         #
@@ -550,10 +662,7 @@ class MetaSearch:
                 yield {"kind": "final", "result": hit.to_dict(), "fromCache": True}
                 return
 
-        needs_longer = any(e.needs_browser for e in picked)
-        effective_deadline = (
-            max(deadline_s, RENDER_TIMEOUT_S + 2.0) if needs_longer else deadline_s
-        )
+        effective_deadline = _render_deadline(deadline_s, picked)
 
         yield {
             "kind": "engines",
@@ -619,8 +728,9 @@ class MetaSearch:
                     eid = tasks[t].id
                     replies.append(EngineReply(
                         engine=eid, outcome=ParseOutcome.BROKEN,
-                        error=f"超时（>{effective_deadline:.1f}s），本轮放弃"))
-                    self._breaker.record(eid, ok=False)
+                        error=_timeout_message(tasks[t], effective_deadline)))
+                    if not tasks[t].needs_browser:   # 理由同 `_fan_out`
+                        self._breaker.record(eid, ok=False)
                 if pending:
                     await asyncio.gather(*pending, return_exceptions=True)
 
@@ -787,9 +897,14 @@ class MetaSearch:
                 else:
                     replies.append(
                         EngineReply(engine=eid, outcome=ParseOutcome.BROKEN,
-                                    error=f"超时（>{deadline_s:.1f}s），本轮放弃")
+                                    error=_timeout_message(tasks[t], deadline_s))
                     )
-                    self._breaker.record(eid, ok=False)
+                    # 🔴 渲染类引擎的超时**不记它的账**：它慢不慢由桌面端的
+                    # 渲染通道决定，不由它自己的解析器决定。原来一视同仁地记，
+                    # 结果是 Google/Yandex 只要连着三轮排队没轮上就被熔断 15 分钟，
+                    # 而它们其实一次都没被真正调用过
+                    if not tasks[t].needs_browser:
+                        self._breaker.record(eid, ok=False)
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
 
@@ -823,7 +938,7 @@ class MetaSearch:
 
         t0 = time.monotonic()
         try:
-            status, outcome, results = await engine.run(
+            status, outcome, results, reason = await engine.run(
                 client, query, limit=limit, lang=lang, region=region,
                 time_range=time_range, key=self.keys.get(engine.id),
             )
@@ -842,29 +957,35 @@ class MetaSearch:
                 error=f"解析异常：{type(e).__name__}: {e}",
             )
 
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
         if outcome is ParseOutcome.CHALLENGED:
             # 被限流 ≠ 解析器坏了。**不计入熔断的失败次数** ——
             # 熔断是为了停用一个已经废掉的解析器，而限流过一阵就恢复。
             # 把它算进去会让好引擎被永久停用
+            #
+            # 🔴 这里原来无脑写「被限流（HTTP {status}）」，于是百度那条
+            # 被送到验证页、HTTP 仍是 200 的情况，界面上写的是
+            # **「被限流（HTTP 200）」** —— 一句自相矛盾的话：
+            # 200 是正常响应，怎么会同时是"被限流"？用户看到这句只能困惑。
+            # 而下面那个 `elif CHALLENGED` 分支（本来写着正确的措辞）
+            # 因为这里已经 return 了，**一次都没执行过**，是死代码。
             return EngineReply(
-                engine=engine.id, outcome=outcome,
-                elapsed_ms=int((time.monotonic() - t0) * 1000),
-                error=f"被限流（HTTP {status}）—— 稍后会自动恢复，不是这家坏了",
+                engine=engine.id, outcome=outcome, elapsed_ms=elapsed_ms,
+                error=_challenge_message(status, reason),
             )
 
         # 只有 BROKEN 才算失败。EMPTY 是有效答案（这个词确实没结果），
         # CHALLENGED 是"稍后再来"，两者都不该把引擎熔断掉
         if outcome is ParseOutcome.BROKEN:
-            self._breaker.record(engine.id, ok=False)
-            err = "页面结构不认识了 —— 多半是对方改版，这家已暂时熔断"
-        elif outcome is ParseOutcome.CHALLENGED:
-            err = "被要求人机验证 —— 换个时间或降低频率就能恢复，不是这家坏了"
+            just_opened = self._breaker.record(engine.id, ok=False)
+            err = _broken_message(reason, just_opened, self._breaker.fails(engine.id))
         else:
             self._breaker.record(engine.id, ok=True)
             err = ""
         return EngineReply(
             engine=engine.id, outcome=outcome, results=results,
-            elapsed_ms=int((time.monotonic() - t0) * 1000), error=err,
+            elapsed_ms=elapsed_ms, error=err,
         )
 
     async def _one_browser(
@@ -893,14 +1014,22 @@ class MetaSearch:
         html = await self.renderer.render(str(req.url), timeout_s=RENDER_TIMEOUT_S)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         if html is None:
+            # 🔴 **不计入熔断**（和这个方法开头说的一样）：渲染没回来是
+            # 桌面端那边的事 —— 没连上、在排队、或者这一页确实太重。
+            # 把它算成"这家引擎坏了"，等桌面端恢复之后引擎还要白停 15 分钟。
+            # 用 EMPTY 而不是 BROKEN，是为了让排班器也别扣它的分
             return EngineReply(
-                engine=engine.id, outcome=ParseOutcome.BROKEN, elapsed_ms=elapsed_ms,
-                error="桌面端没有返回渲染结果（超时，或者刚好这时候断开了）",
+                engine=engine.id, outcome=ParseOutcome.EMPTY, elapsed_ms=elapsed_ms,
+                error=(
+                    f"桌面端没有在 {RENDER_TIMEOUT_S:.0f}s 内返回渲染结果 —— "
+                    "可能是页面太重、渲染通道排队中，或者桌面端刚好断开。"
+                    "这不是这家引擎坏了"
+                ),
             )
 
         resp = httpx.Response(200, request=req, content=html.encode("utf-8"))
         try:
-            outcome, results = engine.parse(resp)
+            outcome, results, reason = split_parse(engine.parse(resp))
         except Exception as e:  # noqa: BLE001
             self._breaker.record(engine.id, ok=False)
             return EngineReply(
@@ -908,9 +1037,19 @@ class MetaSearch:
                 error=f"渲染后解析异常：{type(e).__name__}: {e}",
             )
 
+        if outcome is ParseOutcome.CHALLENGED:
+            # 渲染出来的是验证码页。这也不该熔断 —— 同 `_one` 里的道理
+            return EngineReply(
+                engine=engine.id, outcome=outcome, elapsed_ms=elapsed_ms,
+                error=_challenge_message(200, reason),
+            )
         if outcome is ParseOutcome.BROKEN:
-            self._breaker.record(engine.id, ok=False)
-            err = "渲染后页面结构仍不认识 —— 多半是真的改版了（这不是渲染失败，页面已经拿到了）"
+            just_opened = self._breaker.record(engine.id, ok=False)
+            head = reason or "渲染后页面结构仍不认识 —— 多半是真的改版了"
+            err = _broken_message(
+                f"{head}（页面已经拿到了，这不是渲染失败）",
+                just_opened, self._breaker.fails(engine.id),
+            )
         else:
             self._breaker.record(engine.id, ok=True)
             err = ""

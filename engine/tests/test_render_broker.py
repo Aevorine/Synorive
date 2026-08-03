@@ -150,7 +150,11 @@ async def main() -> int:
 
         req = httpx.Request("GET", "https://www.google.com/search?q=sqlite+wal")
         resp = httpx.Response(200, request=req, content=html.encode())
-        outcome, results = Google().parse(resp)
+        # `parse()` 现在可以多返回一句具体原因（见 engines.split_parse），
+        # 用 split_parse 抹平两种形状，测试就不用跟着每个解析器的返回长度改
+        from synorive.websearch.engines import split_parse
+
+        outcome, results, _reason = split_parse(Google().parse(resp))
         check(outcome is ParseOutcome.OK, f"解析出 {len(results)} 条", f"解析状态是 {outcome.value}")
         check(len(results) == 2 and results[0].title == "Write-Ahead Logging",
               "标题解析正确", f"标题解析不对：{[r.title for r in results]}")

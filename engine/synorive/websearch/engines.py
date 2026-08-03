@@ -21,10 +21,12 @@ Google 和 Yandex 没有免费官方 API，只能走解析类 —— 这一点�
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -110,6 +112,69 @@ class EngineReply:
 
 
 # ────────────────────────────────────────────────────────────────
+# 解析原因的透传通道
+#
+# 🔴 **知道原因的地方和写错误消息的地方原来是分开的。**
+# `parse()` 明明知道"这是 202 JS 落地页"「这是 enablejs 跳转页」
+# 「容器找到了但一条都抽不出来」，但它只能返回 `BROKEN`，
+# 于是 `meta._one` 只能对所有 BROKEN 统一写一句
+# 「页面结构不认识了 —— 多半是对方改版」。
+# 用户看到的于是全是同一句话，而这句话对其中一半情况**是错的**：
+# DuckDuckGo 不是改版了，是那个端点本来就不再返回结果了；
+# Google 不是改版了，是它要求跑 JS。报错报错方向，排查就一定走错路。
+#
+# 所以 `parse()` 现在允许多返回一个 `reason`，一路透到界面上。
+# 兼容旧形状：只返回两项时 reason 就是空串。
+# ────────────────────────────────────────────────────────────────
+def split_parse(res: Any) -> tuple[ParseOutcome, list[WebResult], str]:
+    """把 `(outcome, results)` 和 `(outcome, results, reason)` 抹平成三元组。"""
+    if isinstance(res, tuple) and len(res) == 3:
+        outcome, results, reason = res
+        return outcome, list(results or []), str(reason or "")
+    outcome, results = res
+    return outcome, list(results or []), ""
+
+
+#: 撞上 429/403 之后，最多就地等这么久再补一次。
+#: 再长就该让整轮搜索先出结果，而不是整轮卡在一家上等额度回血
+MAX_LIMIT_RETRY_WAIT_S = 2.0
+#: 对方没给 `Retry-After` 时用的默认等待
+DEFAULT_LIMIT_RETRY_S = 1.0
+
+#: 每家引擎的"上次请求时间"和一把锁，用来实现最小请求间隔。
+#: 进程内共享 —— 限流是按**来源 IP** 算的，不分是哪一次搜索发起的
+_pace_locks: dict[str, asyncio.Lock] = {}
+_pace_last: dict[str, float] = {}
+
+
+async def _pace(engine_id: str, min_interval_s: float) -> None:
+    """
+    同一家引擎两次请求之间至少隔 `min_interval_s`。
+
+    🔴 **这不是"礼貌"，是止损**。深挖会把一个问题拆成好几个变体同时发出去，
+    对 Semantic Scholar / OpenAlex 这类按 IP 限速的接口来说，
+    并发四发和串行四发拿到的结果天差地别：前者三个 429 一个成功，
+    后者四个都成功，而总耗时只多了不到两秒。
+    """
+    if min_interval_s <= 0:
+        return
+    lock = _pace_locks.setdefault(engine_id, asyncio.Lock())
+    async with lock:
+        wait = _pace_last.get(engine_id, 0.0) + min_interval_s - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(min(wait, min_interval_s))
+        _pace_last[engine_id] = time.monotonic()
+
+
+def _retry_after_s(resp: httpx.Response) -> float:
+    """读 `Retry-After`。给的是秒数就用它，给日期或没给就用默认值。"""
+    raw = (resp.headers.get("retry-after") or "").strip()
+    if raw.isdigit():
+        return float(int(raw))
+    return DEFAULT_LIMIT_RETRY_S
+
+
+# ────────────────────────────────────────────────────────────────
 # 引擎基类
 # ────────────────────────────────────────────────────────────────
 class BaseEngine:
@@ -130,6 +195,16 @@ class BaseEngine:
     needs_browser = False
     #: 一句人话，界面直接显示 —— 用户得知道每家的代价
     note = ""
+    #: 同一家两次请求之间至少隔这么久（秒）。0 = 不限。
+    #: 只给**按 IP 限速的免 Key 接口**设，解析类引擎设了只会白白变慢
+    min_interval_s = 0.0
+    #: 撞上 429/403 值不值得就地等一小会儿补一发。
+    #: 学术接口的限流窗口是秒级，等一秒就好；搜索引擎的验证码是分钟级，
+    #: 就地重试只是再撞一次墙，所以默认关
+    retry_on_limit = False
+    #: 被限流时告诉用户**能做什么**。空串就用通用那句。
+    #: 「稍后会自动恢复」对一个每次都撞 429 的接口来说是句废话
+    limit_hint = ""
 
     def build(
         self,
@@ -156,22 +231,35 @@ class BaseEngine:
         region: str,
         time_range: str | None,
         key: str | None,
-    ) -> tuple[int, ParseOutcome, list[WebResult]]:
+    ) -> tuple[int, ParseOutcome, list[WebResult], str]:
         """
-        跑一轮，返回 `(HTTP 状态码, 结果状态, 结果)`。
+        跑一轮，返回 `(HTTP 状态码, 结果状态, 结果, 一句具体原因)`。
 
         默认就是「构造一个请求 → 发 → 解析」。**留这个钩子是因为
         PubMed 必须两步**（先 esearch 拿一串 ID，再 esummary 拿元数据），
         硬塞进单请求的接口只会让那一家的代码写得很别扭。
+
+        第四项 `reason` 是给用户看的**具体**原因（见 `split_parse` 上面那段）。
         """
-        resp = await client.send(
-            self.build(query, limit=limit, lang=lang, region=region,
-                       time_range=time_range, key=key)
-        )
+        def _req() -> httpx.Request:
+            return self.build(query, limit=limit, lang=lang, region=region,
+                              time_range=time_range, key=key)
+
+        await _pace(self.id, self.min_interval_s)
+        resp = await client.send(_req())
+
+        if resp.status_code in (403, 429) and self.retry_on_limit:
+            # 就地补一发。**只补一次**：补第二次就等于自己制造更多请求，
+            # 而限流的成因恰恰是请求太多
+            delay = _retry_after_s(resp)
+            if delay <= MAX_LIMIT_RETRY_WAIT_S:
+                await asyncio.sleep(delay)
+                resp = await client.send(_req())
+
         if resp.status_code in (403, 429):
-            return resp.status_code, ParseOutcome.CHALLENGED, []
-        outcome, results = self.parse(resp)
-        return resp.status_code, outcome, results
+            return resp.status_code, ParseOutcome.CHALLENGED, [], self.limit_hint
+        outcome, results, reason = split_parse(self.parse(resp))
+        return resp.status_code, outcome, results, reason
 
     # 子类共用的小工具 ------------------------------------------------
     def _mk(self, title: str, url: str, snippet: str, rank: int) -> WebResult | None:
@@ -254,8 +342,13 @@ class DuckDuckGo(BaseEngine):
 
     def parse(self, resp):
         if resp.status_code == 202:
-            # 202 是它的挡人页 —— 不是"没结果"，报 BROKEN 才会熔断
-            return ParseOutcome.BROKEN, []
+            # 202 是它的挡人页 —— 不是"没结果"，报 BROKEN 才会熔断。
+            # 但这**不是改版**，是这个端点已经改成了 JS 落地页，
+            # 换多少套选择器都没用，所以原因必须说清楚
+            return ParseOutcome.BROKEN, [], (
+                "html.duckduckgo.com 这个免 Key 端点已改成 JS 落地页（HTTP 202），"
+                "不再返回结果列表 —— 换选择器没用。要用 DDG 的结果就走 SearXNG"
+            )
         doc = _doc(resp)
         rows = _first(doc, f"//div[{_hc('result')}]", f"//div[{_hc('web-result')}]")
         if not rows:
@@ -263,7 +356,9 @@ class DuckDuckGo(BaseEngine):
             # DDG 没结果时页面里有明确文案，据此区分
             if "No results" in resp.text or "没有找到" in resp.text:
                 return ParseOutcome.EMPTY, []
-            return ParseOutcome.BROKEN, []
+            if "anomaly" in resp.text.lower() or "unusual traffic" in resp.text.lower():
+                return ParseOutcome.CHALLENGED, [], "DDG 判定这台机器流量异常，降低频率或换个时间"
+            return ParseOutcome.BROKEN, [], "页面里找不到结果容器（.result）"
 
         out: list[WebResult] = []
         for i, row in enumerate(rows, 1):
@@ -276,7 +371,9 @@ class DuckDuckGo(BaseEngine):
             if r:
                 out.append(r)
         if not out:
-            return ParseOutcome.BROKEN, []
+            return ParseOutcome.BROKEN, [], (
+                f"找到 {len(rows)} 个结果容器，但一条标题链接都抽不出来（.result__a 失效）"
+            )
         return ParseOutcome.OK, out
 
 
@@ -331,7 +428,7 @@ class Bing(BaseEngine):
             # 于是熔断永远不触发。改成只认明确的无结果文案
             if "没有与此相关的结果" in resp.text or "There are no results for" in resp.text:
                 return ParseOutcome.EMPTY, []
-            return ParseOutcome.BROKEN, []
+            return ParseOutcome.BROKEN, [], "页面里找不到结果条目（li.b_algo / #b_results）"
 
         out: list[WebResult] = []
         for i, row in enumerate(rows, 1):
@@ -343,7 +440,11 @@ class Bing(BaseEngine):
             r = self._mk(_txt(a[0]), url, _txt(cap[0]) if cap else "", i)
             if r:
                 out.append(r)
-        return (ParseOutcome.OK, out) if out else (ParseOutcome.BROKEN, [])
+        if not out:
+            return ParseOutcome.BROKEN, [], (
+                f"找到 {len(rows)} 个结果条目，但标题链接抽不出来（h2 a / a.tilk 都没命中）"
+            )
+        return ParseOutcome.OK, out
 
 
 def _bing_unwrap(href: str) -> str:
@@ -409,10 +510,18 @@ class Google(BaseEngine):
                 # 这不是"没结果"也不是"改版了"，是**这条通道要求跑 JS**。
                 # 报 BROKEN 会让它被熔断 15 分钟然后再白试一次，
                 # 而真相是无论试多少次都一样 —— 所以要给出可操作的下一步
-                return ParseOutcome.BROKEN, []
+                return ParseOutcome.BROKEN, [], (
+                    "Google 回的是 enablejs 跳转页：这条路要求执行 JavaScript。"
+                    "开启浏览器渲染（设置里打开、并且桌面端要开着），或改用 SearXNG / Serper"
+                )
             if "did not match any documents" in resp.text or "未找到" in resp.text:
                 return ParseOutcome.EMPTY, []
-            return ParseOutcome.BROKEN, []
+            if "/sorry/" in str(resp.url) or "unusual traffic" in resp.text:
+                # 这是**人机验证**不是改版。分错了会把一家好引擎熔断掉
+                return ParseOutcome.CHALLENGED, [], "Google 判定这台机器流量异常（/sorry/ 验证页）"
+            if "consent.google.com" in str(resp.url) or "Before you continue" in resp.text:
+                return ParseOutcome.CHALLENGED, [], "被 Google 的 cookie 同意页挡住了"
+            return ParseOutcome.BROKEN, [], "页面里没有 <a><h3> 这种结果标题结构"
 
         out: list[WebResult] = []
         seen: set[str] = set()
@@ -441,7 +550,11 @@ class Google(BaseEngine):
             r = self._mk(_txt(h3[0]) if h3 else "", url, snippet, len(out) + 1)
             if r:
                 out.append(r)
-        return (ParseOutcome.OK, out) if out else (ParseOutcome.BROKEN, [])
+        if not out:
+            return ParseOutcome.BROKEN, [], (
+                f"找到 {len(anchors)} 个候选标题，但全被过滤掉了（都是 google.* 自家链接或无效地址）"
+            )
+        return ParseOutcome.OK, out
 
 
 def _google_unwrap(href: str) -> str:
@@ -479,12 +592,20 @@ class Yandex(BaseEngine):
         )
 
     def parse(self, resp):
+        # 🔴 验证码页原来报的是 BROKEN。那是**分错类**，代价很具体：
+        # BROKEN 会计入熔断，连撞三次验证码这家就被停用 15 分钟，
+        # 而按四态区分的定义（见文件开头）验证码是 CHALLENGED ——
+        # 「慢一点就好」的事被当成了「这家废了」。
+        # Yandex 恰恰是全阵容里最容易弹验证码的一家，所以它必然被误杀
         if "showcaptcha" in str(resp.url) or "captcha" in resp.text[:4000].lower():
-            return ParseOutcome.BROKEN, []
+            return ParseOutcome.CHALLENGED, [], (
+                "Yandex 弹了人机验证页 —— 它对自动访问的验证码触发率本来就高，"
+                "降低频率或换个时间；要长期稳定用它得走带登录态的浏览器渲染"
+            )
         doc = _doc(resp)
         rows = _first(doc, f"//li[{_hc('serp-item')}]", f"//div[{_hc('serp-item')}]")
         if not rows:
-            return ParseOutcome.BROKEN, []
+            return ParseOutcome.BROKEN, [], "页面里找不到结果条目（.serp-item）"
         out: list[WebResult] = []
         for i, row in enumerate(rows, 1):
             a = _first(
@@ -503,7 +624,11 @@ class Yandex(BaseEngine):
             r = self._mk(_txt(a[0]), a[0].get("href") or "", _txt(sn[0]) if sn else "", i)
             if r:
                 out.append(r)
-        return (ParseOutcome.OK, out) if out else (ParseOutcome.BROKEN, [])
+        if not out:
+            return ParseOutcome.BROKEN, [], (
+                f"找到 {len(rows)} 个 .serp-item，但标题链接抽不出来"
+            )
+        return ParseOutcome.OK, out
 
 
 # ────────────────────────────────────────────────────────────────
@@ -534,14 +659,21 @@ class Baidu(BaseEngine):
         # 那个页面**HTTP 200、长度 1.4KB、一条结果没有** ——
         # 不专门认出来的话会被报成"对方改版了"，而真相是"慢一点就好了"。
         # 报错报得不对，下次排查就会往完全错误的方向走
-        if "百度安全验证" in resp.text or "wappass.baidu.com" in str(resp.url):
-            return ParseOutcome.CHALLENGED, []
+        if (
+            "百度安全验证" in resp.text
+            or "wappass.baidu.com" in str(resp.url)
+            or "请输入验证码" in resp.text
+        ):
+            return ParseOutcome.CHALLENGED, [], (
+                "百度把这次请求送到了安全验证页（这时 HTTP 仍然是 200）—— "
+                "连续请求太密会触发，隔一会儿或降低并发就恢复"
+            )
         doc = _doc(resp)
         anchors = doc.xpath("//h3//a[@href]")
         if not anchors:
             if "没有找到该URL" in resp.text or "抱歉，没有找到" in resp.text:
                 return ParseOutcome.EMPTY, []
-            return ParseOutcome.BROKEN, []
+            return ParseOutcome.BROKEN, [], "页面里找不到 h3 标题链接"
         out: list[WebResult] = []
         for i, a in enumerate(anchors, 1):
             href = a.get("href") or ""
@@ -561,13 +693,17 @@ class Baidu(BaseEngine):
                 # 跳转链先原样带回，真实网址由 meta 层批量解析（见 resolve_redirects）
                 r.meta["redirect"] = True
                 out.append(r)
-        return (ParseOutcome.OK, out) if out else (ParseOutcome.BROKEN, [])
+        if not out:
+            return ParseOutcome.BROKEN, [], (
+                f"找到 {len(anchors)} 个 h3 链接，但一条有效结果都构造不出来"
+            )
+        return ParseOutcome.OK, out
 
 
 class So360(BaseEngine):
     id = "so360"
     label = "360 搜索"
-    note = "中文第二路。真实网址直接写在结果的 data-mdurl 属性里，不用额外解析"
+    note = "中文第二路。优先读结果里的真实网址属性，读不到就解它的跳转链"
 
     def build(self, query, *, limit, lang, region, time_range, key):
         return httpx.Request(
@@ -576,17 +712,23 @@ class So360(BaseEngine):
         )
 
     def parse(self, resp):
+        if "请输入验证码" in resp.text or "验证码" in resp.text[:2000]:
+            return ParseOutcome.CHALLENGED, [], "360 弹了验证码页，降低频率或换个时间"
         doc = _doc(resp)
         anchors = doc.xpath("//h3//a[@href]")
         if not anchors:
             if "没有找到与" in resp.text:
                 return ParseOutcome.EMPTY, []
-            return ParseOutcome.BROKEN, []
+            return ParseOutcome.BROKEN, [], "页面里找不到 h3 标题链接"
         out: list[WebResult] = []
         for a in anchors:
-            # data-mdurl 就是真实网址。没有这个属性的多半是广告位或站内功能块
-            real = a.get("data-mdurl") or ""
-            if not real.startswith("http"):
+            # 🔴 原来这里**只认 `data-mdurl`**：拿不到这个属性就 `continue`。
+            # 于是 360 一改属性名（或者改成只在部分结果上挂），
+            # 整页 h3 全被跳过 → `out` 空 → 报"页面结构不认识了"并熔断。
+            # 而真相是标题和链接**都还在**，只是取真实网址的那一步换了地方。
+            # 一个属性名撑起整个解析器，是这类解析器最典型的脆点。
+            real = _so360_real_url(a)
+            if not real:
                 continue
             snippet = ""
             node = a
@@ -600,8 +742,46 @@ class So360(BaseEngine):
                     break
             r = self._mk(_txt(a), real, snippet, len(out) + 1)
             if r:
+                if "/link?" in r.url:
+                    # 退到跳转链的那几条，交给 meta 层批量解真实网址 ——
+                    # 不解的话它们的域名全是 so.com，来源分级和交叉印证会全错
+                    r.meta["redirect"] = True
                 out.append(r)
-        return (ParseOutcome.OK, out) if out else (ParseOutcome.BROKEN, [])
+        if not out:
+            return ParseOutcome.BROKEN, [], (
+                f"找到 {len(anchors)} 个 h3 链接，但没有一个能取到可用网址"
+            )
+        return ParseOutcome.OK, out
+
+
+def _so360_real_url(a: Any) -> str:
+    """
+    从 360 的一条结果里取真实网址，**按可靠度依次退**：
+
+      ① `data-mdurl` —— 它一直以来写真实网址的地方
+      ② `data-url` / `data-res-url` / `data-realurl` —— 换过的几个同义属性
+      ③ `href` 本身就是外链 —— 直接用
+      ④ `href` 是 `so.com/link?...` 跳转链 —— 带回去交给跳转解析那一步
+
+    ④ 是关键的一条：拿不到真实网址**不等于这条结果没用**，
+    跳转链照样能打开，只是要多解一次。原来的写法是直接扔掉。
+    """
+    for attr in ("data-mdurl", "data-url", "data-res-url", "data-realurl"):
+        v = (a.get(attr) or "").strip()
+        if v.startswith("http"):
+            return v
+    href = (a.get("href") or "").strip()
+    if not href:
+        return ""
+    if href.startswith("//"):
+        href = f"https:{href}"
+    if not href.startswith("http"):
+        return ""
+    host = urlparse(href).netloc.lower()
+    if host.endswith("so.com") or host.endswith("360.cn"):
+        # 站内跳转链：`/link?m=...`。留着让上层去解，解不出会标 unresolved
+        return href if "/link?" in href else ""
+    return href
 
 
 # ────────────────────────────────────────────────────────────────
@@ -610,31 +790,59 @@ class So360(BaseEngine):
 class Mojeek(BaseEngine):
     id = "mojeek"
     label = "Mojeek"
-    note = "独立自建索引（不是转发 Bing/Google），能搜出别家漏掉的长尾内容，且不反爬"
+    note = "独立自建索引（不是转发 Bing/Google），能搜出别家漏掉的长尾内容"
 
     def build(self, query, *, limit, lang, region, time_range, key):
         url = f"https://www.mojeek.com/search?q={quote_plus(query)}"
         if region:
             url += f"&reg={region.lower()}"
-        return httpx.Request("GET", url, headers={"User-Agent": UA})
+        return httpx.Request("GET", url, headers={"User-Agent": UA,
+                                                  "Accept": "text/html,application/xhtml+xml"})
 
     def parse(self, resp):
         doc = _doc(resp)
-        rows = _first(doc, f"//ul[{_hc('results-standard')}]/li", f"//li[{_hc('result')}]")
+        # 🔴 原来只有两套选择器，且两套都押在 class 名上。Mojeek 一改版
+        # 就整家报废，而报出来的话是"多半是对方改版" —— 说对了但没用，
+        # 因为没告诉你**改的是哪一层**。现在按结构一层层退，
+        # 最后一层完全不依赖 class 名（结果条目 = 带 h2 标题的容器），
+        # 只要还是一份正常的 HTML 结果页就抽得出东西
+        rows = _first(
+            doc,
+            f"//ul[{_hc('results-standard')}]/li",
+            f"//li[{_hc('result')}]",
+            f"//ul[{_hc('results')}]/li",
+            "//div[@id='results']//li",
+            "//li[.//h2//a[@href]]",
+        )
         if not rows:
-            if "No results" in resp.text:
+            if "No results" in resp.text or "no results found" in resp.text.lower():
                 return ParseOutcome.EMPTY, []
-            return ParseOutcome.BROKEN, []
+            if "captcha" in resp.text[:4000].lower() or "too many requests" in resp.text.lower():
+                return ParseOutcome.CHALLENGED, [], "Mojeek 挡下了这次自动访问，降低频率再试"
+            return ParseOutcome.BROKEN, [], "页面里找不到任何结果条目容器"
         out: list[WebResult] = []
         for i, row in enumerate(rows, 1):
-            a = _first(row, f".//a[{_hc('title')}]", ".//h2//a[@href]")
+            a = _first(
+                row,
+                f".//a[{_hc('title')}]",
+                ".//h2//a[@href]",
+                ".//a[@href][string-length(normalize-space(text())) > 8]",
+            )
             if not a:
                 continue
+            href = a[0].get("href") or ""
+            if href.startswith("/"):
+                # 它的部分版式用站内相对地址，不补全的话 `_mk` 会直接丢掉这条
+                href = f"https://www.mojeek.com{href}"
             p = _first(row, f".//p[{_hc('s')}]", ".//p")
-            r = self._mk(_txt(a[0]), a[0].get("href") or "", _txt(p[0]) if p else "", i)
+            r = self._mk(_txt(a[0]), href, _txt(p[0]) if p else "", i)
             if r:
                 out.append(r)
-        return (ParseOutcome.OK, out) if out else (ParseOutcome.BROKEN, [])
+        if not out:
+            return ParseOutcome.BROKEN, [], (
+                f"找到 {len(rows)} 个结果条目，但标题链接一个都抽不出来"
+            )
+        return ParseOutcome.OK, out
 
 
 # ────────────────────────────────────────────────────────────────
@@ -670,9 +878,19 @@ class SearXNG(BaseEngine):
             data = resp.json()
         except (json.JSONDecodeError, ValueError):
             # 返回 HTML 说明这个实例禁用了 JSON 接口 —— 是配置问题不是"没结果"
-            return ParseOutcome.BROKEN, []
+            return ParseOutcome.BROKEN, [], (
+                f"实例回的不是 JSON（HTTP {resp.status_code}）—— "
+                "这个 SearXNG 没开 json 输出格式，改它的 settings.yml 加上 formats: [html, json]"
+            )
         items = data.get("results") or []
         if not items:
+            dead = data.get("unresponsive_engines") or []
+            if dead:
+                # 实例活着但它自己上游全挂了。**这不是"这个词没结果"** ——
+                # 报 EMPTY 会让用户以为全网没有这个东西
+                return ParseOutcome.BROKEN, [], (
+                    f"实例通了但它自己的上游引擎全没响应：{dead[:5]} —— 多半是容器出不了网"
+                )
             return ParseOutcome.EMPTY, []
         out: list[WebResult] = []
         for i, it in enumerate(items, 1):

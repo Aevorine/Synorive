@@ -34,6 +34,18 @@ const MOBILE_GRADLE = join(ROOT, 'apps', 'mobile', 'app', 'build.gradle.kts');
 // 所以判据是"全仓 grep 得到的每一处都在这个脚本里"。**
 const ENGINE_PYPROJECT = join(ROOT, 'engine', 'pyproject.toml');
 const ENGINE_INIT = join(ROOT, 'engine', 'synorive', '__init__.py');
+// 🔴 **MCP 包 2026-08-03 才被加进来，在那之前也一直漏着 ——
+// 而它漏掉的后果比别的都硬：** `.github/workflows/publish-packages.yml`
+// 在 push `v*` 标签时自动跑 `npm publish`，而 npm registry
+// **拒绝重复发布同一个版本**。所以版本号没跟着改的话，
+// 打 v0.1.2 标签 → 工作流拿着还写着 0.1.1 的 package.json 去发 →
+// 409，整个发布任务红掉。
+//
+// 这个失败**不在本机、不在发版脚本里**，只在 Actions 页面上，
+// 而发版的人这时候正盯着 Releases 页看安装包传上去没有。
+// 「版本号散在几处就一定会漏」这条判据，当初只查了会被打进产物的地方，
+// 漏掉了会被 CI 拿去用的地方。
+const MCP_PKG = join(ROOT, 'mcp', 'package.json');
 
 /**
  * versionName → versionCode。
@@ -55,6 +67,7 @@ function currentVersions() {
   return {
     root: readJson(ROOT_PKG).version,
     desktop: readJson(DESKTOP_PKG).version,
+    mcp: readJson(MCP_PKG).version,
     androidName: gradle.match(/versionName\s*=\s*"([^"]+)"/)?.[1] ?? '(没找到)',
     androidCode: gradle.match(/versionCode\s*=\s*(\d+)/)?.[1] ?? '(没找到)',
     enginePyproject:
@@ -70,6 +83,10 @@ function check() {
   const wantCode = String(versionCode(want));
   const problems = [];
   if (v.desktop !== want) problems.push(`apps/desktop/package.json = ${v.desktop}，应为 ${want}`);
+  if (v.mcp !== want) {
+    problems.push(`mcp/package.json = ${v.mcp}，应为 ${want}`
+      + '（打 v* 标签会自动 npm publish，版本重复会被 registry 拒绝，Actions 直接红）');
+  }
   if (v.androidName !== want) problems.push(`安卓 versionName = ${v.androidName}，应为 ${want}`);
   if (v.androidCode !== wantCode) {
     problems.push(`安卓 versionCode = ${v.androidCode}，应为 ${wantCode}`);
@@ -85,6 +102,7 @@ function check() {
   console.log('当前版本：');
   console.log(`  根 package.json      ${v.root}`);
   console.log(`  桌面 package.json    ${v.desktop}`);
+  console.log(`  MCP package.json     ${v.mcp}  ← 打标签时 Actions 拿它去 npm publish`);
   console.log(`  安卓 versionName     ${v.androidName}`);
   console.log(`  安卓 versionCode     ${v.androidCode}（由 versionName 推导，应为 ${wantCode}）`);
   console.log(`  引擎 pyproject       ${v.enginePyproject}`);
@@ -106,7 +124,7 @@ function setVersion(next) {
   }
   const code = versionCode(next);
 
-  for (const p of [ROOT_PKG, DESKTOP_PKG]) {
+  for (const p of [ROOT_PKG, DESKTOP_PKG, MCP_PKG]) {
     const pkg = readJson(p);
     pkg.version = next;
     // 保留结尾换行，避免每次改版本都在 diff 里多出一行噪声
@@ -148,7 +166,7 @@ function setVersion(next) {
   }
 
   console.log(`✓ 版本号已同步为 ${next}（安卓 versionCode = ${code}）`);
-  console.log('  改到了：package.json / apps/desktop/package.json /');
+  console.log('  改到了：package.json / apps/desktop/package.json / mcp/package.json /');
   console.log('          apps/mobile/app/build.gradle.kts /');
   console.log('          engine/pyproject.toml / engine/synorive/__init__.py');
   console.log(`\n下一步：git commit 后打 tag —— git tag v${next}`);

@@ -28,7 +28,7 @@ from urllib.parse import quote, quote_plus
 
 import httpx
 
-from .engines import BaseEngine, ParseOutcome, WebResult
+from .engines import BaseEngine, ParseOutcome, WebResult, _pace
 
 #: 学术接口普遍要求带联系方式的 UA（Crossref 的 polite pool、
 #: NCBI 的使用条款都写了）。伪装成浏览器反而会被降速或拒绝
@@ -198,6 +198,23 @@ class OpenAlexSource(BaseEngine):
     group = "scholar"
     note = "开放学术图谱。**带被引数和引文关系** —— L2 引文图谱、找必读论文靠它"
 
+    #: OpenAlex 匿名池是按 IP 算的，深挖一次发四五个变体很容易撞 429。
+    #: 隔开半秒发，命中率明显不同（见 `engines._pace` 的说明）
+    min_interval_s = 0.5
+    retry_on_limit = True
+    limit_hint = (
+        "OpenAlex 按 IP 限流（HTTP 429）—— 已经自动隔开请求并补发过一次还是没过。"
+        "在设置里给 openalex 填一个**真实邮箱**就能进它的 polite pool，基本不会再撞"
+    )
+
+    #: 进 polite pool 要的联系邮箱。用户在设置里填了就用他的。
+    #:
+    #: 🔴 默认值原来是 `synorive@local` —— 那**不是一个合法邮箱**
+    #: （没有顶级域）。OpenAlex 的 polite pool 认的是能联系到人的地址，
+    #: 填一个假的等于没填，请求照样走匿名池、照样按 IP 限流。
+    #: 注释写着"更不容易被限流"，而实际上这行代码一次也没起过作用
+    DEFAULT_MAILTO = "synorive@users.noreply.github.com"
+
     def build(self, query, *, limit, lang, region, time_range, key):
         url = (
             f"https://api.openalex.org/works?search={quote_plus(query)}"
@@ -205,8 +222,10 @@ class OpenAlexSource(BaseEngine):
             "&select=id,doi,title,publication_year,publication_date,cited_by_count,"
             "authorships,primary_location,open_access,referenced_works"
         )
-        # mailto 会把请求放进 polite pool，响应更快也更不容易被限流
-        url += "&mailto=synorive@local"
+        # mailto 会把请求放进 polite pool，响应更快也更不容易被限流。
+        # `key` 在这一家不是 API Key，是联系邮箱
+        mailto = (key or "").strip() or self.DEFAULT_MAILTO
+        url += f"&mailto={quote_plus(mailto)}"
         return httpx.Request("GET", url, headers={"User-Agent": UA,
                                                   "Accept": "application/json"})
 
@@ -310,35 +329,47 @@ class PubMedSource(BaseEngine):
             headers={"User-Agent": UA},
         )
 
+    #: NCBI 对匿名请求限的是 3 req/s，而 PubMed 一次要发两趟。
+    #: 排开一点比撞上去再退避便宜
+    min_interval_s = 0.4
+    retry_on_limit = True
+    limit_hint = "PubMed（NCBI）限流：匿名访问是 3 次/秒，同时搜多个变体时会撞上，稍后自动恢复"
+
     def parse(self, resp):
         # 单步解析用不上 —— PubMed 走 run() 的两步流程。
         # 留一个明确的实现而不是 NotImplementedError，免得被基类的默认路径撞上
-        return ParseOutcome.BROKEN, []
+        return ParseOutcome.BROKEN, [], "PubMed 走两步接口，不该走到这条单步解析路径"
 
     async def run(self, client, query, *, limit, lang, region, time_range, key):
+        await _pace(self.id, self.min_interval_s)
         r1 = await client.send(
             self.build(query, limit=limit, lang=lang, region=region,
                        time_range=time_range, key=key)
         )
         if r1.status_code in (403, 429):
-            return r1.status_code, ParseOutcome.CHALLENGED, []
+            return r1.status_code, ParseOutcome.CHALLENGED, [], self.limit_hint
         try:
             ids = ((r1.json().get("esearchresult") or {}).get("idlist")) or []
         except (json.JSONDecodeError, ValueError, AttributeError):
-            return r1.status_code, ParseOutcome.BROKEN, []
+            return r1.status_code, ParseOutcome.BROKEN, [], (
+                f"第一步 esearch 回的不是 JSON（HTTP {r1.status_code}）"
+            )
         if not ids:
-            return r1.status_code, ParseOutcome.EMPTY, []
+            return r1.status_code, ParseOutcome.EMPTY, [], ""
 
+        await _pace(self.id, self.min_interval_s)
         r2 = await client.get(
             f"{self._BASE}/esummary.fcgi?db=pubmed&id={','.join(ids)}&retmode=json",
             headers={"User-Agent": UA},
         )
         if r2.status_code in (403, 429):
-            return r2.status_code, ParseOutcome.CHALLENGED, []
+            return r2.status_code, ParseOutcome.CHALLENGED, [], self.limit_hint
         try:
             result = r2.json().get("result") or {}
         except (json.JSONDecodeError, ValueError, AttributeError):
-            return r2.status_code, ParseOutcome.BROKEN, []
+            return r2.status_code, ParseOutcome.BROKEN, [], (
+                f"第二步 esummary 回的不是 JSON（HTTP {r2.status_code}）"
+            )
 
         out: list[WebResult] = []
         for i, pmid in enumerate(ids, 1):
@@ -360,7 +391,11 @@ class PubMedSource(BaseEngine):
             if r:
                 r.published = it.get("sortpubdate") or None
                 out.append(r)
-        return r2.status_code, (ParseOutcome.OK if out else ParseOutcome.BROKEN), out
+        if not out:
+            return r2.status_code, ParseOutcome.BROKEN, [], (
+                f"esearch 拿到 {len(ids)} 个编号，但 esummary 一条详情都没解出来"
+            )
+        return r2.status_code, ParseOutcome.OK, out, ""
 
 
 class SemanticScholarSource(BaseEngine):
@@ -371,6 +406,17 @@ class SemanticScholarSource(BaseEngine):
     kind = "api"
     group = "scholar"
     note = "语义学者。摘要、被引、开放获取 PDF 一次给全，计算机与生医覆盖最好"
+
+    #: 🔴 免 Key 的额度是**全世界共用一个池子**（官方文档写的是共享 1 RPS）。
+    #: 也就是说 429 在这一家是常态而不是异常，跟你搜得快不快关系不大。
+    #: 隔开 1 秒发能让同一轮里的多个变体不互相踩，但根治只能靠填 Key
+    min_interval_s = 1.0
+    retry_on_limit = True
+    limit_hint = (
+        "Semantic Scholar 免 Key 的额度是所有用户共享的，撞 429 是常态 —— "
+        "已经自动等过一轮再补发还是没过。去 semanticscholar.org/product/api "
+        "申请一个免费 Key 填进设置，这一家就基本不会再失败"
+    )
 
     def build(self, query, *, limit, lang, region, time_range, key):
         fields = (

@@ -1,0 +1,73 @@
+name: Bug report / 报告问题
+description: Something does not work. 有功能不正常。
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please fill in **how you installed it** and, if the engine failed to start, the exact text
+        of the error panel. That panel is written to name the actual failing step, so pasting it
+        verbatim usually saves an entire round trip.
+
+        请填写**你是怎么安装的**；如果是引擎启动失败，请把错误面板里的原文整段贴上来 ——
+        那个面板会写明具体卡在哪一步，贴原文通常能省掉一整轮来回。
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it? / 你是怎么安装的？
+      options:
+        - Windows installer (Synorive-Setup-*.exe)
+        - Windows portable (Synorive-*-portable.exe)
+        - Android APK
+        - Built from source / 从源码构建
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / 版本号
+      description: Settings → About, or the title bar. 设置 → 关于，或标题栏。
+      placeholder: "0.1.2"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / 操作系统
+      placeholder: "Windows 11 26200 / Android 14"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened? / 发生了什么？
+      description: What you did, what happened, what you expected instead.
+      placeholder: |
+        1. Dropped a folder of PDFs into the library
+        2. Indexing stopped at 40%
+        3. Expected it to finish, or to say why it stopped
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error text / 错误原文
+      description: >
+        Paste the error panel verbatim if you have one. Don't summarise it — the exact wording
+        identifies which step failed. 有错误面板就整段贴上，别概括 —— 原文的措辞能直接定位是哪一步。
+      render: text
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before you post / 发之前请确认
+      options:
+        - label: >
+            I checked that the text and screenshots above do not contain private file paths, file
+            contents, or API keys. / 我确认上面的文字和截图里没有私人文件路径、文件内容或 API Key。
+          required: true

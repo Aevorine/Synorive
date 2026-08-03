@@ -757,7 +757,18 @@ function UnifiedView({ data, onClose }: { data: UnifiedResponse; onClose: () => 
 // ════════════════════════════════════════════════════════════
 function QuickResults({ data }: { data: WebSearchResponse }) {
   const [showExcluded, setShowExcluded] = useState(false);
+  /**
+   * 🔴 **两档分开显示，不是一个横幅全塞。**
+   *
+   * `failed`（解析坏了 / 被挡下来了）是真的要看的，用醒目的警告条。
+   * `notes` 是 outcome 为 empty 但带了一句说明的那些 —— 比如
+   * 「已有 3 家回来，本轮没等它」「桌面端没在 12s 内返回渲染结果」。
+   * 它们既不是故障也不该被静默吞掉：原来的过滤条件把所有 empty 一律排除，
+   * 于是这类"没出结果但有原因"的引擎在界面上**一个字都不留**，
+   * 用户只会觉得这家凭空消失了。
+   */
   const failed = data.engines.filter((e) => e.outcome !== 'ok' && e.outcome !== 'empty');
+  const notes = data.engines.filter((e) => e.outcome === 'empty' && e.error);
 
   return (
     <div className="weblist">
@@ -765,6 +776,11 @@ function QuickResults({ data }: { data: WebSearchResponse }) {
         <div className="banner banner--warn">
           {failed.map((e) => `${e.id}：${e.error ?? e.outcome}`).join('　')}
         </div>
+      )}
+      {notes.length > 0 && (
+        <p className="panel__hint">
+          {notes.map((e) => `${e.id}：${e.error ?? ''}`).join('　')}
+        </p>
       )}
       {data.results.map((r) => (
         <WebResultCard key={r.url} item={r} />

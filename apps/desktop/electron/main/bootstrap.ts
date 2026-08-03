@@ -66,9 +66,61 @@ function ok(version: string | null): boolean {
 }
 
 /**
- * 在系统里找一个够格的 Python。
+ * 随安装包分发的 Python 运行时在哪（`scripts/bundle-python.mjs` 产出，
+ * 由 electron-builder 的 extraResources 搬到 `resources/pyruntime`）。
+ *
+ * 🔴 **这个函数是补一个真实的自相矛盾**：`electron-builder.yml` 已经把
+ * 一份完整运行时（解释器 + 全部核心依赖）打进了安装包，README 上也写着
+ * "No Python installation required"，可这个文件的 `findSystemPython()`
+ * **从头到尾没看过它一眼** —— 一旦引擎因为别的原因没起来（端口占用、
+ * 模型没下、配置坏了），引导页就会对一个装了完整运行时的用户说
+ * "这台机器上没找到 Python，去 python.org 装一个 3.13"。
+ * 那是一句**方向完全错的**指引：他照做也解决不了问题，
+ * 还会以为这个应用的"免安装 Python"是假的。
+ */
+export function bundledRuntimePython(): string | null {
+  if (!process.resourcesPath) return null;
+  const exe = join(
+    process.resourcesPath,
+    'pyruntime',
+    process.platform === 'win32' ? 'python.exe' : join('bin', 'python3'),
+  );
+  return existsSync(exe) ? exe : null;
+}
+
+/**
+ * 随包运行时是不是**真的能用**（不只是文件在）。
+ *
+ * 判据是能不能 `import synorive` —— 这正是 `bundle-python.mjs` 结尾那道
+ * 自检的同一条判据。文件在不在是最弱的信号：`._pth` 写错、
+ * 依赖漏装、杀毒软件隔离了某个 .pyd，都会让一个看起来完整的目录跑不起来。
+ */
+export function bundledRuntimeUsable(): { ok: boolean; python: string | null; detail: string } {
+  const exe = bundledRuntimePython();
+  if (!exe) return { ok: false, python: null, detail: '这个版本里没有随包运行时（多半是从源码跑的）' };
+  try {
+    const v = execFileSync(exe, ['-c', 'import synorive;print(synorive.__version__)'], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      windowsHide: true,
+    }).trim();
+    return { ok: true, python: exe, detail: `随包运行时可用，引擎版本 ${v}` };
+  } catch (e) {
+    return {
+      ok: false,
+      python: exe,
+      detail:
+        `随包运行时在（${exe}）但 import synorive 失败：${(e as Error).message}。` +
+        '常见原因：杀毒软件把 .pyd 隔离了、安装目录被清理工具动过、或者安装包本身打漏了依赖',
+    };
+  }
+}
+
+/**
+ * 找一个够格的 Python。
  *
  * 顺序是**从最可靠到最不可靠**：
+ *   ⓪ **随安装包分发的运行时** —— 装完即用，不联网不 pip，装机版的主路径
  *   ① Windows 的 py launcher 指定版本 —— 它读注册表，是唯一权威的答案
  *   ② PATH 里的 python / python3 —— 常见但很可能是个老版本
  *      （这台机器上 PATH 里就是 3.9.4，正是踩过的坑）
@@ -76,6 +128,14 @@ function ok(version: string | null): boolean {
  */
 export function findSystemPython(): FoundPython | null {
   const win = process.platform === 'win32';
+
+  // ⓪ 随包运行时。**必须排第一** —— 它是我们自己备的、版本确定、依赖齐全，
+  //    比用户机器上任何一个来路不明的解释器都可靠
+  const bundled = bundledRuntimePython();
+  if (bundled) {
+    const ver = probeVersion(bundled);
+    if (ok(ver)) return { path: bundled, version: ver!, via: '随安装包分发的运行时' };
+  }
 
   // ① py launcher，按偏好版本逐个问
   if (win) {
@@ -175,16 +235,37 @@ function run(
 export async function bootstrapEngine(
   onProgress: (p: BootstrapProgress) => void,
 ): Promise<{ ok: true; python: string } | { ok: false; error: string }> {
+  // 🔴 **先看随包运行时，能用就直接返回，一步都不用做。**
+  //
+  // 装机版的正常情况就是这一条：解释器和依赖在安装包里已经备好了。
+  // 原来这里上来就去系统里翻 Python，于是装机版用户在引擎因为**别的原因**
+  // 没起来时，会被引导去装一个他根本不需要的 Python ——
+  // 忙活半天，真正的故障（端口被占、模型没下、目录被杀软动过）一点没动。
+  onProgress({ step: 'find', message: '先看随安装包分发的运行时能不能用…' });
+  const bundled = bundledRuntimeUsable();
+  if (bundled.ok && bundled.python) {
+    onProgress({ step: 'done', message: bundled.detail });
+    return { ok: true, python: bundled.python };
+  }
+  if (bundled.python) {
+    // 运行时在但坏了。**这句要说出来** —— 它和"这台机器没有 Python"
+    // 是完全不同的故障，修法也完全不同
+    onProgress({ step: 'find', message: bundled.detail });
+  }
+
   onProgress({ step: 'find', message: '正在找一个能用的 Python…' });
   const found = findSystemPython();
   if (!found) {
     return {
       ok: false,
       error:
-        `这台机器上没找到 Python ${MIN_MINOR}+。\n\n` +
-        '去 python.org 装一个 3.13（安装时勾上 "Add python.exe to PATH"），' +
-        '装完回来点重试就行 —— 不用你做别的配置。\n' +
-        '或者你已经装了但没进 PATH，可以设环境变量 SYNORIVE_PYTHON 指向它。',
+        `这台机器上没找到 Python ${MIN_MINOR}+，随安装包分发的运行时也没能用起来。\n\n` +
+        `随包运行时的情况：${bundled.detail}\n\n` +
+        '两条路，选一条：\n' +
+        '① 如果你装的是安装包版：多半是杀毒软件隔离了运行时里的文件，' +
+        '或者安装目录被清理工具动过 —— 把 Synorive 加进杀软白名单后重装一次最省事。\n' +
+        '② 去 python.org 装一个 3.13（安装时勾上 "Add python.exe to PATH"），' +
+        '装完回来点重试；或者设环境变量 SYNORIVE_PYTHON 指向你已有的解释器。',
     };
   }
   onProgress({

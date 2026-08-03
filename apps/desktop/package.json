@@ -1,6 +1,6 @@
 {
   "name": "@synorive/desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "AGPL-3.0-or-later",
   "private": true,
   "type": "module",
@@ -8,7 +8,9 @@
   "author": "Synorive",
   "main": "./out/main/index.js",
   "scripts": {
+    "predev": "node ../../scripts/ensure-fonts.mjs",
     "dev": "electron-vite dev",
+    "prebuild": "node ../../scripts/ensure-fonts.mjs",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",

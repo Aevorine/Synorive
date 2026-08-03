@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability / 安全漏洞
+    url: https://github.com/Aevorine/Synorive/security/advisories/new
+    about: >
+      Report privately, not as a public issue. 请私下报告，不要开公开 issue。
+  - name: Question or idea / 提问和想法
+    url: https://github.com/Aevorine/Synorive/discussions
+    about: >
+      For anything that is not a bug or a concrete feature request.
+      不是 bug、也不是具体功能建议的，都可以放这里。

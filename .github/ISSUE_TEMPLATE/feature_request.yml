@@ -1,0 +1,28 @@
+name: Feature request / 功能建议
+description: Suggest something Synorive should be able to do. 提一个它应该能做的事。
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve? / 它解决你的什么问题？
+      description: >
+        Describe the situation you keep running into, not the feature you imagined. A concrete
+        "every time I X, I have to Y" is far more useful than a feature name.
+        描述你反复遇到的场景，而不是你想象出的功能。「我每次做 X 都得手动 Y」比一个功能名有用得多。
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What do you do today instead? / 你现在是怎么将就的？
+      description: If the answer is "nothing, it just bothers me", say that — it is a valid answer.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind / 你设想的做法
+      description: Optional. Skip it if you only know the problem, not the solution.

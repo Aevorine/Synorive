@@ -2,340 +2,314 @@
 
 # Synorive
 
-**Local-first multimodal search for everything you own — and a fact-checked web researcher.**
-**本地优先的多模态检索 + 会自己找反驳材料的联网研究工作台**
+**Local-first semantic search for every file you own — plus a fact-checked web researcher.**
 
-Search your documents, code, images, videos and web archives by **meaning**, not filename.
-Then search the open web across multiple engines, cross-check every claim, and get a briefing
-where **every sentence is verbatim from a real source**.
+Search your documents, source code, PDFs, images and videos by **meaning**, not by filename.
+Then search the open web across many engines, hunt for counter-evidence, and get a briefing
+where **every single line is a verbatim quote with its source**.
 
 Runs fully offline. Your files never leave your machine.
-Exposes 24 tools to **Claude Code** over MCP.
+Ships **24 MCP tools** for Claude Code.
 
 **English** · [简体中文](docs/i18n/README.zh-CN.md) · [Français](docs/i18n/README.fr.md) · [Español](docs/i18n/README.es.md) · [Русский](docs/i18n/README.ru.md) · [العربية](docs/i18n/README.ar.md)
 
-[![Download](https://img.shields.io/badge/download-v0.1.1-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![Download](https://img.shields.io/badge/download-v0.1.2-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![Engine](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](engine)
 [![Desktop](https://img.shields.io/badge/desktop-Electron%2041%20%2B%20React%2019-0F4C8C)](apps/desktop)
-[![Offline](https://img.shields.io/badge/works-fully%20offline-1E9E76)](#几个不显然的设计决定)
+[![Offline](https://img.shields.io/badge/works-fully%20offline-1E9E76)](#design-decisions-that-are-not-obvious)
 [![MCP](https://img.shields.io/badge/MCP-24%20tools-C8871B)](mcp)
 
 ### ⬇️ Download
 
 | | |
 |---|---|
-| **Windows installer** | [`Synorive-Setup-0.1.1.exe`](https://github.com/Aevorine/Synorive/releases/latest) — Python runtime bundled, **in-app auto-update** |
-| **Windows portable** | [`Synorive-0.1.1-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — no install; auto-update not available for this form |
-| **Android** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) — thin client, connects to the engine on your PC over LAN |
+| **Windows installer** | [`Synorive-Setup-0.1.2.exe`](https://github.com/Aevorine/Synorive/releases/latest) — Python runtime bundled, **in-app auto-update** |
+| **Windows portable** | [`Synorive-0.1.2-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — no install; auto-update not available for this form |
+| **Android** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) — thin client, talks to the engine on your PC over LAN |
 
-No Python installation required — the interpreter and all engine dependencies ship inside the installer.
+**No Python installation required.** The interpreter and every engine dependency ship inside the
+installer, so a fresh machine with no Python, no pip access and no internet still starts up.
 
 </div>
 
-![Synorive research workbench](docs/screenshots/research-light.png)
+![Synorive research workbench — multi-engine web search with per-source trust ranking](docs/screenshots/research-light.png)
 
 <div align="center"><sub>
 
-The research workbench: multi-engine search, per-source trust ranking, and an
-excluded-results drawer that always tells you *why* something was filtered out.
+The research workbench: multi-engine search, per-source trust ranking, and an excluded-results
+drawer that always tells you *why* something was filtered out.
 Dark theme: [screenshot](docs/screenshots/research-dark.png)
 
 </sub></div>
 
 ---
 
-## What it does / 它做什么
+## What it does
 
-|  | English | 中文 |
+| | |
+|---|---|
+| 🔍 | **Semantic search over your own files** — documents, source code, PDFs (indexed section by section), images (OCR), video (down to the second), saved web pages |
+| 🖼 | **Cross-modal search** — find an image by describing it, or find *which video a frame came from and at what second* |
+| 🌐 | **Multi-engine web search** — Bing / Baidu / 360 / Mojeek / Wikipedia, plus Google and DuckDuckGo through a self-hosted SearXNG |
+| 🛡 | **Actively hunts for counter-evidence** — searches for debunkings, traces a claim back to its earliest source, flags retracted papers |
+| 📋 | **Extract-only briefings** — every line is a verbatim quote with its source. Conflicting claims are shown **side by side, undecided** |
+| 🔌 | **24 MCP tools for Claude Code** — let your agent search your own library and verify claims for you |
+| 🔒 | **Privacy fence** — web search and cloud inference are two *separate* switches, because one leaks *what you ask* and the other leaks *what you have* |
+
+**Keywords:** local semantic search · offline AI search engine · multimodal RAG · personal knowledge base ·
+document search · vector search · hybrid search · fact checking · misinformation detection ·
+MCP server · Claude Code · SQLite FTS5 · sqlite-vec · HNSW · OCR · video search · Chinese NLP ·
+Electron desktop app · privacy-first · self-hosted
+
+---
+
+## Why another search tool?
+
+Most "search your files" tools stop at keyword matching, and most "AI research" tools hand you a
+fluent summary you cannot verify. Synorive refuses both:
+
+- **Retrieval is measured, not claimed.** Every performance number below was benchmarked on real
+  data — including the two that **did not** reach their targets. They are listed with the reason
+  instead of being quietly dropped.
+- **Nothing is silently discarded.** Results filtered out as low quality go into an "excluded"
+  drawer with the reason, one click to bring them back.
+- **It never tells you something is false.** It finds who disputes a claim and shows you both
+  sides. Judging truth is not a capability it has, and pretending otherwise would be the most
+  dangerous thing it could do.
+
+---
+
+## What works today
+
+Phases 1–3, 5 and 8 are complete. **The application is genuinely usable right now.**
+
+### Searching your own files
+
+- Drop in a folder mixing documents, code, images and video → indexed concurrently in the
+  background, the UI never freezes
+- Semantic search over documents in Chinese and English — describe the content, no need to
+  remember the filename
+- Query syntax straight in the search box: `type:pdf date:last7days -draft "exact phrase"`
+- Search text *inside* images (OCR, measured at 100% character coverage)
+- Find similar images from one image, or find **which video a frame came from and at what second**
+- Search a spoken line and jump straight to 3 m 24 s of the video
+- Papers indexed by section (Abstract / Method / Results); hits are labelled `page 2 · Background`
+- Ask a PDF **"what questions can you answer?"** and click a question to expand the source passage
+
+### Searching the web and checking it
+
+- Many engines concurrently (cn.bing / Baidu / 360 / Mojeek / Wikipedia); with a self-hosted
+  SearXNG, **Google and DuckDuckGo work too**
+- Deep research **reads the first round before deciding what to ask next**, then searches again
+- A Chinese query automatically gets an English variant, routed to the engines with better English
+  coverage — primary sources are usually in English
+- Actively reverse-searches for "debunked / disputed / retracted / controversy" and puts the
+  counter-evidence in front of you
+- Traces a claim **back to its earliest source**; a dozen sites publishing the same story within
+  two days gets flagged as a syndication burst
+- A cited paper **that has been retracted is flagged in red** (via OpenAlex)
+- Five academic sources merged by DOI, with citation counts and PDF links
+
+### Using it from Claude Code
+
+After `claude mcp add synorive`, Claude Code can search your library, verify a claim, and compare
+**what you have** against **what the web says** — in the same answer.
+
+The full technical design and the 76-item feature menu live in
+[`docs/00-技术方案.md`](docs/00-技术方案.md). Every performance target, how it counts as measured,
+and **which ones are still untested**, are declared in code at
+[`engine/synorive/metrics.py`](engine/synorive/metrics.py); the benchmark scripts are in
+[`engine/tests/`](engine/tests) (`bench_g_series` / `bench_research` / `bench_ingest_stages`).
+
+---
+
+## Benchmarks (measured, not estimated)
+
+| | Measured | Target |
 |---|---|---|
-| 🔍 | **Semantic search over your own files** — documents, source code, PDFs (split by section), images (OCR), video (down to the second), web archives | **搜自己的东西**：文档、代码、PDF（按章节）、图片（OCR）、视频（定位到秒）、网页存档 |
-| 🖼 | **Cross-modal**: find an image by describing it, or find *which video a frame came from and at what second* | **跨模态互搜**：以图搜图、以图搜视频镜头并定位到秒 |
-| 🌐 | **Multi-engine web search** — Bing / Baidu / 360 / Mojeek / Wikipedia, plus Google & DuckDuckGo via a self-hosted SearXNG | **多引擎联网搜索**，自建 SearXNG 后 Google 和 DuckDuckGo 也能用 |
-| 🛡 | **Actively hunts for counter-evidence** — searches for debunkings, traces a claim to its earliest source, flags retracted papers | **主动找打脸证据**：反向搜辟谣、溯源到最早出处、标出已撤稿文献 |
-| 📋 | **Extract-only briefings** — every line is a verbatim quote with its source. Conflicting claims are shown **side by side, undecided** | **只摘录不改写的简报**：每句都逐字来自原文并挂着出处；有分歧就并排放，不替你选 |
-| 🔌 | **24 MCP tools for Claude Code** — let your agent search your library and verify claims for you | **24 个 MCP 工具**，Claude Code 能直接检索你的库、替你核查说法 |
-| 🔒 | **Privacy fence** — network search and cloud inference are two *separate* switches, because one leaks *what you ask*, the other leaks *what you have* | **隐私围栏**：联网搜索和云端推理是两个开关，前者泄露"我在查什么"，后者泄露"我有什么" |
+| Cold start to searchable | **1.30 s** | ≤2.0 s ✅ |
+| First results @ 102k chunks | P50 **45 ms** / P95 **186 ms** | ≤80 / ≤200 ✅ |
+| Full retrieval @ 102k chunks | P95 **373 ms** | ≤500 ✅ |
+| Scroll frame rate | **59.9 fps** | ≥55 ✅ |
+| Disk for 100k chunks | **374 MB** | ≤3 GB ✅ |
+| Resume after interruption | 54/54 skipped, 1067× faster | ✅ |
+| Image ingest (OCR deferred) | **19.35 images/s** | — |
+| Image OCR (background pass) | 1.2–1.5 images/s | ← bound by the Python GIL |
+| Video fast path | **88.6× realtime** | — |
+| Video with transcription | 5.97× realtime | ≥6 ⚠️ |
+| Text embedding (single worker) | **19.8 chunks/s** (was 12.6; batch 16→8 gave **1.57×**) | ⚠️ see below |
+| Deep research briefing P95 | **8.29 s** (was 23.79 s; a global deadline cut it **65%**) | ≤8.0 ⚠️ short by 0.29 s |
+| Warm cache hit | P50 **17.6 ms** | ≤200 ✅ |
+| Drop-in to searchable | P95 **0.8 s** | ≤3.0 ✅ |
+| Quick web search P95 | **2.4 s** | ≤3.0 ✅ |
 
-**Keywords:** local semantic search · multimodal RAG · offline search engine · personal knowledge base ·
-fact checking · misinformation detection · MCP server · Claude Code · vector search · SQLite FTS5 ·
-sqlite-vec · HNSW · OCR · video search · Chinese NLP · Electron · privacy-first
+⚠️ Ingest throughput is bound by this machine (i5-1155G7, no discrete GPU). Stage-by-stage timing
+shows **embedding alone is 97.7%** of the cost; the other five stages together are 2.3%. Going
+faster from here means a quantised model or a GPU, not more tuning.
 
----
+⚠️ The deep-research P95 dropped from 23.79 s to 8.29 s, but **the cost was that 20 of 20 runs
+skipped the second follow-up round**. The number and its price have to be read together.
 
-## Why another search tool? / 为什么还要再造一个
-
-Most "search your files" tools stop at keyword matching, and most "AI research" tools
-hand you a fluent summary you cannot verify. Synorive refuses both:
-
-- **Retrieval is measured, not claimed.** Every performance number in this README was
-  benchmarked on real data, including the two that **did not** hit their targets — they're
-  listed with the reason instead of being quietly dropped.
-- **Nothing is silently discarded.** Results filtered out as low-quality go into an
-  "excluded" drawer with the reason, one click to bring back.
-- **It never tells you something is false.** It finds who disputes a claim and shows you
-  both sides — judging truth is not a capability it has, and pretending otherwise
-  would be the most dangerous thing it could do.
-
----
-
-## 现在能跑到哪一步
-
-一到三期、五期、八期已完成。**现在这个应用是真的能用的**：
-
-**搜自己的东西**
-- 拖一个混着文档、代码、图片、视频的文件夹进去 → 后台并发索引，界面不卡
-- 中文语义搜文档（描述内容也能搜到，不用记文件名）
-- `type:pdf date:最近7天 -草稿 "精确短语"` 这类语法直接写在搜索框里
-- 搜图片里的文字（OCR 实测字符覆盖率 100%）
-- 用一张图找相似的图，或者**找它出自哪个视频的第几秒**
-- 搜一句台词，直接定位到视频的第 3 分 24 秒
-- 论文按 Abstract/Method/Results 分节索引，搜到直接标着「第 2 页 · Background」
-- 问一篇 PDF **「你能回答哪些问题」**，点一条直接展开那一段原文
-
-**搜全网并判真假**
-- 多引擎并发（cn.bing / 百度 / 360 / Mojeek / 维基），自建 SearXNG 后 **Google 与 DuckDuckGo 也能用**
-- 深挖会**读完第一轮再自己想出该追问什么**，然后再搜一轮
-- 中文查询自动补一个英文变体，派给英文覆盖更好的引擎（一手资料多半是英文的）
-- 主动反向搜「辟谣 / 质疑 / 争议 / debunked」，把打脸材料摆出来
-- 把一条信息**追溯到最早出处**，十几个站两天内发同一件事会被标成「转载爆发」
-- 引用的论文**被撤稿了会红字标出来**（走 OpenAlex）
-- 五家学术源按 DOI 合并，带被引数和 PDF 链接
-
-**给 Claude Code 用**
-- `claude mcp add synorive` 之后，Claude Code 能直接检索你的库、核查一个说法、
-  同时对比「你自己的资料」和「网上说的」
-
-技术方案与 76 项功能菜单见 [`docs/00-技术方案.md`](docs/00-技术方案.md)。
-每条性能指标的目标值、怎么才算测过了、以及**哪些还没测**，都写在代码里的 [`engine/synorive/metrics.py`](engine/synorive/metrics.py)，
-基准脚本在 [`engine/tests/`](engine/tests)（`bench_g_series` / `bench_research` / `bench_ingest_stages`）。
-
-### 实测数据（都是量出来的，不是估的）
-
-| 项 | 实测 | 目标 |
-|---|---|---|
-| 冷启动到可搜索 | **1.30s** | ≤2.0s ✅ |
-| 搜索首屏 @10.2 万块 | P50 **45ms** / P95 **186ms** | ≤80 / ≤200 ✅ |
-| 完整检索 @10.2 万块 | P95 **373ms** | ≤500 ✅ |
-| 滚动帧率 | **59.9 fps** | ≥55 ✅ |
-| 10 万块磁盘占用 | **374 MB** | ≤3 GB ✅ |
-| 断点续跑 | 54/54 全跳过，快 1067 倍 | ✅ |
-| 图片入库（跳过 OCR） | **19.35 张/秒** | — |
-| 图片 OCR（后台补跑） | 1.2~1.5 张/秒 | ← 受限于 Python GIL |
-| 视频快速通道 | **88.6 倍速** | — |
-| 视频含转写 | 5.97 倍速 | ≥6 ⚠️ |
-| 文本向量化（单 worker） | **19.8 块/秒**（原 12.6，批大小 16→8 后 **1.57 倍**） | ⚠️ 见下 |
-| 深挖出简报 P95 | **8.29s**（原 23.79s，加全局死线后降 **65%**） | ≤8.0 ⚠️ 差 0.29s |
-| 缓存二次命中 | P50 **17.6ms** | ≤200 ✅ |
-| 投喂到可搜 | P95 **0.8s** | ≤3.0 ✅ |
-| 联网快搜 P95 | **2.4s** | ≤3.0 ✅ |
-
-⚠️ 入库吞吐受限于这台机器（i5-1155G7 / 无独显）：分段计时实测 **嵌入这一步占 97.7%**，
-其余五步加起来才 2.3%，所以再要快只能换量化模型或上 GPU。
-深挖 P95 那条虽然从 23.79s 降到 8.29s，但**代价是 20/20 次都跳过了第二轮追问** ——
-数字和代价要一起看。
-详见 [`engine/synorive/metrics.py`](engine/synorive/metrics.py) 里 A6/A7 两条的 `how` 字段 ——
-**目标值那一栏写的是「⚠️ 待重定」而不是一个数字，那是故意的**：一个明知达不到的数字挂在那儿，比承认「还没定」更糟。
+See the `how` field of A6/A7 in [`engine/synorive/metrics.py`](engine/synorive/metrics.py) — the
+target column there says "⚠️ to be re-set" instead of a number, and that is deliberate: a target
+everyone knows is unreachable is worse than admitting it has not been set.
 
 ---
 
-## 怎么跑起来
+## Getting started
 
-### 一次性准备
+### One-time setup
 
 ```bash
-# 1. Node 依赖（Node ≥20）
+# 1. Node dependencies (Node ≥20)
 npm install
 
-# 2. 生成字体子集（6MB，不进仓库，必须自己生成一次）
+# 2. Generate the font subset (6 MB, not in the repo, must be generated once)
 python scripts/build_fonts.py
 
-# 3. 生成图标（已在仓库里，改了源图才需要重跑）
+# 3. Generate icons (already committed; only needed if you change the source image)
 python scripts/build_icons.py
 
-# 4. Python 引擎环境（Python ≥3.11）
+# 4. Python engine environment (Python ≥3.11)
 py -3.13 -m venv engine/.venv
 engine/.venv/Scripts/python.exe -m pip install -e engine
 ```
 
-### 开发
+### Develop
 
 ```bash
-npm run dev              # 起 Electron + Vite 热更新，引擎自动拉起
+npm run dev              # Electron + Vite with HMR; the engine starts itself
 ```
 
-### 构建
+### Build
 
 ```bash
-npm run build            # 全部工作区
-npm run build:desktop    # 只构建桌面端
-npm run pack:win         # 打 Windows 安装包
+npm run build            # all workspaces
+npm run build:desktop    # desktop only
+npm run pack:win         # Windows installer + portable
 ```
 
-### 发版与自动更新
+### Release and auto-update
 
-桌面端和安卓端都能自己检查更新，更新源是这个仓库的 **GitHub Releases**。
+Desktop and Android both check for updates against this repository's **GitHub Releases**.
 
 ```bash
-npm run version:check      # 四处版本号是不是一致（根/桌面/安卓 name/安卓 code）
-npm run version:set 0.1.2  # 一条命令改完四处，别手动改
-npm run android:keystore   # 首次：生成安卓 release 签名密钥库（放仓库外）
-npm run release            # 出两端产物，**不上传**
-npm run release:publish    # 出产物并创建 GitHub Release（要 gh 已登录）
+npm run version:check      # are all four version numbers in sync?
+npm run version:set 0.1.2  # change all four at once — never edit them by hand
+npm run android:keystore   # first time only: generate the Android release keystore (kept outside the repo)
+npm run release            # build both artifacts, do NOT upload
+npm run release:publish    # build and create a GitHub Release (requires gh to be logged in)
 ```
 
-发版链路上有三个"漏了也不报错"的坑，`scripts/release.mjs` 会逐个挡住：
+There are four ways to break the update chain that produce **no error at all**.
+`scripts/release.mjs` blocks each one:
 
-| 漏了什么 | 用户那边看到的现象 |
+| What is missing | What the user sees |
 |---|---|
-| `latest.yml` 没传 | 桌面端显示**「已是最新」**，不是报错，更新永远到不了 |
-| tag 和 `package.json` 版本对不上 | 更新器 404 |
-| APK 没传 | 手机端查得到新版但下不了 |
-| 安卓 `versionCode` 没 +1 | 手机端显示**「已是最新」** |
+| `latest.yml` not uploaded | Desktop says **"you are up to date"**, not an error — the update never arrives |
+| Tag does not match `package.json` | Updater 404s |
+| APK not uploaded | Phone finds the new version but cannot download it |
+| Android `versionCode` not incremented | Phone says **"you are up to date"** |
 
-**更新链路的安全边界**（写清楚而不是含糊过去）：
+**Security boundary of the update channel** — stated plainly rather than glossed over:
 
-| | 桌面端 | 安卓端 |
+| | Desktop | Android |
 |---|---|---|
-| 传输 | HTTPS | HTTPS，且代码里硬性拒绝非 GitHub 主机 |
-| 完整性 | `latest.yml` 里的 sha512，对不上拒绝安装 | 校验字节数是否等于 GitHub 报的资产大小（服务端提前断连时 `read()` 一样返回 -1，不查长度就会拿到一个截断的坏包） |
-| 真实性 | ⚠️ **没有代码签名** —— 没买证书，Authenticode 校验会被跳过，装的时候 SmartScreen 会警告"未知发布者" | ✅ 系统校验签名，签名对不上的 APK 根本装不上去 |
+| Transport | HTTPS | HTTPS, and the code hard-rejects any non-GitHub host |
+| Integrity | sha512 from `latest.yml`; mismatch refuses to install | Byte count must equal the asset size GitHub reports (a server that hangs up early also returns −1 from `read()`, so without a length check you get a truncated package) |
+| Authenticity | ⚠️ **No code signing.** No certificate was purchased, so Authenticode verification is skipped and SmartScreen will warn about an unknown publisher | ✅ The OS verifies the signature; an APK signed with the wrong key simply will not install |
 
-桌面端那一格要补只有一条路：买代码签名证书，再在 `electron-builder.yml` 里配 `publisherName`。**在那之前不要把它宣传成"安全更新"。**
+Closing the desktop gap has exactly one path: buy a code-signing certificate and set
+`publisherName` in `electron-builder.yml`. **Until then, do not market this as "secure updates".**
 
-两个已知限制，都是设计上的、不是 bug：
+Two known limitations, both by design rather than bugs:
 
-- **便携版（portable exe）不能自动更新** —— 单文件自解压包运行时在临时目录里，替换不了正在运行的自己。应用里会明说这一点并给出下载页链接，而不是报错让你反复重试。
-- **安卓端要手动确认安装** —— 非应用商店分发只能调系统安装器，首次会要你打开「允许安装未知应用」。应用会检测这个权限并直接把你送到那一页。
+- **The portable exe cannot auto-update.** A single-file self-extracting build runs from a temp
+  directory and cannot replace the copy of itself that is currently running. The app says so
+  explicitly and links to the download page, instead of erroring and making you retry.
+- **Android requires manual install confirmation.** Distribution outside an app store can only
+  invoke the system installer, which asks for "allow installing unknown apps" the first time.
+  The app detects that permission and takes you straight to the right settings page.
 
-### 单独跑引擎（调试 / 给 CLI 和 MCP 用）
+### Running the engine on its own (debugging, CLI, MCP)
 
 ```bash
 engine/.venv/Scripts/python.exe -m synorive.main --port 8731 --data-dir ./data
-# 接口文档 http://127.0.0.1:8731/docs
+# API docs at http://127.0.0.1:8731/docs
 ```
 
-### 接进 Claude Code
+### Connecting to Claude Code
 
 ```bash
 npm run build --workspace=@aevorine/synorive-mcp
 node scripts/install-claude-integration.mjs
 ```
 
-装完新开一个 Claude Code 会话，问「我之前存过关于 X 的东西吗」就会自动触发检索。
+Open a fresh Claude Code session afterwards and ask "did I save anything about X?" — retrieval
+fires automatically.
 
-**24 个工具**：
-- 本地库：`search` / `ingest` / `analyze` / `get_content` / `similar` / `timeline` / `graph` / `status` / `questions`
-- 联网：`web_search` / `research` / `scholar` / `read_url` / `web_engines` / `verify` / `unified_search`
-- 文献：`scholar_review`（分主题综述，只摘录不改写）/ `scholar_table`（同一指标横向抽表）/
-  `citations`（共被引找奠基论文）/ `harvest`（批量下开放全文并入库，默认干跑）
-- 核对与记忆：`check_numbers`（数字回原文逐个核对）/ `memory`（这个话题以前查过什么）
-- 本地媒体：`compare`（两个文件哪里不一样）/ `chapters`（长视频章节目录）
+**The 24 tools:**
 
-给 Claude 的返回**强制带可信度分项和出处**，工具描述里写死了能力边界
-（"判断不了这句话本身是不是事实"、"逐字摘录不是改写"、"有反驳材料 ≠ 原说法是假的"）——
-不写的话 Claude 会把内容农场的说法和官方文档等同看待，再用同样自信的语气转述。
+- **Local library** — `search` / `ingest` / `analyze` / `get_content` / `similar` / `timeline` /
+  `graph` / `status` / `questions`
+- **Web** — `web_search` / `research` / `scholar` / `read_url` / `web_engines` / `verify` /
+  `unified_search`
+- **Literature** — `scholar_review` (thematic review, extract-only), `scholar_table` (one metric
+  across many papers), `citations` (co-citation to find the foundational papers), `harvest`
+  (bulk-fetch open-access full text into the library, dry-run by default)
+- **Verification and memory** — `check_numbers` (check every figure against the source text),
+  `memory` (what did I already look up on this topic?)
+- **Local media** — `compare` (what differs between two files), `chapters` (chapter list for a long video)
 
-引擎地址是自动发现的（读 `data/engine.json`）：桌面端开着就连同一个引擎，
-没开就自己起一个。也可以用 `SYNORIVE_ENGINE_URL` 显式指定。
+Everything returned to Claude **carries a trust breakdown and a source**, and the tool descriptions
+state the limits of what the tool can do ("cannot judge whether a statement is factually true",
+"verbatim extraction is not paraphrase", "counter-evidence exists ≠ the original claim is false").
+Without that, Claude will treat a content farm and an official spec as equally authoritative and
+relay both with the same confident tone.
 
-### 让 Google 和 DuckDuckGo 也能用（可选，但强烈建议）
+The engine address is auto-discovered from `data/engine.json`: if the desktop app is running, the
+MCP server connects to the same engine; if not, it starts its own. `SYNORIVE_ENGINE_URL` overrides.
 
-2026-08 实测：Google 已强制 JavaScript（纯 HTTP 只拿到跳转页）、DuckDuckGo 的 html
-端点改成了 JS 落地页、Yandex 直接给验证码、**七个 SearXNG 公共实例全部 429/403**。
-免费拿到这几家结果，现实里只剩一条路：**自己跑一个 SearXNG**。
+### Making Google and DuckDuckGo work (optional, strongly recommended)
 
-```bash
-node scripts/setup-searxng.mjs            # 先看它打算做什么（默认干跑，什么都不动）
-node scripts/setup-searxng.mjs --apply    # 确认后再真装（要 Docker）
-node scripts/setup-searxng.mjs --status   # 看还活着没
-```
-
-装完引擎会在冷启动时**自动发现并启用**它，不用去设置里勾。
-实测装完后 `google cse` 单独贡献 20 条、DuckDuckGo 10 条 —— 这两家直连时都是零。
-
-> 脚本替你填掉了最容易踩的坑：SearXNG **默认只开放 HTML 格式**，
-> 不在 `settings.yml` 里加 `json` 的话，现象是"实例起来了却一条结果都没有"。
-
-### 命令行
+Measured in August 2026: Google now requires JavaScript (plain HTTP only returns a redirect page),
+DuckDuckGo's html endpoint became a JS landing page, Yandex serves a captcha, and **all seven public
+SearXNG instances returned 429/403**. In practice there is exactly one free path left to those
+engines: **run your own SearXNG.**
 
 ```bash
-node cli/dist/index.js search "中文分词" -n 10
-node cli/dist/index.js search "type:pdf date:最近7天 预算"
-node cli/dist/index.js add D:\项目\文档 --tag 重要
-node cli/dist/index.js status
-node cli/dist/index.js doctor --install embed-image
+node scripts/setup-searxng.mjs            # show what it intends to do (dry run, changes nothing)
+node scripts/setup-searxng.mjs --apply    # actually install it (needs Docker)
+node scripts/setup-searxng.mjs --status   # is it still alive?
 ```
 
-### 检查
-
-```bash
-node scripts/check-hardcoded-style.mjs   # 界面统一性：零硬编码色值与字号
-npm run typecheck                        # TypeScript
-```
+The engine **auto-discovers and enables it on cold start** — no settings toggle to find. Measured
+after installing: `google cse` contributed 20 results on its own and DuckDuckGo 10, where both
+return zero when queried directly.
 
 ---
 
-## 目录
+## Design decisions that are not obvious
 
-```
-Synorive/
-├─ apps/desktop/          Electron 41 + React 19 + TypeScript
-│  ├─ electron/main/      主进程：窗口、托盘、引擎托管、IPC
-│  ├─ electron/preload/   contextBridge 白名单（渲染层只能碰这些）
-│  └─ src/                渲染层，零计算，保证 60fps
-├─ apps/mobile/           安卓端（Kotlin + Compose），六期
-├─ engine/                Python 引擎：摄取、分析、检索、依赖医生
-├─ packages/
-│  ├─ design-tokens/      全应用唯一样式真相源
-│  └─ shared-types/       四方通信契约
-├─ mcp/                   MCP 服务器，给 Claude Code 调
-├─ cli/                   synorive 命令行
-├─ scripts/               图标、字体、样式检查
-└─ data/                  索引库与模型（不进仓库）
-```
+- **Web search and cloud inference are two switches, not one.** Web search leaks *what you are
+  asking*; cloud inference leaks *what you already have*. Those are different risks, so collapsing
+  them into a single "privacy mode" would let you turn off the one you cared about while the other
+  stays on.
+- **The clipboard image overlay never goes to the network** — even with web peeking enabled.
+  Sending text is one sentence; sending a screenshot is an image that could contain anything.
+- **Filtered results are folded, not deleted.** The same article found by five engines and
+  reposted by three sites is eight results but one thing. Folding it and recording "5 engines,
+  3 sites" keeps the number that cross-verification needs; deleting it throws that away.
+- **Rate-limited ≠ broken.** A search engine that returns a captcha is not a broken parser. They
+  are counted separately, because "slow down" and "this adapter is dead" need opposite responses.
+- **Benchmarks that missed their target stay in the table.** Two rows above are marked ⚠️ rather
+  than removed.
 
 ---
 
-## 几个不显然的设计决定
+## License
 
-**引擎是独立进程，不是线程。**
-「使用时不卡顿」唯一可靠的实现方式。分析再重，Electron 主线程一帧都不参与。
-
-**中文检索必须预分词。**
-实测 SQLite 3.50.4：trigram 分词器下「搜索」「视频」这类两字词命中率为 **0**
-（trigram 要求查询 ≥3 字符）；unicode61 不分词更糟，整句算一个词。
-唯一可用的是入库和查询两侧都过 jieba，存空格分隔序列。另建一张标题 trigram
-表兜底词内子串查询。
-
-**检索是三级瀑布，不是一次返回。**
-15ms 出最近打开项 → 50ms 出关键词召回 → 150ms 出向量召回并重排。
-结果是"长出来的"不是"等出来的"，永不转圈。
-
-**样式统一靠机制不靠自觉。**
-业务代码里禁止出现色值和字号字面量，`scripts/check-hardcoded-style.mjs` 扫到就失败。
-
-**字体是逐字符回退的，不是靠 JS 切换。**
-`font-family: "Times New Roman", "SimSun", serif` —— 西文字母数字标点从
-Times New Roman 取，汉字它没有就自动落到宋体。24px 以上的标题换思源宋体
-（Windows 自带的 SimSun 是点阵字体，大字号下笔画又细又硬）。
-
----
-
-## 许可 / License
-
-**[GNU AGPL-3.0](LICENSE)** — Copyright © 2026 Aevorine
-
-你可以自由使用、修改、分发这个项目。但有一条硬约束：
-**任何基于它的修改版，只要被别人用到（包括做成网络服务），源码就必须一并公开。**
-选 AGPL 而不是 MIT，是为了防止有人把它闭源拿去商用。
-
-> You may use, modify and redistribute this project freely, with one hard condition:
-> **any modified version that other people can interact with — including over a network —
-> must have its complete source code made available.**
-
-第三方资源：
-- 字体 Noto Serif SC —— SIL OFL 1.1，可商用
-- 模型（BGE / CLIP / RapidOCR / SenseVoice / BGE-reranker）各自遵循原始许可，
-  由依赖医生按需下载，**不随仓库分发**
+[AGPL-3.0-or-later](LICENSE). If you run a modified version as a network service, you must publish
+your modifications.
