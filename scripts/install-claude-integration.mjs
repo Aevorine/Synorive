@@ -44,7 +44,7 @@ console.log('① 注册 MCP 服务器');
 const serverJs = join(ROOT, 'mcp', 'dist', 'index.js');
 if (!existsSync(serverJs)) {
   console.error(`  ✗ 还没构建：${serverJs}`);
-  console.error('    先跑 npm run build --workspace=@synorive/mcp');
+  console.error('    先跑 npm run build --workspace=@aevorine/synorive-mcp');
   process.exit(1);
 }
 

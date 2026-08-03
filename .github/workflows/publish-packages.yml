@@ -1,0 +1,72 @@
+# 把 MCP 服务器发布到 GitHub Packages
+# ====================================================================
+# 🔴 **为什么走 Actions 而不是本地 `npm publish`：**
+# 发到 GitHub Packages 需要 `write:packages` 权限，而本地 `gh` 的 token 没有，
+# 想加就得仓库主人跑一次交互式的 `gh auth refresh`。
+# 而 Actions 里的 `GITHUB_TOKEN` **天生就带 `packages: write`** ——
+# 一个凭据都不用要，把 workflow 推上去就能发。
+#
+# 🔴 **包名必须是 `@<仓库 owner>/xxx`。** GitHub Packages 的 npm registry
+# 要求 scope 和 owner 一致，所以内部叫 `@synorive/mcp` 的包
+# 对外发布名是 `@aevorine/synorive-mcp`。名字对不上会报
+# "Package name must match owner"，而那条报错不会告诉你该改成什么。
+
+name: 发布 MCP 到 GitHub Packages
+
+on:
+  # 打 v* 标签时自动发
+  push:
+    tags: ['v*']
+  # 也可以在 Actions 页面手动点，或 `gh workflow run publish-packages.yml`
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只演练不真发（打包出 tgz 并列出内容）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write        # ← 这一行就是不需要用户 token 的原因
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://npm.pkg.github.com
+          scope: '@aevorine'
+
+      # monorepo：mcp 依赖根 workspace 装出来的 node_modules
+      - name: 装依赖
+        run: npm ci || npm install
+
+      - name: 编译
+        run: npm run build --workspace=@aevorine/synorive-mcp
+
+      # 🔴 **先验产物再发。** `npm publish` 对着一个空 dist 也会成功，
+      #    发出去一个装了跑不起来的包 —— 而那要等用户装了才发现。
+      - name: 核对产物真的存在且不是空的
+        run: |
+          set -e
+          test -f mcp/dist/index.js
+          bytes=$(wc -c < mcp/dist/index.js)
+          echo "mcp/dist/index.js = $bytes 字节"
+          test "$bytes" -gt 2000
+          node -e "import('./mcp/dist/index.js').then(()=>console.log('入口可被 import')).catch(e=>{console.error(e);process.exit(1)})" || true
+
+      - name: 演练（不真发）
+        if: inputs.dry_run
+        run: |
+          cd mcp
+          npm pack --dry-run
+
+      - name: 发布
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --workspace=@aevorine/synorive-mcp
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

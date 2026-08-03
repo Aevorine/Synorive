@@ -210,7 +210,7 @@ engine/.venv/Scripts/python.exe -m synorive.main --port 8731 --data-dir ./data
 ### 接进 Claude Code
 
 ```bash
-npm run build --workspace=@synorive/mcp
+npm run build --workspace=@aevorine/synorive-mcp
 node scripts/install-claude-integration.mjs
 ```
 

@@ -1,14 +1,46 @@
 {
-  "name": "@synorive/mcp",
-  "version": "0.1.0",
+  "name": "@aevorine/synorive-mcp",
+  "version": "0.1.1",
   "license": "AGPL-3.0-or-later",
-  "private": true,
   "type": "module",
-  "description": "Synorive MCP 服务器 —— 让 Claude Code 直接调用本地内容库",
+  "description": "MCP server for Synorive — let Claude Code search your local multimodal library (documents, code, images, video) and fact-check claims against the open web. 24 tools, fully offline-capable.",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "claude",
+    "claude-code",
+    "semantic-search",
+    "vector-search",
+    "rag",
+    "local-first",
+    "offline",
+    "self-hosted",
+    "ocr",
+    "multimodal",
+    "fact-checking"
+  ],
+  "homepage": "https://github.com/Aevorine/Synorive#readme",
+  "bugs": "https://github.com/Aevorine/Synorive/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aevorine/Synorive.git",
+    "directory": "mcp"
+  },
   "bin": {
     "synorive-mcp": "./dist/index.js"
   },
   "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node ./dist/index.js",
@@ -16,7 +48,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.13.0",
-    "@synorive/shared-types": "*",
     "zod": "^3.24.1"
   },
   "devDependencies": {
