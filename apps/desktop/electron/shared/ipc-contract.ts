@@ -76,6 +76,20 @@ export const IPC = {
   cloudHasKey: 'cloud:has-key',
   cloudClearKey: 'cloud:clear-key',
   cloudTest: 'cloud:test',
+
+  // ── U 组 应用自更新 ─────────────────────────────────────
+  /** 当前更新状态快照（界面挂载时先拉一次，之后靠事件推） */
+  updateGetState: 'update:get-state',
+  /** 主动查一次。返回的是"发起成功没有"，结果走 updateStateChanged 推 */
+  updateCheck: 'update:check',
+  /** 开始下载（只有 checked 到新版本才有意义） */
+  updateDownload: 'update:download',
+  /** 退出并安装。**会立刻关掉应用**，调用方必须先确认过 */
+  updateInstall: 'update:install',
+  /** 「以后别提醒这个版本」 */
+  updateSkip: 'update:skip',
+  /** 状态变化推送（检查中/有新版/下载进度/已就绪/出错） */
+  updateStateChanged: 'update:state-changed',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -116,4 +130,47 @@ export interface ClipEntry {
 export interface WindowState {
   isMaximized: boolean;
   isFullScreen: boolean;
+}
+
+// ── U 组 应用自更新 ────────────────────────────────────────
+
+/**
+ * 更新器的生命周期。
+ *
+ * `unsupported` 是**必须存在**的一档：便携版（portable exe）和开发模式下
+ * electron-updater 根本没法原地替换自己。把这种情况混进 `error` 里，
+ * 用户会以为"更新坏了"并反复重试；实际上他要做的是去下载页手动换一个包。
+ */
+export type UpdateLifecycle =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'up-to-date'
+  | 'error'
+  | 'unsupported';
+
+export interface UpdateState {
+  lifecycle: UpdateLifecycle;
+  /** 正在跑的这个版本 */
+  currentVersion: string;
+  /** 查到的新版本号，没查到就是 null */
+  latestVersion: string | null;
+  /** 更新说明（Release body），可能是 Markdown 原文 */
+  releaseNotes: string | null;
+  releaseUrl: string | null;
+  /** 0~100，只有 downloading 阶段有意义 */
+  progressPercent: number;
+  /** 每秒字节数，用来估剩余时间 */
+  bytesPerSecond: number;
+  transferredBytes: number;
+  totalBytes: number;
+  /** 上次检查完成的时间（ISO），从没查过是 null */
+  lastCheckedAt: string | null;
+  error: string | null;
+  /** `unsupported` 时说明为什么，以及用户该怎么办 */
+  unsupportedReason: string | null;
+  /** 用户跳过的版本号——界面据此不再挂角标 */
+  skippedVersion: string | null;
 }

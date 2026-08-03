@@ -24,6 +24,7 @@ import { exportPdf } from './pdf.js';
 import { teardown as teardownRenderer } from './render.js';
 import { ensureDataDirs, loadSettings, patchSettings } from './settings.js';
 import { TrayController, setLaunchAtLogin } from './tray.js';
+import { UpdateManager } from './updater.js';
 import { createMainWindow } from './window.js';
 
 interface AppRef {
@@ -38,6 +39,8 @@ let clip: ClipboardWatcher | null = null;
 let peek: PeekWindow | null = null;
 /** F7/A4：全局快捷键的**真实**注册结果，界面靠它显示实际生效的键 */
 let hotkeyReport: HotkeyReport[] = [];
+/** U 组 应用自更新。便携版/开发模式下它也存在，只是状态恒为 unsupported */
+let updater: UpdateManager | null = null;
 let settings: AppSettings = loadSettings();
 
 // ── 单实例：第二次启动就把已有窗口拉到前面 ─────────────────────
@@ -243,6 +246,19 @@ async function pushCloudConfig(): Promise<void> {
   }
 }
 
+// ── U 组 应用自更新 ──────────────────────────────────────────
+
+function startUpdater(): void {
+  updater = new UpdateManager(settings.skippedUpdateVersion ?? null);
+  updater.onChange((s) => broadcast(IPC.updateStateChanged, s));
+
+  // 启动就查会和引擎启动、模型加载抢带宽和 CPU，而更新这件事一点都不急。
+  // 延后 20 秒，等首屏和引擎都稳定了再悄悄查一次。
+  if (settings.autoCheckUpdate ?? true) {
+    setTimeout(() => void updater?.check(true), 20_000).unref?.();
+  }
+}
+
 // ── IPC ─────────────────────────────────────────────────────
 
 function registerIpc(): void {
@@ -433,6 +449,23 @@ function registerIpc(): void {
     clearCloudKey();
     void pushCloudConfig();
   });
+  // U 组 应用自更新。**下载和安装永远是用户点出来的**，
+  // 这里没有任何一条路径会自己走到 quitAndInstall
+  ipcMain.handle(IPC.updateGetState, () => updater?.getState() ?? null);
+  ipcMain.handle(IPC.updateCheck, () => updater?.check(false));
+  ipcMain.handle(IPC.updateDownload, () => updater?.download());
+  ipcMain.handle(IPC.updateInstall, () => {
+    // 让引擎先干净退出，再让安装器接管。不这么做的话 Python 进程
+    // 还占着 data 目录的文件句柄，NSIS 覆盖安装会撞上"文件被占用"
+    (app as AppRef).isQuitting = true;
+    updater?.install();
+  });
+  ipcMain.handle(IPC.updateSkip, (_e, version: string) => {
+    settings = patchSettings({ skippedUpdateVersion: version });
+    updater?.setSkippedVersion(version);
+    broadcast(IPC.settingsChanged, settings);
+  });
+
   ipcMain.handle(
     IPC.cloudTest,
     async (
@@ -501,6 +534,7 @@ app.whenReady().then(() => {
   startEngine();
   startClipboard();
   applyPeekSetting();
+  startUpdater();
 
   // F7 全局唤起 + A4 截图直搜。**注册结果要留下来**：
   // 界面上要显示"你想要的 Alt+空格被别的软件占了，现在用的是 Ctrl+Alt+空格"，

@@ -40,6 +40,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel as composeViewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.synorive.mobile.LocalAppContainer
+import com.synorive.mobile.ui.update.UpdateCard
 
 /**
  * 配对设置：桌面端「设置 → 安卓配对」面板显示地址和令牌，这里手动填一遍。
@@ -152,6 +153,11 @@ fun PairingScreen() {
                     }
                 }
             }
+
+            // U 组 应用更新。挂在这一页底部而不是单开一个底部标签——
+            // 这是全 App 唯一的"设置性质"页面，而更新是一个月看一次的东西，
+            // 不该把两个常驻入口挤成三个。它**不依赖配对**，没连上电脑也能用。
+            UpdateCard()
         }
     }
 }

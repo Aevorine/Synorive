@@ -57,7 +57,7 @@ const SECRET_PATTERNS: RegExp[] = [
 /**
  * 结构化文本：网址和文件路径。
  * 这两类天然"没有空格、字符杂"，会被高熵判据误判成随机密码 —— 实测
- * `https://github.com/Fusheng201/Synorive` 就被拦过，而链接恰恰是最该收的一类。
+ * `https://github.com/Aevorine/Synorive` 就被拦过，而链接恰恰是最该收的一类。
  * 它们各有明确前缀，先认出来直接放行。
  */
 const STRUCTURED = /^(?:https?:\/\/|ftp:\/\/|file:\/\/|[A-Za-z]:[\\/]|\\\\|[/~])/;

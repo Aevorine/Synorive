@@ -32,7 +32,7 @@ from .engines import BaseEngine, ParseOutcome, WebResult
 
 #: 学术接口普遍要求带联系方式的 UA（Crossref 的 polite pool、
 #: NCBI 的使用条款都写了）。伪装成浏览器反而会被降速或拒绝
-UA = "Synorive/1.0 (local research tool; https://github.com/Fusheng201)"
+UA = "Synorive/1.0 (local research tool; https://github.com/Aevorine/Synorive)"
 
 
 #: 摘要里的标签。学术源回的摘要大量是 **JATS XML 片段**

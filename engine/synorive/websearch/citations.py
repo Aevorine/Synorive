@@ -31,7 +31,7 @@ from urllib.parse import quote_plus
 
 import httpx
 
-UA = "Synorive/1.0 (local research tool; https://github.com/Fusheng201)"
+UA = "Synorive/1.0 (local research tool; https://github.com/Aevorine/Synorive)"
 OPENALEX = "https://api.openalex.org"
 
 #: 一次批量取详情最多塞多少个 id。OpenAlex 的 filter 用 `|` 分隔，

@@ -1,7 +1,12 @@
 /// <reference types="vite/client" />
 
 import type { AppSettings } from '@synorive/shared-types';
-import type { ClipEntry, EngineProcessState, WindowState } from '../electron/shared/ipc-contract';
+import type {
+  ClipEntry,
+  EngineProcessState,
+  UpdateState,
+  WindowState,
+} from '../electron/shared/ipc-contract';
 
 type Unsubscribe = () => void;
 
@@ -71,6 +76,19 @@ export interface SynoriveApi {
   theme: {
     getSystem: () => Promise<'light' | 'dark'>;
     onSystemChanged: (cb: (t: 'light' | 'dark') => void) => Unsubscribe;
+  };
+  /**
+   * U 组 应用自更新。
+   * `install()` 会**立刻关掉应用** —— 只能在用户明确确认后调用。
+   * `getState()` 返回 null 表示主进程那边还没初始化完（正常只在极早期出现）。
+   */
+  updater: {
+    getState: () => Promise<UpdateState | null>;
+    check: () => Promise<void>;
+    download: () => Promise<void>;
+    install: () => Promise<void>;
+    skip: (version: string) => Promise<void>;
+    onStateChanged: (cb: (s: UpdateState) => void) => Unsubscribe;
   };
   cloud: {
     hasKey: () => Promise<boolean>;

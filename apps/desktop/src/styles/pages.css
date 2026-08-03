@@ -811,3 +811,136 @@
   padding: var(--syn-space-sm) var(--syn-space-lg);
   font-size: var(--syn-fs-emphasis);
 }
+
+/* ── U 组 应用更新 ────────────────────────────────────────── */
+
+.upd {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+  margin-bottom: var(--syn-space-md);
+}
+
+.upd__version {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-sm);
+  flex-wrap: wrap;
+}
+
+.upd__vlabel {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+}
+
+.upd__vnum {
+  /* 四号 —— 版本号是这一区里用户第一眼要找的东西，给它强调级字号 */
+  font-size: var(--syn-fs-emphasis);
+  font-weight: var(--syn-fw-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.upd__checked {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  margin-left: auto;
+}
+
+.upd__note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+  padding: var(--syn-space-sm);
+  border-radius: var(--syn-radius-md);
+}
+
+.upd__note--ok {
+  color: var(--syn-color-success);
+  background: var(--syn-color-success-subtle);
+}
+
+.upd__note--info {
+  color: var(--syn-color-info);
+  background: var(--syn-color-info-subtle);
+}
+
+.upd__note--err {
+  color: var(--syn-color-danger);
+  background: var(--syn-color-danger-subtle);
+  word-break: break-word;
+}
+
+.upd__new {
+  padding: var(--syn-space-sm);
+  background: var(--syn-color-primary-subtle);
+  border-radius: var(--syn-radius-md);
+}
+
+.upd__newline {
+  font-size: var(--syn-fs-body);
+  margin: 0;
+}
+
+.upd__notes {
+  margin-top: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+}
+
+.upd__notes summary {
+  cursor: pointer;
+  color: var(--syn-color-text-secondary);
+}
+
+.upd__noteswrap {
+  margin: var(--syn-space-xs) 0 0;
+  max-height: 12em;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Release body 是 Markdown 原文，但它仍然是给人读的正文 ——
+     用 body 字族而不是等宽，否则中文更新说明会掉进 Consolas 的
+     回退字体里，一行中文一行英文两种字重 */
+  font-family: var(--syn-ff-body);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+  color: var(--syn-color-text-secondary);
+}
+
+.upd__progress {
+  position: relative;
+  height: 6px;
+  margin: var(--syn-space-xs) 0 var(--syn-space-lg);
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-pill);
+}
+
+.upd__bar {
+  height: 100%;
+  background: var(--syn-color-primary);
+  border-radius: var(--syn-radius-pill);
+  transition: width var(--syn-dur-normal) var(--syn-ease-standard);
+}
+
+.upd__pct {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.upd__actions {
+  margin-top: var(--syn-space-xs);
+}
+
+/* 二次确认那句话要显眼，但不能红得像出错了 —— 它是提醒，不是报错 */
+.upd__confirm {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-warning);
+  line-height: var(--syn-lh-relaxed);
+  flex-basis: 100%;
+}

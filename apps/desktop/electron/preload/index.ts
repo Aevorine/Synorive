@@ -6,7 +6,7 @@
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import { IPC, type ClipEntry } from '../shared/ipc-contract.js';
+import { IPC, type ClipEntry, type UpdateState } from '../shared/ipc-contract.js';
 
 type Unsubscribe = () => void;
 
@@ -114,6 +114,20 @@ const api = {
   theme: {
     getSystem: (): Promise<'light' | 'dark'> => ipcRenderer.invoke(IPC.themeGetSystem),
     onSystemChanged: (cb: (t: 'light' | 'dark') => void) => on(IPC.themeSystemChanged, cb),
+  },
+
+  /**
+   * U 组 应用自更新。
+   * `install()` **会立刻关掉应用** —— 界面上必须在用户明确点了
+   * 「重启并安装」之后才调，不能挂在任何自动流程里。
+   */
+  updater: {
+    getState: (): Promise<UpdateState | null> => ipcRenderer.invoke(IPC.updateGetState),
+    check: (): Promise<void> => ipcRenderer.invoke(IPC.updateCheck),
+    download: (): Promise<void> => ipcRenderer.invoke(IPC.updateDownload),
+    install: (): Promise<void> => ipcRenderer.invoke(IPC.updateInstall),
+    skip: (version: string): Promise<void> => ipcRenderer.invoke(IPC.updateSkip, version),
+    onStateChanged: (cb: (s: UpdateState) => void) => on(IPC.updateStateChanged, cb),
   },
 
   /** R8 云端简报：Key 只经这几个方法进出，渲染层拿不到明文、拿不到文件路径 */

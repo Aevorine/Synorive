@@ -897,7 +897,7 @@ class Wikipedia(BaseEngine):
         return httpx.Request(
             "GET", url,
             headers={
-                "User-Agent": "Synorive/1.0 (local research tool; https://github.com/Fusheng201)",
+                "User-Agent": "Synorive/1.0 (local research tool; https://github.com/Aevorine/Synorive)",
                 "Accept": "application/json",
             },
         )

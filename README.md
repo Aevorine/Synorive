@@ -141,6 +141,32 @@ npm run build:desktop    # 只构建桌面端
 npm run pack:win         # 打 Windows 安装包
 ```
 
+### 发版与自动更新
+
+桌面端和安卓端都能自己检查更新，更新源是这个仓库的 **GitHub Releases**。
+
+```bash
+npm run version:check      # 四处版本号是不是一致（根/桌面/安卓 name/安卓 code）
+npm run version:set 0.1.2  # 一条命令改完四处，别手动改
+npm run android:keystore   # 首次：生成安卓 release 签名密钥库（放仓库外）
+npm run release            # 出两端产物，**不上传**
+npm run release:publish    # 出产物并创建 GitHub Release（要 gh 已登录）
+```
+
+发版链路上有三个"漏了也不报错"的坑，`scripts/release.mjs` 会逐个挡住：
+
+| 漏了什么 | 用户那边看到的现象 |
+|---|---|
+| `latest.yml` 没传 | 桌面端显示**「已是最新」**，不是报错，更新永远到不了 |
+| tag 和 `package.json` 版本对不上 | 更新器 404 |
+| APK 没传 | 手机端查得到新版但下不了 |
+| 安卓 `versionCode` 没 +1 | 手机端显示**「已是最新」** |
+
+两个已知限制，都是设计上的、不是 bug：
+
+- **便携版（portable exe）不能自动更新** —— 单文件自解压包运行时在临时目录里，替换不了正在运行的自己。应用里会明说这一点并给出下载页链接，而不是报错让你反复重试。
+- **安卓端要手动确认安装** —— 非应用商店分发只能调系统安装器，首次会要你打开「允许安装未知应用」。应用会检测这个权限并直接把你送到那一页。
+
 ### 单独跑引擎（调试 / 给 CLI 和 MCP 用）
 
 ```bash

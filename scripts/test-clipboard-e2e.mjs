@@ -85,7 +85,7 @@ await sleep(1200);
 
 const CASES = [
   ['普通文字', '明天下午三点和张工对一下多模态检索的进度', true, 'text'],
-  ['网址', 'https://github.com/Fusheng201/Synorive/blob/main/README.md', true, 'link'],
+  ['网址', 'https://github.com/Aevorine/Synorive/blob/main/README.md', true, 'link'],
   ['代码', 'const hits = await search({ query, limit: 30 });', true, 'text'],
   ['🔒 OpenAI 密钥', 'sk-proj-QwErTyUiOpAsDfGhJkLzXcVbNm0123456789', false, null],
   ['🔒 短信验证码', '739104', false, null],

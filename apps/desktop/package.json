@@ -1,6 +1,6 @@
 {
   "name": "@synorive/desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "AGPL-3.0-or-later",
   "private": true,
   "type": "module",
@@ -15,11 +15,13 @@
     "prepack:runtime": "node ../../scripts/bundle-python.mjs",
     "pack:dir": "npm run prepack:runtime && npm run build && electron-builder --dir",
     "pack:win": "npm run prepack:runtime && npm run build && electron-builder --win",
-    "pack:win:slim": "node ../../scripts/bundle-python.mjs --slim && npm run build && electron-builder --win"
+    "pack:win:slim": "node ../../scripts/bundle-python.mjs --slim && npm run build && electron-builder --win",
+    "publish:win": "npm run prepack:runtime && npm run build && electron-builder --win --publish always"
   },
   "dependencies": {
     "@synorive/design-tokens": "*",
-    "@synorive/shared-types": "*"
+    "@synorive/shared-types": "*",
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "@fontsource/noto-serif-sc": "^5.2.8",

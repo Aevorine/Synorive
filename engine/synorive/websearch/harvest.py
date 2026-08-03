@@ -35,7 +35,7 @@ import httpx
 
 log = logging.getLogger("synorive.harvest")
 
-UA = "Synorive/1.0 (local research tool; https://github.com/Fusheng201)"
+UA = "Synorive/1.0 (local research tool; https://github.com/Aevorine/Synorive)"
 
 #: 并发下载上限。见模块头第 2 条 —— 这个数字是"不惹麻烦"而不是"跑得快"
 _CONCURRENCY = 4

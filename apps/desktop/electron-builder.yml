@@ -81,6 +81,13 @@ win:
       arch: [x64]
 
 nsis:
+  # 🔴 **文件名里不能有空格。** 默认名是 `Synorive Setup 0.1.1.exe`，而
+  #    electron-builder 写进 `latest.yml` 的是把空格换成连字符的
+  #    `Synorive-Setup-0.1.1.exe`，GitHub 上传时又会把空格换成**点**。
+  #    三方对不上 → 更新器按 latest.yml 里的名字去下载，得到 404。
+  #    这个 404 只有真的点了"下载更新"才会暴露，检查更新那一步一切正常。
+  #    直接把空格去掉，三方就永远一致。
+  artifactName: Synorive-Setup-${version}.exe
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
@@ -98,5 +105,26 @@ portable:
 # 压缩级别。maximum 比 normal 小约 15%，代价是打包慢一倍。
 compression: maximum
 
-# 不做自动更新的元数据（还没有更新服务器）
-publish: null
+# ── U 组 自动更新的分发源 ────────────────────────────────────
+#
+# 🔴 **三件事缺一个，更新链路就是死的，而且死得很安静：**
+#
+#  ① 仓库必须是**公开**的。私有仓要在应用里内嵌 GitHub Token 才下得动，
+#     等于把 Token 发给每个装了这个应用的人 —— 我们选了转公开这条路。
+#
+#  ② 每次发布**必须把 `latest.yml` 和 exe 一起传上去**。它是 electron-updater
+#     唯一的版本清单。只传 exe 的话，更新器查到的是「已是最新」而不是报错 ——
+#     用户永远不会知道有新版，你也永远不会收到 bug 报告。
+#
+#  ③ Release 的 tag 必须是 `v<version>`（如 v0.1.1），和 package.json 里的
+#     version 严格对应。用 `node scripts/release.mjs` 出包就不会错。
+#
+# ⚠️ **portable 目标不参与自动更新** —— 单文件自解压包运行时在临时目录里，
+#    替换不了正在运行的自己。应用里对便携版走 `unsupported` 分支，
+#    给一条"去下载页手动换"的路，而不是报错让用户反复重试。
+publish:
+  provider: github
+  owner: Aevorine
+  repo: Synorive
+  # 只认正式发布，草稿和预发布不推给用户
+  releaseType: release

@@ -2,4 +2,15 @@
 <paths>
     <!-- 拍照搜索的临时文件放这里，用完可以随时清 -->
     <cache-path name="camera_captures" path="camera/" />
+
+    <!--
+      U 组 应用自更新：下载好的 APK 放这儿，再用 content:// URI 交给系统安装器。
+
+      🔴 **必须走 FileProvider，不能给 file:// URI。** API 24 起直接给 file://
+         会抛 FileUriExposedException 把应用干掉。
+      🔴 这里的 path 要和 ApkInstaller 里写的 "updates/" 一字不差 —— 对不上时
+         getUriForFile 抛的是 IllegalArgumentException("Failed to find configured
+         root")，那句话完全看不出是这个 xml 少了一行。
+    -->
+    <cache-path name="app_updates" path="updates/" />
 </paths>

@@ -59,7 +59,7 @@ const MUST_BLOCK = [
 const MUST_PASS = [
   ['普通中文', '明天下午三点开会，记得把上周的数据整理好带过来'],
   ['一句英文', 'The quick brown fox jumps over the lazy dog'],
-  ['网址', 'https://github.com/Fusheng201/Synorive'],
+  ['网址', 'https://github.com/Aevorine/Synorive'],
   ['带查询串的网址', 'https://www.example.com/search?q=%E5%90%91%E9%87%8F%E6%A3%80%E7%B4%A2&page=2'],
   ['Windows 路径', 'D:\\Documents\\WorkDocuments\\Github\\Synorive\\README.md'],
   ['Unix 路径', '/usr/local/share/fonts/NotoSerifSC-Regular.otf'],

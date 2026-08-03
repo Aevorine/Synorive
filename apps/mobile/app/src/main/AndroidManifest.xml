@@ -13,6 +13,13 @@
         android:name="android.hardware.camera"
         android:required="false" />
 
+    <!-- U 组 应用自更新：下载新版 APK 后调系统安装器。
+         API 26 起「未知来源」是**按应用**授权的，不再有全局开关 ——
+         没有这条权限的话，startActivity 会直接被系统拦掉，
+         而且 catch 到的是一个笼统的 ActivityNotFound，看不出是权限问题。
+         权限本身只是「允许我请求安装」，真正装不装还是系统弹框由用户点。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:name=".SynoriveApplication"
         android:allowBackup="false"

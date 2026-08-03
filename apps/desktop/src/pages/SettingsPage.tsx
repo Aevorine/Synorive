@@ -11,6 +11,7 @@ import { PrivacyFence } from '../components/PrivacyFence';
 import { HotkeyReport } from '../components/HotkeyReport';
 import { ModelPanel } from '../components/ModelPanel';
 import { SyncPanel } from '../components/SyncPanel';
+import { UpdatePanel } from '../components/UpdatePanel';
 import { PAGE_TITLES, useApp } from '../lib/store';
 
 const CLOUD_PROVIDERS: { id: CloudConfig['provider']; label: string; hint: string }[] = [
@@ -160,6 +161,27 @@ export function SettingsPage() {
           {/* E15 模型热插拔。放在核显开关正下方 ——
               它就是那个开关的「立即生效」按钮，隔远了没人会去点 */}
           <ModelPanel preferGpu={settings.enableGpuAcceleration} />
+        </section>
+
+        {/* ── U 组 应用更新 ───────────────────────────────
+            放在第三位（外观、性能之后）：用户来设置页找"我是哪个版本 /
+            有没有新版"的频率，远高于往下那些一次配好就不再动的开关。 */}
+        <section className="panel">
+          <h2 className="panel__title">应用更新</h2>
+          <p className="panel__hint">
+            更新包来自项目的 GitHub Releases。<strong>检查是自动的，下载和安装永远要你点</strong>——
+            不会在你干活的时候自己下东西或者重启应用。
+          </p>
+
+          <UpdatePanel />
+
+          <Toggle
+            label="启动后自动检查一次更新"
+            hint="只发一个「最新版本号是多少」的请求，不含任何你的内容，也不受「联网搜索总闸」管。
+                  关掉之后一个字节都不会发，要更新就自己点上面的「检查更新」。"
+            checked={settings.autoCheckUpdate ?? true}
+            onChange={(v) => patch({ autoCheckUpdate: v })}
+          />
         </section>
 
         {/* ── 后台行为 ────────────────────────────────── */}

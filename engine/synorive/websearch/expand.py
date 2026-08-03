@@ -163,7 +163,7 @@ def glossary_translate(query: str) -> tuple[str, list[str]] | None:
 # ────────────────────────────────────────────────────────────────
 #: 维基媒体的 UA 政策要求带可联系标识，伪装浏览器 UA 反而 403。
 #: 这条实测过（台账阶段 8），换成这个就通了
-_WIKI_UA = "Synorive/1.0 (local research tool; https://github.com/Fusheng201)"
+_WIKI_UA = "Synorive/1.0 (local research tool; https://github.com/Aevorine/Synorive)"
 
 
 async def wiki_langlink(
