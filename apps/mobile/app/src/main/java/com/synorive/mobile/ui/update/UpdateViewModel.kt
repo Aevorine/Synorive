@@ -76,7 +76,9 @@ class UpdateViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = UpdateUiState.Downloading(info, 0, info.apkSize)
         downloadJob?.cancel()
         downloadJob = viewModelScope.launch {
-            repository.download(info.apkUrl, dir, name)
+            // 把 GitHub 报的资产大小传下去 —— 下载器靠它判断"是真下完了
+            // 还是服务端提前断了连接"。少了它，截断的包会被当成好包拿去装
+            repository.download(info.apkUrl, dir, name, info.apkSize)
                 .catch { e ->
                     _state.value = UpdateUiState.Problem(
                         "下载失败：${e.message ?: "网络中断"}。可以重试，或去发布页手动下载。",

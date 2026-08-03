@@ -107,7 +107,20 @@ class UpdateRepository(
      * 下次进来会被当成"已经下好了"直接拿去装，系统报「解析程序包时出现问题」，
      * 而用户完全看不出是上次没下完。
      */
-    fun download(url: String, targetDir: File, fileName: String): Flow<DownloadProgress> = flow {
+    fun download(
+        url: String,
+        targetDir: File,
+        fileName: String,
+        /** GitHub 报的资产字节数。0 = 不知道，跳过长度校验 */
+        expectedSize: Long = 0L,
+    ): Flow<DownloadProgress> = flow {
+        // 🔴 只下 GitHub 的东西。asset URL 本来就来自 HTTPS 的 GitHub API，
+        //    正常情况下不可能指向别处 —— 但这条链路的终点是**把文件交给系统安装器**，
+        //    是全 App 后果最重的一步，值得为"万一"再加一道最便宜的闸。
+        //    （真正兜底的是安卓的签名校验：签名对不上的包根本装不上去。
+        //     这里挡的是"下载阶段就别去连奇怪的主机"。）
+        requireGitHubHost(url)
+
         if (!targetDir.exists()) targetDir.mkdirs()
         val finalFile = File(targetDir, fileName)
         val partFile = File(targetDir, "$fileName.part")
@@ -142,12 +155,48 @@ class UpdateRepository(
                         }
                     }
                     output.flush()
+
+                    // 🔴 **循环正常结束 ≠ 下完了。** 服务端提前关连接时
+                    //    read() 一样返回 -1，不抛异常 —— 拿到的是个截断的 APK，
+                    //    改完名就是一个"看起来下好了"的坏包，系统安装器只会说
+                    //    「解析程序包时出现问题」，用户完全联想不到是没下完。
+                    //    这就是那条"看字节数不看退出码"的坑在这条链路上的样子。
+                    val want = if (expectedSize > 0) expectedSize else total
+                    if (want > 0 && transferred != want) {
+                        partFile.delete()
+                        throw IOException(
+                            "下载不完整：只拿到 ${transferred / 1024} KB，应该是 ${want / 1024} KB。" +
+                                "网络中断了，重试一次。"
+                        )
+                    }
+
                     if (!partFile.renameTo(finalFile)) {
                         throw IOException("下载完成但改名失败，磁盘可能已满")
                     }
-                    emit(DownloadProgress(transferred, if (total > 0) total else transferred))
+                    emit(DownloadProgress(transferred, if (want > 0) want else transferred))
                 }
             }
         }
     }.flowOn(Dispatchers.IO)
+
+    /**
+     * 下载地址必须是 GitHub 的，且必须是 https。
+     *
+     * GitHub 的 release 资产会 302 到 `objects.githubusercontent.com`，
+     * OkHttp 自动跟随重定向 —— 所以两个域都要放行。
+     */
+    private fun requireGitHubHost(url: String) {
+        val u = runCatching { java.net.URI(url) }.getOrNull()
+            ?: throw IOException("下载地址解析不了：$url")
+        if (!"https".equals(u.scheme, ignoreCase = true)) {
+            throw IOException("拒绝从非 HTTPS 地址下载安装包：$url")
+        }
+        val host = u.host?.lowercase().orEmpty()
+        val ok = host == "github.com" ||
+            host.endsWith(".github.com") ||
+            host.endsWith(".githubusercontent.com")
+        if (!ok) {
+            throw IOException("拒绝从非 GitHub 主机下载安装包：$host")
+        }
+    }
 }
