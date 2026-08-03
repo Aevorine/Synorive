@@ -201,11 +201,26 @@ def g6_engine_failure(base: str, n: int) -> dict[str, Any]:
 
 
 def g7_cache(base: str, n: int) -> dict[str, Any]:
-    """G7 缓存命中：同一查询 10 分钟内二次返回 ≤200ms。"""
+    """
+    G7 缓存命中：同一查询 10 分钟内二次返回 ≤200ms。
+
+    🔴 **第一次搜返回空的那些轮次必须排除，而且要报出来排除了几个。**
+    `meta.py` 里写缓存的条件是 `if use_cache and clusters:` —— **只有真拿到
+    结果才写缓存**。这是对的设计：把一次瞬时失败（引擎全被限流）缓存 10 分钟，
+    等于把故障冻住。但基准如果不排除这种轮次，第二次自然又走网络（~900ms），
+    于是 P95 被一两个"根本没资格进统计"的样本顶穿。
+    2026-08-03 首跑就是这么把 G7 误判成 ❌ 的：中位数 17.6ms（缓存明明在工作），
+    P95 却 891.8ms。**排除不等于隐藏 —— skipped 数会一起报出来。**
+    """
     seconds, fails = [], []
+    skipped = 0
     for i in range(n):
         q = f"{QUERIES[i % len(QUERIES)]} 缓存基准"
-        _req(f"{base}/api/web/search", {"query": q, "limit": 20})      # 第一次，填缓存
+        _, first, _ = _req(f"{base}/api/web/search", {"query": q, "limit": 20})
+        got = (first or {}).get("clusters") or (first or {}).get("results") or []
+        if not got:
+            skipped += 1     # 第一次就没结果 → 按设计不会入缓存，这一轮不算数
+            continue
         sec, payload, err = _req(f"{base}/api/web/search", {"query": q, "limit": 20})
         if err or payload is None:
             fails.append(f"{q}: {err}")
@@ -213,9 +228,12 @@ def g7_cache(base: str, n: int) -> dict[str, Any]:
         seconds.append(sec * 1000)
     p95 = _p95(seconds)
     return {"id": "G7", "label": "缓存命中", "target": "≤200ms（二次）", "n": len(seconds),
+            "skippedEmptyFirst": skipped,
             "p50Ms": round(statistics.median(seconds), 1) if seconds else None,
             "p95Ms": round(p95, 1) if seconds else None,
-            "pass": (p95 <= 200) if seconds else None, "fails": fails[:5]}
+            "pass": (p95 <= 200) if seconds else None, "fails": fails[:5],
+            "note": (f"排除了 {skipped} 轮「第一次搜就没结果」—— 那种按设计不入缓存，"
+                     "不是缓存失效") if skipped else None}
 
 
 def g8_offline(base: str) -> dict[str, Any]:

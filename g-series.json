@@ -1,0 +1,33 @@
+[
+  {
+    "id": "G1",
+    "label": "投喂到可搜",
+    "target": "≤3s",
+    "n": 10,
+    "p50": 0.12,
+    "p95": 0.8,
+    "pass": true,
+    "fails": [],
+    "note": "临时目录 C:\\Users\\light\\AppData\\Local\\Temp\\synorive-g1-66dyrqnn，跑完可以删"
+  },
+  {
+    "id": "G7",
+    "label": "缓存命中",
+    "target": "≤200ms（二次）",
+    "n": 10,
+    "p50Ms": 17.6,
+    "p95Ms": 891.8,
+    "pass": false,
+    "fails": []
+  },
+  {
+    "id": "G2",
+    "label": "联网快搜 P95",
+    "target": "≤3.0s",
+    "n": 20,
+    "p50": 1.15,
+    "p95": 2.4,
+    "pass": true,
+    "fails": []
+  }
+]

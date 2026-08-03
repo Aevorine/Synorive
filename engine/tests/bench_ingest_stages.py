@@ -101,6 +101,12 @@ def main(argv: list[str] | None = None) -> int:
         if e.ready:
             emb = e
             print(f"  向量模型已加载：{e.model_id} @ {e.provider}，intra=1（复现流水线条件）")
+            # 🔴 **向量表是按嵌入维度懒建的，不建就没有 vec_chunks。**
+            #    真实流水线在 `_setup_ann_index` 那一步做这件事；
+            #    脚本不做的话，一旦有了向量，write 段每个文件都抛
+            #    `no such table: vec_chunks` —— 而第一次跑（没模型、
+            #    embeddings=None）根本走不到那行，所以完全看不出来。
+            db.ensure_vector_tables(e.dim, e.model_id)
     except Exception as ex:  # noqa: BLE001
         print(f"  （向量模型不可用，embed 段会是 0：{ex}）")
 

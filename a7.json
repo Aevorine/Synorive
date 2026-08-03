@@ -1,0 +1,31 @@
+{
+  "files": 55,
+  "chunks": 2869,
+  "wallSec": 227.16,
+  "chunksPerSec": 12.6,
+  "stageTotalsMs": {
+    "fingerprint": 127.5,
+    "parse": 22.4,
+    "enrich": 2908.1,
+    "chunk": 157.5,
+    "embed": 221777.4,
+    "write": 2032.1
+  },
+  "stagePct": {
+    "fingerprint": 0.1,
+    "parse": 0.0,
+    "enrich": 1.3,
+    "chunk": 0.1,
+    "embed": 97.7,
+    "write": 0.9
+  },
+  "medianPerFileMs": {
+    "fingerprint": 1.53,
+    "parse": 0.39,
+    "enrich": 14.86,
+    "chunk": 2.26,
+    "embed": 2476.52,
+    "write": 26.91
+  },
+  "note": "临时库跑的，不碰真实数据；embed 用 intra=1 复现流水线里的条件"
+}
