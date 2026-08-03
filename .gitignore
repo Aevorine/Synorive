@@ -79,3 +79,6 @@ apps/desktop/src/styles/fonts.css
 #    （.claude/settings.json 和 skills/ 这类**该共享的**配置不受影响）
 .claude/.pv-*.json
 .claude/settings.local.json
+
+# 随包分发的 Python 运行时（scripts/bundle-python.mjs 生成，几百 MB，构建时重建）
+apps/desktop/resources/pyruntime/

@@ -43,6 +43,22 @@ asarUnpack:
 # 有了源码，首次运行就能自己建 venv + pip install（见 main/bootstrap.ts），
 # 这才是「可以自动配置需要的工具与内容」在这条链路上的落地。
 extraResources:
+  # 🔴 **随包分发的 Python 运行时 —— 「独立可执行文件」就靠这一条。**
+  #
+  # 没有它的时候，装完之后还得：机器上有 Python + 版本 ≥3.11 + 能连上 pip 源。
+  # 这三个条件断任何一个，用户看到的都是同一句「引擎启动失败」，
+  # 而且**装的时候一切正常，点开才炸**。
+  #
+  # 由 `node scripts/bundle-python.mjs` 在构建前生成（见 package.json 的 prepack:runtime）。
+  # 目录不存在时 electron-builder 会直接报错退出 —— 这是**故意的**：
+  # 悄悄打出一个缺运行时的包，比构建失败糟糕得多。
+  - from: resources/pyruntime
+    to: pyruntime
+    filter:
+      - '**/*'
+      - '!**/__pycache__/**'
+      - '!**/*.pyc'
+      - '!.synorive-bundle.json'
   - from: ../../engine
     to: engine
     filter:

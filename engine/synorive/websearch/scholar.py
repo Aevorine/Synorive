@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+from html import unescape
 from typing import Any
 from urllib.parse import quote, quote_plus
 
@@ -34,16 +35,40 @@ from .engines import BaseEngine, ParseOutcome, WebResult
 UA = "Synorive/1.0 (local research tool; https://github.com/Fusheng201)"
 
 
+#: 摘要里的标签。学术源回的摘要大量是 **JATS XML 片段**
+#: （`<jats:p>`、`<jats:italic>`、`<jats:sub>`…），也有少数是 HTML。
+_ABSTRACT_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def clean_abstract(s: Any) -> str:
+    """
+    洗掉摘要里的标签和实体。
+
+    🔴 **这一步必须放在 `_mk()` 里，不能放在各个源自己的解析分支里。**
+    原来只有 Crossref 那一个分支做了 `re.sub(r"<[^>]+>", ...)`，
+    另外五家（DOAJ / Semantic Scholar / Europe PMC / OpenAIRE / CORE）都没做 ——
+    于是 `<jats:p>` 整段被当成正文喂进检索和简报。
+    这类"只在一个分支修了"的漏网是复发率最高的一种：修的时候看着是修好了，
+    换个数据源就原样复发，而且**不报错**，只是简报里混进一堆尖括号。
+    `_mk()` 是所有源的唯一出口，堵这里一次覆盖全部。
+    """
+    text = _ABSTRACT_TAG_RE.sub(" ", str(s or ""))
+    # 标签去掉之后还会剩 `&amp;` `&lt;` `&#x3C;` 这类实体 —— 不解会让
+    # 简报里出现 "P&amp;L" 这种明显不是原文的东西
+    text = unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _mk(
     engine: str, rank: int, title: str, url: str, snippet: str, **meta: Any
 ) -> WebResult | None:
-    title = re.sub(r"\s+", " ", str(title or "")).strip()
+    title = clean_abstract(title)
     if not title or not url:
         return None
     r = WebResult(
         title=title,
         url=url,
-        snippet=re.sub(r"\s+", " ", str(snippet or "")).strip()[:600],
+        snippet=clean_abstract(snippet)[:600],
         engine=engine,
         rank=rank,
     )

@@ -198,8 +198,17 @@ export class EngineManager {
     // ① 显式指定优先级最高 —— 用户/CI 想用哪个就是哪个
     if (process.env.SYNORIVE_PYTHON) push(process.env.SYNORIVE_PYTHON);
 
-    // ② 打包时随应用分发的运行时（现在没有，但以后可能加，留着）
+    // ② 打包时随应用分发的运行时。**这一档现在是主路径，不是备胎。**
+    //    `scripts/bundle-python.mjs` 在构建时把一份 embeddable Python
+    //    连同全部核心依赖放进 resources/pyruntime，装完即用 ——
+    //    不找系统 Python、不建 venv、不 pip、不联网。
+    //
+    //    🔴 顺序必须排在仓库 venv 前面：打包版里那些 `resolve(..)` 上溯路径
+    //    有可能碰巧命中开发机上的目录（比如从源码目录直接跑打包产物），
+    //    那会让"打包版能跑"变成一个只在这台机器上成立的假象
     if (process.resourcesPath) {
+      push(join(process.resourcesPath, 'pyruntime', win ? 'python.exe' : 'bin/python3'));
+      // 旧布局与手工放置的运行时，留着兼容
       push(join(process.resourcesPath, 'engine', win ? 'python.exe' : 'python3'));
       push(join(process.resourcesPath, 'engine', '.venv', ...rel));
     }

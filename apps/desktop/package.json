@@ -12,8 +12,10 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "pack:dir": "npm run build && electron-builder --dir",
-    "pack:win": "npm run build && electron-builder --win"
+    "prepack:runtime": "node ../../scripts/bundle-python.mjs",
+    "pack:dir": "npm run prepack:runtime && npm run build && electron-builder --dir",
+    "pack:win": "npm run prepack:runtime && npm run build && electron-builder --win",
+    "pack:win:slim": "node ../../scripts/bundle-python.mjs --slim && npm run build && electron-builder --win"
   },
   "dependencies": {
     "@synorive/design-tokens": "*",
