@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import hmac
 import json
 import logging
 import os
@@ -70,7 +71,15 @@ class _PairingGuardMiddleware:
         headers = dict(scope.get("headers") or [])
         given = headers.get(b"x-synorive-token", b"").decode("latin-1")
 
-        if path in _UNGUARDED_PATHS or (token and given == token):
+        # 🔴 **必须用 compare_digest，不能用 ==**（4.22b H3）。
+        #    `==` 一遇到不同的字节就返回，比对耗时随"猜对了几位"变长——
+        #    局域网里能反复重试的攻击者可以据此一位一位地把令牌试出来。
+        #    这不是理论问题：令牌是 32 位十六进制，逐位爆破是 16×32 次，
+        #    而盲爆破是 16^32 次。**代价差了 30 个数量级。**
+        #    compare_digest 恒定时间返回，这条路直接没了。
+        #    （`token` 为空时下面整个条件为假 → 401，是**失败关闭**，没问题。）
+        ok_token = bool(token) and hmac.compare_digest(given, token)
+        if path in _UNGUARDED_PATHS or ok_token:
             await self.app(scope, receive, send)
             return
 
