@@ -768,3 +768,46 @@
 .testresult--error {
   color: var(--syn-color-danger);
 }
+
+/* ── 引擎引导页：自动配置区（锚点 2）────────────────────────
+   放在手动三步**上面**且用主按钮 —— 让用户照着敲两条命令，
+   是把我们该干的活推给了他。 */
+
+.setup__auto {
+  margin: var(--syn-space-md) 0;
+  padding: var(--syn-space-md);
+  background: var(--syn-color-primary-subtle);
+  border: 1px solid var(--syn-color-primary);
+  border-radius: var(--syn-radius-xl);
+}
+
+.setup__autohint {
+  margin: var(--syn-space-sm) 0 0;
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+}
+
+.setup__log {
+  margin-top: var(--syn-space-sm);
+  padding: var(--syn-space-sm);
+  max-height: 9em;
+  overflow-y: auto;
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-md);
+  color: var(--syn-color-text-secondary);
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+  word-break: break-all;
+}
+
+.setup__logerr {
+  color: var(--syn-color-danger);
+  white-space: pre-wrap;
+}
+
+.btn--lg {
+  padding: var(--syn-space-sm) var(--syn-space-lg);
+  font-size: var(--syn-fs-emphasis);
+}

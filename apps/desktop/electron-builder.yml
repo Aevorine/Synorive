@@ -32,6 +32,28 @@ asar: true
 asarUnpack:
   - resources/icons/**/*
 
+# 🔴 引擎**源码**随包分发（不含 .venv 和模型）—— 这是「引擎总是启动失败」
+# 那件事的打包侧根治。
+#
+# 原来的判断是"引擎不打进安装包，走依赖医生按需装"，那对**依赖和模型**是对的
+# （加起来 800MB+）。但它被顺带套用到了**源码**上，而源码只有 1.2 MB ——
+# 结果打包版里根本没有 synorive 这个包，装了它的机器上什么解释器都救不了：
+# 找得到 Python 也没有东西可跑。安装包 101 → 约 102 MB，可以忽略。
+#
+# 有了源码，首次运行就能自己建 venv + pip install（见 main/bootstrap.ts），
+# 这才是「可以自动配置需要的工具与内容」在这条链路上的落地。
+extraResources:
+  - from: ../../engine
+    to: engine
+    filter:
+      - '**/*'
+      - '!.venv/**'
+      - '!**/__pycache__/**'
+      - '!**/*.pyc'
+      - '!.pytest_cache/**'
+      - '!.ruff_cache/**'
+      - '!*.egg-info/**'
+
 win:
   # 26 起用这个；signAndEditExecutable 会把图标和版本信息一起关掉
   signExecutable: false

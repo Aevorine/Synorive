@@ -48,6 +48,11 @@ export const IPC = {
   /** 浮窗自己请求关闭（点了叉、或按 Esc） */
   peekClose: 'peek:close',
 
+  /** 首次运行自举：自己找 Python、建 venv、装引擎 */
+  engineBootstrap: 'engine:bootstrap',
+  /** 自举进度（每一步都推，装依赖要一两分钟，不能只给一个转圈） */
+  engineBootstrapProgress: 'engine:bootstrap-progress',
+
   // ── 主题 ────────────────────────────────────────────────
   themeGetSystem: 'theme:get-system',
   themeSystemChanged: 'theme:system-changed',

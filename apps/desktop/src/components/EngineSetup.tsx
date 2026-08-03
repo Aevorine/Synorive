@@ -1,5 +1,5 @@
-import { AlertTriangle, Copy, ExternalLink, RotateCw } from 'lucide-react';
-import { useState } from 'react';
+import { AlertTriangle, Copy, ExternalLink, RotateCw, Wand2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../lib/store';
 
 /**
@@ -35,6 +35,28 @@ export function EngineSetup() {
   const engine = useApp((s) => s.engine);
   const [copied, setCopied] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState<{ step: string; message: string }[]>([]);
+
+  // 自举进度。**装依赖要一两分钟，只给一个转圈的话用户分不清
+  // "在装"和"卡死了"** —— 和深挖那个实时进度是同一条理由
+  useEffect(
+    () => window.synorive.engine.onBootstrapProgress((p) => setLog((l) => [...l, p])),
+    [],
+  );
+
+  const autoSetup = async () => {
+    setBusy(true);
+    setLog([]);
+    try {
+      const r = await window.synorive.engine.bootstrap();
+      if (!r.ok && r.error) setLog((l) => [...l, { step: 'error', message: r.error! }]);
+    } catch (e) {
+      setLog((l) => [...l, { step: 'error', message: (e as Error).message }]);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const copy = (text: string) => {
     void navigator.clipboard.writeText(text);
@@ -98,10 +120,38 @@ export function EngineSetup() {
           ))}
         </ol>
 
+        {/* 🔴 自动配置放在最显眼的位置，手动三步退到它下面 ——
+            锚点 2「可以自动配置需要的工具与内容」的落地。
+            让用户照着敲两条命令，是把我们该干的活推给了他 */}
+        <div className="setup__auto">
+          <button
+            className="btn btn--primary btn--lg"
+            onClick={() => void autoSetup()}
+            disabled={busy}
+          >
+            <Wand2 size={16} strokeWidth={1.8} className={busy ? 'spin' : ''} />
+            {busy ? '正在自动配置…' : '让它自己装好（推荐）'}
+          </button>
+          <p className="setup__autohint">
+            自己找一个够格的 Python、建一个专属环境、把引擎装进去。
+            全程不动你系统里已有的 Python，装的东西跟着应用走、卸载时一起消失。
+            <strong>第一次要一两分钟</strong>，之后开机就直接能用。
+          </p>
+          {log.length > 0 && (
+            <div className="setup__log" role="status" aria-live="polite">
+              {log.slice(-6).map((l, i) => (
+                <div key={i} className={l.step === 'error' ? 'setup__logerr' : undefined}>
+                  {l.message}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="setup__actions">
-          <button className="btn btn--primary" onClick={retry} disabled={retrying}>
+          <button className="btn" onClick={retry} disabled={retrying || busy}>
             <RotateCw size={15} strokeWidth={1.8} className={retrying ? 'spin' : ''} />
-            {retrying ? '正在重试…' : '装好了，重试'}
+            {retrying ? '正在重试…' : '我自己装好了，重试'}
           </button>
           <button
             className="btn"

@@ -37,6 +37,12 @@ const api = {
     restart: () => ipcRenderer.invoke(IPC.engineRestart),
     onStateChanged: (cb: (s: unknown) => void) => on(IPC.engineStateChanged, cb),
     onEvent: (cb: (e: unknown) => void) => on(IPC.engineEvent, cb),
+    /** 引擎起不来时，让它自己找 Python、建环境、装引擎（锚点 2） */
+    bootstrap: (): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC.engineBootstrap),
+    onBootstrapProgress: (
+      cb: (p: { step: string; message: string; ratio?: number }) => void,
+    ) => on(IPC.engineBootstrapProgress, cb),
   },
 
   sys: {

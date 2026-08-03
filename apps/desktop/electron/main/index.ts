@@ -302,6 +302,27 @@ function registerIpc(): void {
   ipcMain.handle(IPC.engineGetState, () => engine?.getState() ?? null);
   ipcMain.handle(IPC.engineRestart, () => engine?.restart());
 
+  /**
+   * 首次运行自举（锚点 2「可以自动配置需要的工具与内容」）。
+   *
+   * 🔴 **绝不自动触发** —— 它会在用户机器上建目录、装包，属于要先问的动作。
+   * 只有用户在引导页上点了那个按钮才跑。
+   * 装完直接重启引擎，不让用户再手动点一次"重试"。
+   */
+  ipcMain.handle(IPC.engineBootstrap, async () => {
+    const { bootstrapEngine } = await import('./bootstrap.js');
+    const r = await bootstrapEngine((p) => broadcast(IPC.engineBootstrapProgress, p));
+    if (r.ok) {
+      // 让引擎下次启动直接用自举出来的解释器 —— 它已经在
+      // `pythonCandidates()` 的候选里（userData/engine-venv），不用额外接线
+      await engine?.stop();
+      startEngine();
+      return { ok: true };
+    }
+    broadcast(IPC.engineBootstrapProgress, { step: 'error', message: r.error });
+    return { ok: false, error: r.error };
+  });
+
   // 系统集成
   ipcMain.handle(IPC.pickFolders, async () => {
     if (!win) return [];
@@ -341,7 +362,9 @@ function registerIpc(): void {
     const out: string[] = [];
     for (const list of Object.values(nets)) {
       for (const info of list ?? []) {
-        if (!info.internal && (info.family === 'IPv4' || info.family === 4)) {
+        // Node 18 起 family 统一成字符串 IPv4，老版本给数字 4。
+        // 用 String() 抹平：直接写两个相等比较会被 TS 判成两个类型没有交集
+        if (!info.internal && String(info.family) === 'IPv4') {
           out.push(info.address);
         }
       }

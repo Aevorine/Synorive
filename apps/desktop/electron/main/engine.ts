@@ -159,27 +159,161 @@ export class EngineManager {
     for (const fn of this.stateListeners) fn(snapshot);
   }
 
-  private pythonPath(): string {
-    if (process.env.SYNORIVE_PYTHON) return process.env.SYNORIVE_PYTHON;
+  /**
+   * 找 Python 解释器 —— 「引擎总是启动失败」的根因就在这个函数的旧版本里。
+   *
+   * 🔴 **旧版本是必然失败的，不是偶发**，链条很具体：
+   *   ① 打包版**没有**自带 Python 运行时（台账明确决定：打进去会让安装包
+   *      从 101 MB 涨到约 700 MB，所以走依赖医生按需装）
+   *   ② 于是 `resourcesPath/engine/python.exe` 这一步必然找不到
+   *   ③ 于是落到最后一行兜底 `return 'python.exe'`，即"用系统 PATH 里的"
+   *   ④ 而这台机器 PATH 里的是 **Python 3.9.4**，引擎要 ≥3.11
+   *      （`from datetime import UTC` 在 3.9 上直接 ImportError）
+   *   ⑤ 就算版本够，那个解释器里也**没装 synorive 包**——包只装在 engine/.venv
+   *   → 打包版 100% 起不来，报 `spawn python.exe ENOENT` 或 ModuleNotFoundError
+   *
+   * 另一半问题在 dev 侧：旧版本写死 `appPath/../../engine/.venv`，
+   * 而 `app.getAppPath()` 在**三种启动方式下解析到不同层级**
+   * （打包 exe / electron-vite dev / `electron <目录>`，台账坑 45）。
+   * 层数写死就意味着换一种启动方式就断。
+   *
+   * 新版本：**不区分 dev 和打包**，从多个基准点各往上找几层，
+   * 命中哪个用哪个。多探几次的成本是几十次 `existsSync`（微秒级），
+   * 换来的是"换任何一种启动方式都能找到"。
+   */
+  private pythonCandidates(): string[] {
+    const win = process.platform === 'win32';
+    const rel = win ? ['Scripts', 'python.exe'] : ['bin', 'python'];
+    const out: string[] = [];
+    const push = (p: string) => {
+      if (p && !out.includes(p)) out.push(p);
+    };
 
-    if (isDev) {
-      const venv = resolve(app.getAppPath(), '..', '..', 'engine', '.venv', 'Scripts', 'python.exe');
-      if (existsSync(venv)) return venv;
-      const venvNix = resolve(app.getAppPath(), '..', '..', 'engine', '.venv', 'bin', 'python');
-      if (existsSync(venvNix)) return venvNix;
+    // ① 显式指定优先级最高 —— 用户/CI 想用哪个就是哪个
+    if (process.env.SYNORIVE_PYTHON) push(process.env.SYNORIVE_PYTHON);
+
+    // ② 打包时随应用分发的运行时（现在没有，但以后可能加，留着）
+    if (process.resourcesPath) {
+      push(join(process.resourcesPath, 'engine', win ? 'python.exe' : 'python3'));
+      push(join(process.resourcesPath, 'engine', '.venv', ...rel));
     }
 
-    // 打包后：随应用一起分发的运行时
-    const bundled = join(process.resourcesPath, 'engine', 'python.exe');
-    if (existsSync(bundled)) return bundled;
+    // ③ 仓库里的 venv。**从四个基准点各往上找四层** ——
+    //    哪个基准点有效取决于启动方式，全试一遍最省心
+    const bases = [
+      app.getAppPath(),
+      __dirname,
+      process.cwd(),
+      app.getPath('exe'),
+    ];
+    for (const base of bases) {
+      for (let up = 0; up <= 4; up++) {
+        const prefix = Array<string>(up).fill('..');
+        push(resolve(base, ...prefix, 'engine', '.venv', ...rel));
+      }
+    }
 
+    // ④ 用户数据目录下的 venv —— 打包版首次运行时依赖医生会建在这儿
+    push(join(app.getPath('userData'), 'engine-venv', ...rel));
+
+    return out;
+  }
+
+  private pythonPath(): string {
+    for (const p of this.pythonCandidates()) {
+      if (existsSync(p)) return p;
+    }
+    // 🔴 兜底仍然返回 PATH 里的 python，但**这已经是已知会失败的路径**。
+    // 之所以还返回而不是直接抛：万一用户就是全局装了 3.13 + synorive，
+    // 那它是能跑的。失败时由 `diagnose()` 说清楚到底卡在哪一环，
+    // 而不是甩一个 ENOENT 让人猜。
     return process.platform === 'win32' ? 'python.exe' : 'python3';
   }
 
+  /**
+   * 引擎工作目录。跟着解释器走 —— 找到的是哪个 venv，cwd 就该是它的上一级。
+   * 两者用不同的解析逻辑，就会出现"解释器找到了但 cwd 指向别处"这种
+   * 极难查的状态（症状是 `python -m synorive.main` 报找不到模块）。
+   */
   private engineCwd(): string {
-    return isDev
-      ? resolve(app.getAppPath(), '..', '..', 'engine')
-      : join(process.resourcesPath, 'engine');
+    const py = this.pythonPath();
+    // …/engine/.venv/Scripts/python.exe → …/engine
+    const m = py.replace(/\\/g, '/').match(/^(.*)\/\.venv\/(Scripts|bin)\//);
+    if (m?.[1] && existsSync(m[1])) return m[1];
+
+    if (process.resourcesPath && existsSync(join(process.resourcesPath, 'engine'))) {
+      return join(process.resourcesPath, 'engine');
+    }
+    for (const base of [app.getAppPath(), __dirname, process.cwd()]) {
+      for (let up = 0; up <= 4; up++) {
+        const c = resolve(base, ...Array<string>(up).fill('..'), 'engine');
+        if (existsSync(join(c, 'synorive'))) return c;
+      }
+    }
+    return isDev ? resolve(app.getAppPath(), '..', '..', 'engine') : process.cwd();
+  }
+
+  /**
+   * 启动失败时跑一次诊断，把「到底卡在哪一环」分清楚。
+   *
+   * **为什么不在启动前就查**：查一次要 spawn 一个 Python 进程读版本、
+   * 再 spawn 一次试 import，加起来几百毫秒 —— 加在每次冷启动上，
+   * 直接顶在 A1「≤2.0s 可搜索」的头上。而正常情况下这几百毫秒是白花的。
+   * 所以只在**真的失败之后**才跑，那时候用户已经在等了，多两秒无所谓，
+   * 而一句说得清的原因值得这两秒。
+   */
+  private diagnose(py: string, cwd: string): string {
+    const lines: string[] = [];
+    lines.push(`解释器：${py}`);
+    lines.push(`工作目录：${cwd}`);
+
+    if (!existsSync(py) && !/[\\/]/.test(py)) {
+      lines.push(`❌ 没有在任何已知位置找到 Python，只能退回系统 PATH 里的 "${py}"。`);
+    } else if (!existsSync(py)) {
+      lines.push(`❌ 这个路径不存在。`);
+    }
+    if (!existsSync(join(cwd, 'synorive'))) {
+      lines.push(`❌ 工作目录下没有 synorive 包 —— 这个目录不是引擎源码目录。`);
+    }
+
+    // 版本与包，各花一次同步 spawn。失败时值这个钱
+    try {
+      const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+      const ver = execFileSync(py, ['-c', 'import sys;print("%d.%d"%sys.version_info[:2])'], {
+        encoding: 'utf8',
+        timeout: 8000,
+        cwd,
+      }).trim();
+      lines.push(`版本：Python ${ver}`);
+      // 解释器坏掉时 execFileSync 可能回一个空串，split 出来就是 undefined。
+      // TS 提醒得对：这不是理论风险，正是"引擎起不来"时最可能的状态
+      const parts = ver.split('.').map(Number);
+      const maj = parts[0] ?? 0;
+      const min = parts[1] ?? 0;
+      if (maj === 3 && min < 11) {
+        lines.push(
+          `❌ **版本太低**。引擎要 Python ≥3.11（3.10 及以下没有 datetime.UTC 等 API）。`,
+        );
+      }
+      try {
+        execFileSync(py, ['-c', 'import synorive'], { timeout: 15000, cwd, stdio: 'ignore' });
+        lines.push('✅ synorive 包能导入。');
+      } catch {
+        lines.push(
+          '❌ **这个解释器里没装 synorive 包**。包只装在 engine/.venv 里，' +
+            '全局 Python 是拿不到的。',
+        );
+      }
+    } catch (e) {
+      lines.push(`❌ 连版本都读不出来：${(e as Error).message.split('\n')[0]}`);
+    }
+
+    lines.push('');
+    lines.push('怎么修（在仓库根目录跑）：');
+    lines.push('  py -3.13 -m venv engine/.venv');
+    lines.push('  engine/.venv/Scripts/python.exe -m pip install -e engine');
+    lines.push('或者用环境变量直接指定：set SYNORIVE_PYTHON=<你的python.exe完整路径>');
+    return lines.join('\n');
   }
 
   private async freePort(): Promise<number> {
@@ -290,12 +424,24 @@ export class EngineManager {
     });
 
     child.once('error', (err) => {
-      this.fail(`启动失败：${err.message}`);
+      // 🔴 `spawn python.exe ENOENT` 这五个字对用户毫无意义 ——
+      // 他不知道是没装 Python、装了但版本太低、还是装了但没装包。
+      // 这三种情况的处置完全不同，必须分清楚了再报
+      this.fail(`引擎起不来：${err.message}
+
+${this.diagnose(py, cwd)}`);
     });
 
     const ok = await this.waitHealthy(port);
     if (!ok) {
-      this.fail(`启动超时（${BOOT_TIMEOUT_MS / 1000}s 内没就绪）`);
+      // 超时和 spawn 失败是两种病：spawn 失败是"根本没跑起来"，
+      // 超时是"跑起来了但没就绪"（多半是缺依赖或模型在下载）。
+      // 但诊断信息对两者都有用，所以一并给
+      this.fail(
+        `启动超时（${BOOT_TIMEOUT_MS / 1000}s 内没就绪）
+
+${this.diagnose(py, cwd)}`,
+      );
       try {
         child.kill('SIGKILL');
       } catch {
