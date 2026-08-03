@@ -19,6 +19,8 @@
 
 </div>
 
+![Synorive](../screenshots/research-light.png)
+
 ---
 
 <div dir="rtl" align="right">

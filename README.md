@@ -34,6 +34,16 @@ No Python installation required — the interpreter and all engine dependencies 
 
 </div>
 
+![Synorive research workbench](docs/screenshots/research-light.png)
+
+<div align="center"><sub>
+
+The research workbench: multi-engine search, per-source trust ranking, and an
+excluded-results drawer that always tells you *why* something was filtered out.
+Dark theme: [screenshot](docs/screenshots/research-dark.png)
+
+</sub></div>
+
 ---
 
 ## What it does / 它做什么

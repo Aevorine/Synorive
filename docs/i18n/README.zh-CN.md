@@ -18,6 +18,8 @@
 
 </div>
 
+![Synorive](../screenshots/research-light.png)
+
 ---
 
 ## 它做什么

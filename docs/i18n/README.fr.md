@@ -19,6 +19,8 @@ Expose 24 outils à **Claude Code** via MCP.
 
 </div>
 
+![Synorive](../screenshots/research-light.png)
+
 ---
 
 ## Ce que ça fait
