@@ -10,7 +10,14 @@ import { create } from 'zustand';
 import type { AppSettings, Density } from '@synorive/shared-types';
 import type { EngineProcessState } from '../../electron/shared/ipc-contract';
 
-export type PageId = 'search' | 'library' | 'analyze' | 'timeline' | 'graph' | 'settings';
+export type PageId =
+  | 'search'
+  | 'library'
+  | 'analyze'
+  | 'timeline'
+  | 'graph'
+  | 'research'
+  | 'settings';
 
 /** 界面主标题 —— 用户点名要「更大的宋体」的就是这一批文字 */
 export const PAGE_TITLES: Record<PageId, string> = {
@@ -19,6 +26,7 @@ export const PAGE_TITLES: Record<PageId, string> = {
   analyze: '分析中心',
   timeline: '时间轴',
   graph: '知识图谱',
+  research: '研究工作台',
   settings: '设置',
 };
 

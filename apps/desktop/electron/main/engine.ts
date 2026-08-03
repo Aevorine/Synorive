@@ -19,6 +19,7 @@ import { createServer } from 'node:net';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { EngineProcessState } from '../shared/ipc-contract.js';
+import { startRegistering, stopRegistering } from './render.js';
 
 const isDev = !app.isPackaged;
 
@@ -31,6 +32,39 @@ const MAX_RESTARTS = 5;
 
 type Listener = (state: EngineProcessState) => void;
 type EventListener = (event: unknown) => void;
+
+export interface EngineLaunchOptions {
+  dataDir: string;
+  modelDir: string;
+  concurrency: number;
+  /** 隐私围栏：允许把内容送云端（云端简报生成 R8、图片描述 C4 都受它管） */
+  allowCloud: boolean;
+  /** C4：图片详细描述——还要 allowCloud 为真且设置页配好了视觉模型才会真的调用 */
+  enableImageDescription: boolean;
+  /** C5：本地人脸检测与聚类，默认关 */
+  enableFaceClustering: boolean;
+  /** A16：开了就把引擎的监听地址从 127.0.0.1 换成 0.0.0.0，局域网里的安卓端才连得上 */
+  lanPairingEnabled: boolean;
+  /** 局域网配对令牌，非本机请求必须带这个（见 --pairing-token） */
+  pairingToken: string;
+  /**
+   * E12/U9 联网搜索总闸。**和 allowCloud 是两回事，别合并** ——
+   * 这个发出去的是查询词（"我在查什么"），那个发出去的是资料原文（"我有什么"）。
+   * 关掉后引擎不建 MetaSearch，整条联网链路从根上断掉，
+   * 而不是靠界面藏按钮 —— 藏按钮挡不住 MCP 和 CLI
+   */
+  allowNetwork: boolean;
+  /** S1 每轮最多派几家引擎。0 = 全派 */
+  webLineupSize: number;
+  /** V 组核查档位：annotate / counter / claim */
+  verifyLevel: string;
+  /** 引擎的非密钥配置（自建 SearXNG 地址等）+ 从 safeStorage 解出来的 API Key */
+  webKeys: Record<string, string>;
+  /** 启用哪几家引擎。空 = 用各家默认开关 */
+  webEngines: string[];
+  /** V5 可信度权重（JSON 串，为空则用默认档） */
+  trustProfile: string;
+}
 
 export class EngineManager {
   private child: ChildProcess | null = null;
@@ -50,11 +84,7 @@ export class EngineManager {
   private stopping = false;
   private restartTimer: NodeJS.Timeout | null = null;
 
-  constructor(
-    private readonly dataDir: string,
-    private readonly modelDir: string,
-    private readonly concurrency: number,
-  ) {}
+  constructor(private readonly opts: EngineLaunchOptions) {}
 
   // ── 对外 ────────────────────────────────────────────────
 
@@ -86,6 +116,7 @@ export class EngineManager {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    stopRegistering();
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -177,22 +208,50 @@ export class EngineManager {
 
     const py = this.pythonPath();
     const cwd = this.engineCwd();
+    // A16：局域网配对没开就只听本机，安卓端连不上也碰不到——这是默认状态；
+    // 开了才换成 0.0.0.0，同时必须带 --pairing-token，见下面的中间件校验
+    const host = this.opts.lanPairingEnabled ? '0.0.0.0' : '127.0.0.1';
     const args = [
       '-m',
       'synorive.main',
       '--host',
-      '127.0.0.1',
+      host,
       '--port',
       String(port),
       '--data-dir',
-      this.dataDir,
+      this.opts.dataDir,
       '--model-dir',
-      this.modelDir,
+      this.opts.modelDir,
       '--concurrency',
-      String(this.concurrency),
+      String(this.opts.concurrency),
     ];
+    // 🔴 之前这几个开关只存在于 settings.json 里，从没被真正传给引擎——
+    // 用户在设置页打开"云端增强"或"人脸检测与聚类"，实际上什么都不会发生，
+    // 因为 EngineConfig 对应的字段永远是构造函数默认值 False。
+    // 界面上的开关变了却没有连到后端，是最容易被忽略的一类"半成品功能"。
+    if (this.opts.allowCloud) args.push('--allow-cloud');
+    if (this.opts.enableImageDescription) args.push('--enable-image-description');
+    if (this.opts.enableFaceClustering) args.push('--enable-face-clustering');
+    if (this.opts.lanPairingEnabled) args.push('--pairing-token', this.opts.pairingToken);
 
-    console.log(`[engine] 启动 ${py} ${args.join(' ')}  (cwd=${cwd})`);
+    // 联网这一路：**关掉时显式传 --no-network**，而不是"什么都不传靠默认值"。
+    // 引擎侧的默认是开着的（这是它的主要用途之一），
+    // 靠默认值意味着以后任何一处默认值变动都会把这道隐私闸悄悄打开
+    if (!this.opts.allowNetwork) args.push('--no-network');
+    if (this.opts.webLineupSize > 0) args.push('--web-lineup', String(this.opts.webLineupSize));
+    if (this.opts.verifyLevel) args.push('--verify-level', this.opts.verifyLevel);
+    if (this.opts.webEngines.length) args.push('--web-engines', this.opts.webEngines.join(','));
+    if (this.opts.trustProfile) args.push('--trust-profile', this.opts.trustProfile);
+    for (const [id, v] of Object.entries(this.opts.webKeys)) {
+      if (v) args.push('--web-key', `${id}=${v}`);
+    }
+
+    // 令牌和 API Key 都是密钥，日志里必须打码 ——
+    // 照抄 args 会把它们明文写进控制台和日志文件
+    const loggedArgs = args.map((a, i) =>
+      args[i - 1] === '--pairing-token' || args[i - 1] === '--web-key' ? '***' : a,
+    );
+    console.log(`[engine] 启动 ${py} ${loggedArgs.join(' ')}  (cwd=${cwd})`);
 
     const child = spawn(py, args, {
       cwd,
@@ -225,6 +284,7 @@ export class EngineManager {
       console.warn(`[engine] 进程退出 code=${code} signal=${signal}`);
       this.ws?.close();
       this.ws = null;
+      stopRegistering(); // 旧端口已经死了，别再对着它心跳
       if (this.child === child) this.child = null;
       if (!this.stopping) this.scheduleRestart(`引擎退出（code=${code}）`);
     });
@@ -247,6 +307,9 @@ export class EngineManager {
     this.patch({ lifecycle: 'ready', bootMs: Date.now() - t0 });
     console.log(`[engine] 就绪，耗时 ${Date.now() - t0}ms，端口 ${port}`);
     this.connectEvents(port);
+    // 端口每次启动都会变，必须重新告诉引擎渲染服务在哪 ——
+    // 这一步失败不影响引擎其余功能，Google/Yandex 会老实报"渲染不可用"
+    startRegistering(port);
   }
 
   private async waitHealthy(port: number): Promise<boolean> {

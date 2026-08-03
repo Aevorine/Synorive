@@ -1,6 +1,7 @@
 {
   "name": "@synorive/desktop",
   "version": "0.1.0",
+  "license": "AGPL-3.0-or-later",
   "private": true,
   "type": "module",
   "description": "Synorive —— 多模态并发分析与极速内容检索",

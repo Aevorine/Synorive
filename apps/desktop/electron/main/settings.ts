@@ -11,6 +11,7 @@
  */
 
 import { app } from 'electron';
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { AppSettings } from '@synorive/shared-types';
@@ -57,8 +58,28 @@ export function defaultSettings(): AppSettings {
     // 隐私敏感，默认关，用户要自己在设置里开
     enableFaceClustering: false,
     enableAuthenticatedFetch: false,
+    // 会把图片发去云端做描述，默认关且还要 cloud.enabled 一起打开才生效
+    enableImageDescription: false,
     // 默认走 CPU；依赖医生里有"启用核显加速"按钮
     enableGpuAcceleration: false,
+    // A16 安卓配对：默认关，开了才会让引擎监听局域网
+    lanPairingEnabled: false,
+    // 令牌一开机就生成好（哪怕配对功能没开），开配对时不用现等一次生成
+    pairingToken: randomBytes(16).toString('hex'),
+
+    // ── E12 隐私围栏 / 联网搜索 ────────────────────────────
+    // 默认**开**：这是这个软件的主要用途之一，默认关掉等于装完发现半个
+    // 功能是灰的。它和 cloud.enabled 分开——那个默认关，因为它发出去的
+    // 是你的资料原文，性质完全不同
+    allowNetwork: true,
+    // 0 = 全部派出。排班要先有历史数据才有意义，冷启动时全派反而收敛更快
+    webLineupSize: 0,
+    verifyLevel: 'counter',
+    webEndpoints: {
+      // 自建实例的默认地址。scripts/setup-searxng.mjs 起的就是这个端口
+      searxng: 'http://127.0.0.1:8888',
+    },
+    webEngines: [],
   };
 }
 

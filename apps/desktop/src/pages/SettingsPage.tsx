@@ -1,6 +1,29 @@
-import { FolderPlus, X } from 'lucide-react';
-import type { AppSettings, Density, EyeComfortLevel, FontScheme } from '@synorive/shared-types';
+import { useEffect, useState } from 'react';
+import { CheckCircle2, FolderPlus, Loader2, XCircle, X } from 'lucide-react';
+import type {
+  AppSettings,
+  CloudConfig,
+  Density,
+  EyeComfortLevel,
+  FontScheme,
+} from '@synorive/shared-types';
+import { PrivacyFence } from '../components/PrivacyFence';
 import { PAGE_TITLES, useApp } from '../lib/store';
+
+const CLOUD_PROVIDERS: { id: CloudConfig['provider']; label: string; hint: string }[] = [
+  { id: 'none', label: '不用', hint: '右栏生成版简报不可用，左栏摘录版不受影响' },
+  {
+    id: 'openai-compatible',
+    label: 'OpenAI 兼容',
+    hint: '官方 OpenAI，或任何兼容 /chat/completions 协议的端点（国内中转、自建 vLLM/Ollama 等）',
+  },
+  { id: 'anthropic', label: 'Claude 原生', hint: 'Anthropic 官方 /v1/messages 协议' },
+];
+
+const DEFAULT_BASE_URL: Record<string, string> = {
+  'openai-compatible': 'https://api.openai.com/v1',
+  anthropic: 'https://api.anthropic.com',
+};
 
 /**
  * 设置
@@ -211,9 +234,74 @@ export function SettingsPage() {
           </button>
         </section>
 
-        {/* ── 隐私 ────────────────────────────────────── */}
+        {/* ── 隐私围栏（E12/U9）──────────────────────────
+            所有会把数据往外发或往库里记的开关收在这一处。
+            它们原本散在这一页的五个不同区块里 —— 想回答
+            「这个软件现在会发出去什么」得把整页翻一遍，还未必翻全。
+            下面那些单项开关保留着（改起来更细），这一块是总览。 */}
         <section className="panel">
-          <h2 className="panel__title">隐私</h2>
+          <PrivacyFence settings={settings} onChange={patch} />
+        </section>
+
+        {/* ── 联网搜索（S1 / V 档位 / S3 Key）───────────── */}
+        <section className="panel">
+          <h2 className="panel__title">联网搜索</h2>
+
+          <Field
+            label="每轮派几家引擎"
+            hint="按每家最近的成功率和耗时自动排班，再固定留一个「探索位」给最久没试过的那家——
+                  没有探索位的话，一家暂时失败的引擎会永远没机会翻身。0 = 全部派出。"
+          >
+            <input
+              type="range"
+              min={0}
+              max={8}
+              value={settings.webLineupSize ?? 0}
+              onChange={(e) => patch({ webLineupSize: Number(e.target.value) })}
+            />
+            <span className="field__value">
+              {(settings.webLineupSize ?? 0) === 0 ? '全部派出' : `${settings.webLineupSize} 家 + 探索位`}
+            </span>
+          </Field>
+
+          <Field
+            label="核查力度"
+            hint="决定要不要主动去找反驳材料。越深越准，也越慢。"
+          >
+            <select
+              value={settings.verifyLevel ?? 'counter'}
+              onChange={(e) =>
+                patch({ verifyLevel: e.target.value as 'annotate' | 'counter' | 'claim' })
+              }
+            >
+              <option value="annotate">只标注 —— 零延迟，不额外出网</option>
+              <option value="counter">反向检索 —— +1~2 秒，主动搜辟谣/溯源/撤稿（推荐）</option>
+              <option value="claim">逐句核查 —— 慢很多，每条断言单独搜一轮</option>
+            </select>
+          </Field>
+
+          <Field
+            label="自建 SearXNG 地址"
+            hint="实测 Google/DuckDuckGo/Yandex 直连全被挡、公共 SearXNG 实例全部 429。
+                  自建一个是免费拿到这些引擎结果的唯一现实路径。
+                  跑 node scripts/setup-searxng.mjs 看它打算怎么装（默认干跑，加 --apply 才真装）。"
+          >
+            <input
+              type="text"
+              value={settings.webEndpoints?.searxng ?? ''}
+              placeholder="http://127.0.0.1:8888"
+              onChange={(e) =>
+                patch({
+                  webEndpoints: { ...(settings.webEndpoints ?? {}), searxng: e.target.value },
+                })
+              }
+            />
+          </Field>
+        </section>
+
+        {/* ── 隐私（单项细调）─────────────────────────── */}
+        <section className="panel">
+          <h2 className="panel__title">隐私（单项）</h2>
 
           <Toggle
             label="人脸检测与聚类"
@@ -254,23 +342,266 @@ export function SettingsPage() {
           <h2 className="panel__title">云端增强（可选）</h2>
           <p className="panel__hint">
             向量化、OCR、语音转写全部在本机离线完成，永远不上云。
-            只有「图片详细描述」「视频剧情摘要」「复杂问答」这类深度理解才会调云端，
-            而且必须你在这里明确打开。每个目录还可以单独设「禁止上云」。
+            这里配的是研究工作台「右栏生成版简报」专用的通道——
+            把左栏的原文摘录改写得更通顺，且每句仍挂着真实出处链接，不会凭空编来源。
+            不配也完全能用，左栏摘录版不需要它。
           </p>
           <Toggle
             label="启用云端增强"
-            hint="打开后会出现接口配置。密钥存在系统凭据管理器里，不写进配置文件。"
+            hint="打开后下面会出现通道配置。密钥经系统凭据管理器加密存放，不写进配置文件。"
             checked={settings.cloud.enabled}
             onChange={(v) => patch({ cloud: { ...settings.cloud, enabled: v } })}
           />
-          {settings.cloud.enabled && (
-            <p className="panel__hint">
-              接口配置界面还在做（五期）。当前状态：
-              {settings.cloud.provider === 'none' ? '未接入任何厂商' : settings.cloud.provider}。
-            </p>
-          )}
+          {settings.cloud.enabled && <CloudProviderConfig settings={settings} patch={patch} />}
+        </section>
+
+        {/* ── 安卓配对（A16） ──────────────────────────── */}
+        <section className="panel">
+          <h2 className="panel__title">安卓配对</h2>
+          <p className="panel__hint">
+            手机上的 Synorive 精简客户端通过局域网连这台机器：搜索、投稿、以图搜图
+            都转发给桌面端这台引擎处理，手机自己只存一份最近结果的轻量缓存。
+          </p>
+          <Toggle
+            label="允许局域网设备连接"
+            hint="打开后引擎从只听本机（127.0.0.1）改成监听局域网（0.0.0.0）——
+                  同一局域网内的其他设备能看到这台机器在跑这个服务。默认关。
+                  没有下面的配对令牌，光知道地址也连不进来。"
+            checked={settings.lanPairingEnabled}
+            onChange={(v) => patch({ lanPairingEnabled: v })}
+            danger
+          />
+          {settings.lanPairingEnabled && <AndroidPairingInfo settings={settings} patch={patch} />}
         </section>
       </div>
+    </div>
+  );
+}
+
+/** 配对面板：地址 + 端口 + 令牌，手机端"手动配对"界面照着填这三样。 */
+function AndroidPairingInfo({
+  settings,
+  patch,
+}: {
+  settings: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  const engine = useApp((s) => s.engine);
+  const [addrs, setAddrs] = useState<string[]>([]);
+
+  useEffect(() => {
+    void window.synorive.sys.getLanAddresses().then(setAddrs);
+  }, []);
+
+  const port = engine?.port;
+  const regenerateToken = () => {
+    // 32 个十六进制字符的新令牌——旧手机端会立刻配对失败，得重新填一遍，
+    // 这是有意的："怀疑令牌泄露了就点一下，逼所有旧连接失效"
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    patch({ pairingToken: token });
+  };
+
+  return (
+    <div className="pairing-info">
+      <Field label="地址" hint="手机端「配对设置」里填这几个之一——具体哪个是本机地址，看手机连的是哪个 Wi-Fi/网段。">
+        {addrs.length === 0 ? (
+          <p className="field__hint">没探测到局域网 IPv4 地址——检查一下这台机器是不是连着 Wi-Fi/网线。</p>
+        ) : (
+          <ul className="pairing-info__addrs">
+            {addrs.map((a) => (
+              <li key={a}>
+                <code>{a}{port ? `:${port}` : ''}</code>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Field>
+
+      <Field label="配对令牌" hint="手机端「配对设置」里的令牌栏填这个，一字不差（区分大小写）。">
+        <div className="pairing-info__token">
+          <code>{settings.pairingToken}</code>
+          <button className="btn btn--sm" onClick={regenerateToken} title="旧令牌立刻失效，所有已配对的手机要重新填">
+            换一个
+          </button>
+        </div>
+      </Field>
+
+      {!port && (
+        <p className="field__hint">引擎还没就绪，端口拿不到——等状态栏显示"就绪"再回来看这里。</p>
+      )}
+    </div>
+  );
+}
+
+/** 独立成组件是因为它自己管一份"还没保存"的草稿状态（密钥输入框不能受控成明文回显）。 */
+function CloudProviderConfig({
+  settings,
+  patch,
+}: {
+  settings: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  const cloud = settings.cloud;
+  const [hasKey, setHasKey] = useState(false);
+  const [keyDraft, setKeyDraft] = useState('');
+  const [testState, setTestState] = useState<
+    { kind: 'idle' } | { kind: 'testing' } | { kind: 'ok'; reply?: string } | { kind: 'error'; msg: string }
+  >({ kind: 'idle' });
+
+  useEffect(() => {
+    void window.synorive.cloud.hasKey().then(setHasKey);
+  }, []);
+
+  const patchCloud = (p: Partial<CloudConfig>) => patch({ cloud: { ...cloud, ...p } });
+
+  const onProviderChange = (provider: CloudConfig['provider']) => {
+    patchCloud({
+      provider,
+      baseUrl: cloud.baseUrl || DEFAULT_BASE_URL[provider] || '',
+    });
+  };
+
+  const saveKey = async () => {
+    if (!keyDraft.trim()) return;
+    const ok = await window.synorive.cloud.setKey(keyDraft.trim());
+    if (ok) {
+      setHasKey(true);
+      setKeyDraft('');
+    } else {
+      setTestState({
+        kind: 'error',
+        msg: '这台机器的系统加密不可用，Key 没能安全存下来，已放弃保存（不会退化成明文存储）',
+      });
+    }
+  };
+
+  const clearKey = async () => {
+    await window.synorive.cloud.clearKey();
+    setHasKey(false);
+  };
+
+  const test = async () => {
+    setTestState({ kind: 'testing' });
+    const r = await window.synorive.cloud.test({
+      provider: cloud.provider,
+      baseUrl: cloud.baseUrl || DEFAULT_BASE_URL[cloud.provider] || '',
+      chatModel: cloud.chatModel || '',
+      // 输入框里还没保存的草稿优先用来测；已保存过的话传空串，
+      // 主进程那边测试逻辑会退回去用已存的 Key（见 index.ts 的 cloud:test 处理）
+      apiKey: keyDraft.trim(),
+    });
+    setTestState(r.ok ? { kind: 'ok', reply: r.reply } : { kind: 'error', msg: r.error ?? '未知错误' });
+  };
+
+  return (
+    <div className="cloudcfg">
+      <Field label="通道" hint={CLOUD_PROVIDERS.find((p) => p.id === cloud.provider)?.hint ?? ''}>
+        <Segmented
+          options={CLOUD_PROVIDERS.map((p) => ({ id: p.id, label: p.label, title: p.hint }))}
+          value={cloud.provider}
+          onChange={(v) => onProviderChange(v as CloudConfig['provider'])}
+        />
+      </Field>
+
+      {cloud.provider !== 'none' && (
+        <>
+          <Field label="接口地址" hint="默认已经填好官方地址，只有走中转/自建端点时才需要改">
+            <input
+              className="textinput"
+              value={cloud.baseUrl ?? ''}
+              placeholder={DEFAULT_BASE_URL[cloud.provider]}
+              onChange={(e) => patchCloud({ baseUrl: e.target.value })}
+            />
+          </Field>
+
+          <Field label="模型名" hint="填服务商那边定义的模型标识，比如 gpt-4o-mini、claude-opus-5">
+            <input
+              className="textinput"
+              value={cloud.chatModel ?? ''}
+              placeholder="例如 gpt-4o-mini"
+              onChange={(e) => patchCloud({ chatModel: e.target.value })}
+            />
+          </Field>
+
+          <Field
+            label="视觉模型（可选）"
+            hint="给「图片详细描述」用的模型标识。很多厂商的纯文本模型不能读图，
+                  要单独填一个支持视觉输入的型号，比如 gpt-4o、claude-opus-5。不填就沿用上面的模型名试试看。"
+          >
+            <input
+              className="textinput"
+              value={cloud.visionModel ?? ''}
+              placeholder="例如 gpt-4o"
+              onChange={(e) => patchCloud({ visionModel: e.target.value })}
+            />
+          </Field>
+
+          <Field
+            label="API Key"
+            hint={
+              hasKey
+                ? '已保存（加密存放，这里不会显示明文）。要换一把就直接填新的再点保存。'
+                : '还没配置。粘贴进来后点保存——保存前可以先点"测试连接"验证填得对不对。'
+            }
+          >
+            <div className="keyrow">
+              <input
+                className="textinput"
+                type="password"
+                value={keyDraft}
+                placeholder={hasKey ? '●●●●●●●●●●●●' : '粘贴 API Key'}
+                onChange={(e) => setKeyDraft(e.target.value)}
+                autoComplete="off"
+              />
+              <button className="btn btn--sm" onClick={() => void saveKey()} disabled={!keyDraft.trim()}>
+                保存
+              </button>
+              {hasKey && (
+                <button className="btn btn--sm" onClick={() => void clearKey()}>
+                  清除
+                </button>
+              )}
+            </div>
+          </Field>
+
+          <div className="panel__row">
+            <button
+              className="btn btn--sm"
+              onClick={() => void test()}
+              disabled={testState.kind === 'testing' || (!hasKey && !keyDraft.trim()) || !cloud.chatModel}
+            >
+              {testState.kind === 'testing' ? (
+                <>
+                  <Loader2 size={13} className="spin" strokeWidth={2} /> 测试中…
+                </>
+              ) : (
+                '测试连接'
+              )}
+            </button>
+            {testState.kind === 'ok' && (
+              <span className="testresult testresult--ok">
+                <CheckCircle2 size={14} strokeWidth={2} /> 连通了，模型回复了「{testState.reply}」
+              </span>
+            )}
+            {testState.kind === 'error' && (
+              <span className="testresult testresult--error">
+                <XCircle size={14} strokeWidth={2} /> {testState.msg}
+              </span>
+            )}
+          </div>
+
+          <Toggle
+            label="图片详细描述（C4）"
+            hint="投喂图片时顺带把它发给上面配置的视觉模型，生成一段中文描述并入索引——
+                  用来搜「有猫的照片」这类光靠 OCR 找不到的图。默认关：这意味着图片内容会被发送到云端。"
+            checked={settings.enableImageDescription}
+            onChange={(v) => patch({ enableImageDescription: v })}
+            danger
+          />
+        </>
+      )}
     </div>
   );
 }

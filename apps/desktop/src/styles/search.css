@@ -111,6 +111,13 @@
   border-radius: var(--syn-radius-md);
 }
 
+/* L3 论文章节标签：和页码/时间戳同形状但换一个色系，
+   一眼能分清"这是位置"还是"这是章节"，不用读文字内容才知道 */
+.card__loc--section {
+  color: var(--syn-color-info);
+  background: var(--syn-color-info-subtle);
+}
+
 .card__snippet {
   font-size: var(--syn-fs-body); /* 小四 */
   color: var(--syn-color-text-secondary);
@@ -563,3 +570,173 @@
   border-color: var(--syn-color-warning);
 }
 .recovery--weak .recovery__glyph { color: var(--syn-color-warning); }
+
+/* ============================================================
+ * N6 「这篇能回答哪些问题」—— 卡片入口 + 抽屉
+ *
+ * 和搜索是相反的方向：搜索的前提是你已经知道要问什么，
+ * 而面对一篇四十页的 PDF，难的恰恰是「我该问它什么」。
+ * ============================================================ */
+
+.card__ask {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 var(--syn-space-xs);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+  background: transparent;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+  cursor: pointer;
+}
+
+.card__ask:hover {
+  border-color: var(--syn-color-primary);
+  color: var(--syn-color-primary);
+}
+
+/* 抽屉盖在右侧，不替换列表 ——
+   用户是在「浏览库」的过程中顺手问一篇，替换掉列表会打断这件事 */
+.qp {
+  position: fixed;
+  top: var(--syn-layout-top-bar);
+  right: 0;
+  bottom: var(--syn-layout-status-bar);
+  width: min(30rem, 44vw);
+  z-index: var(--syn-z-overlay);
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-md);
+  background: var(--syn-color-bg-elevated);
+  border-left: 1px solid var(--syn-color-border);
+  box-shadow: var(--syn-shadow-lg);
+  overflow-y: auto;
+}
+
+.qp__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+}
+
+.qp__head h3 {
+  margin: 0;
+  font-size: var(--syn-fs-section-title);
+}
+
+.qp__close {
+  margin-left: auto;
+  padding: var(--syn-space-xs);
+  border: none;
+  border-radius: var(--syn-radius-sm);
+  background: transparent;
+  color: var(--syn-color-text-muted);
+  cursor: pointer;
+}
+
+.qp__close:hover {
+  background: var(--syn-color-bg-sunken);
+  color: var(--syn-color-text);
+}
+
+.qp__doc {
+  margin: 0;
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-emphasis);
+}
+
+.qp__note,
+.qp__hint {
+  margin: 0;
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+}
+
+.qp__hint {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  color: var(--syn-color-text-muted);
+}
+
+.qp__err {
+  margin: 0;
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}
+
+.qp__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.qp__item {
+  border-bottom: 1px solid var(--syn-color-border);
+}
+
+.qp__item:last-child {
+  border-bottom: none;
+}
+
+.qp__q {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: var(--syn-space-sm);
+  width: 100%;
+  padding: var(--syn-space-sm) 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.qp__q:hover .qp__text {
+  color: var(--syn-color-primary);
+}
+
+.qp__kind {
+  padding: 0 var(--syn-space-xs);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-sunken);
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+
+/* 来自章节标题的最可靠，给它一个不同的颜色 —— 用户会慢慢学会
+   「蓝色那种更靠谱」，比在旁边写一行解释有效得多 */
+.qp__kind--section {
+  background: var(--syn-color-primary-subtle);
+  color: var(--syn-color-primary);
+}
+
+.qp__text {
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-body);
+}
+
+.qp__where {
+  grid-column: 2;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+
+.qp__body {
+  margin: 0 0 var(--syn-space-sm);
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  background: var(--syn-color-bg-sunken);
+  border-left: 3px solid var(--syn-color-primary);
+  border-radius: var(--syn-radius-md);
+  font-family: inherit;
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 20em;
+  overflow-y: auto;
+}

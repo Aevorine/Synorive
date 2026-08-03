@@ -31,6 +31,7 @@ export interface SynoriveApi {
     openPath: (p: string) => Promise<string>;
     openExternal: (url: string) => Promise<void>;
     pathForFile: (file: File) => string;
+    getLanAddresses: () => Promise<string[]>;
   };
   clip: {
     list: () => Promise<ClipEntry[]>;
@@ -43,6 +44,17 @@ export interface SynoriveApi {
   theme: {
     getSystem: () => Promise<'light' | 'dark'>;
     onSystemChanged: (cb: (t: 'light' | 'dark') => void) => Unsubscribe;
+  };
+  cloud: {
+    hasKey: () => Promise<boolean>;
+    setKey: (apiKey: string) => Promise<boolean>;
+    clearKey: () => Promise<void>;
+    test: (draft: {
+      provider: string;
+      baseUrl: string;
+      chatModel: string;
+      apiKey: string;
+    }) => Promise<{ ok: boolean; reply?: string; error?: string }>;
   };
 }
 

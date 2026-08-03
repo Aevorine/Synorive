@@ -51,6 +51,8 @@ const api = {
      * 而它只能在 preload 里调 —— 这是「投喂即搜 E1」的地基。
      */
     pathForFile: (file: File): string => webUtils.getPathForFile(file),
+    /** A16 安卓配对面板：这台机器所有局域网 IPv4 地址 */
+    getLanAddresses: (): Promise<string[]> => ipcRenderer.invoke(IPC.sysGetLanAddresses),
   },
 
   /** E4 剪贴板哨兵。内容只在主进程内存里，这里拿到的是快照。 */
@@ -67,6 +69,20 @@ const api = {
   theme: {
     getSystem: (): Promise<'light' | 'dark'> => ipcRenderer.invoke(IPC.themeGetSystem),
     onSystemChanged: (cb: (t: 'light' | 'dark') => void) => on(IPC.themeSystemChanged, cb),
+  },
+
+  /** R8 云端简报：Key 只经这几个方法进出，渲染层拿不到明文、拿不到文件路径 */
+  cloud: {
+    hasKey: (): Promise<boolean> => ipcRenderer.invoke(IPC.cloudHasKey),
+    setKey: (apiKey: string): Promise<boolean> => ipcRenderer.invoke(IPC.cloudSetKey, apiKey),
+    clearKey: (): Promise<void> => ipcRenderer.invoke(IPC.cloudClearKey),
+    test: (draft: {
+      provider: string;
+      baseUrl: string;
+      chatModel: string;
+      apiKey: string;
+    }): Promise<{ ok: boolean; reply?: string; error?: string }> =>
+      ipcRenderer.invoke(IPC.cloudTest, draft),
   },
 } as const;
 

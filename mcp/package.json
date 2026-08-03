@@ -1,6 +1,7 @@
 {
   "name": "@synorive/mcp",
   "version": "0.1.0",
+  "license": "AGPL-3.0-or-later",
   "private": true,
   "type": "module",
   "description": "Synorive MCP 服务器 —— 让 Claude Code 直接调用本地内容库",

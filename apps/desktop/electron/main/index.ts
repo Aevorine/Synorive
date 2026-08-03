@@ -6,7 +6,15 @@ import { BrowserWindow, app, dialog, globalShortcut, ipcMain, nativeTheme, shell
 import type { AppSettings } from '@synorive/shared-types';
 import { IPC, type ClipEntry, type EngineProcessState } from '../shared/ipc-contract.js';
 import { ClipboardWatcher } from './clipboard.js';
+import {
+  clearCloudKey,
+  hasCloudKey,
+  loadCloudKey,
+  loadEngineKeys,
+  saveCloudKey,
+} from './cloud-keys.js';
 import { EngineManager } from './engine.js';
+import { teardown as teardownRenderer } from './render.js';
 import { ensureDataDirs, loadSettings, patchSettings } from './settings.js';
 import { TrayController, setLaunchAtLogin } from './tray.js';
 import { createMainWindow } from './window.js';
@@ -122,12 +130,45 @@ async function archiveClip(e: ClipEntry): Promise<boolean> {
 
 // ── 引擎 ────────────────────────────────────────────────────
 
+/**
+ * 引擎要的那张 key 表 = 明文端点（自建 SearXNG 地址）+ 加密存的 API Key。
+ *
+ * 两类东西合成一张表交给引擎，是因为引擎侧的 `keys` 参数本来就是
+ * 「这家引擎的那个字符串配置」——SearXNG 要的是地址、Brave 要的是 Key，
+ * 形状一样。**但存的地方必须分开**：地址不是秘密，加密存它只会
+ * 让用户想改的时候找不到地方改。
+ */
+function collectWebKeys(): Record<string, string> {
+  return { ...(settings.webEndpoints ?? {}), ...loadEngineKeys() };
+}
+
 function startEngine(): void {
-  engine = new EngineManager(settings.dataDir, settings.modelDir, settings.concurrency);
+  engine = new EngineManager({
+    dataDir: settings.dataDir,
+    modelDir: settings.modelDir,
+    concurrency: settings.concurrency,
+    allowCloud: settings.cloud.enabled,
+    enableImageDescription: settings.enableImageDescription,
+    enableFaceClustering: settings.enableFaceClustering,
+    lanPairingEnabled: settings.lanPairingEnabled,
+    pairingToken: settings.pairingToken,
+    // 联网搜索这一路（E12/U9 · S1 · V5）。`?? true` 是给老 settings.json
+    // 兜底 —— 升级上来的用户配置里没有这个字段，读出来是 undefined，
+    // 不兜底的话会被当成 false，用户升级完发现联网功能整个消失了
+    allowNetwork: settings.allowNetwork ?? true,
+    webLineupSize: settings.webLineupSize ?? 0,
+    verifyLevel: settings.verifyLevel ?? 'counter',
+    webEngines: settings.webEngines ?? [],
+    trustProfile: settings.trustProfile ? JSON.stringify(settings.trustProfile) : '',
+    webKeys: collectWebKeys(),
+  });
 
   engine.onStateChange((s: EngineProcessState) => {
     broadcast(IPC.engineStateChanged, s);
     tray?.setEngineState(s);
+    // 引擎每次就绪（含重启）都要重新推一遍云端配置 —— 引擎侧密钥只存内存，
+    // 重启就没了，不重推的话用户会以为"设置好了怎么又失效了"
+    if (s.lifecycle === 'ready') void pushCloudConfig();
   });
 
   engine.onEngineEvent((ev) => {
@@ -135,6 +176,28 @@ function startEngine(): void {
   });
 
   void engine.start();
+}
+
+/** 把当前设置 + 解密出来的 Key 推给引擎。引擎没就绪时静默跳过，下次就绪会自动补推。 */
+async function pushCloudConfig(): Promise<void> {
+  const port = engine?.getState().port;
+  if (!port) return;
+  const apiKey = settings.cloud.enabled ? (loadCloudKey() ?? '') : '';
+  const provider = settings.cloud.enabled ? settings.cloud.provider : 'none';
+  try {
+    await fetch(`http://127.0.0.1:${port}/api/cloud/configure`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider,
+        apiKey,
+        baseUrl: settings.cloud.baseUrl ?? '',
+        chatModel: settings.cloud.chatModel ?? '',
+      }),
+    });
+  } catch (err) {
+    console.warn('[cloud] 推送配置到引擎失败：', err);
+  }
 }
 
 // ── IPC ─────────────────────────────────────────────────────
@@ -166,11 +229,33 @@ function registerIpc(): void {
     if (before.clipboardAutoArchiveLinks !== settings.clipboardAutoArchiveLinks) {
       clip?.setAutoArchiveLinks(settings.clipboardAutoArchiveLinks);
     }
-    // 数据目录 / 并发度变了要重启引擎才生效
+    if (JSON.stringify(before.cloud) !== JSON.stringify(settings.cloud)) {
+      void pushCloudConfig();
+    }
+    // 数据目录 / 并发度 / 隐私围栏开关变了要重启引擎才生效——
+    // allowCloud / enableImageDescription / enableFaceClustering 都是启动时
+    // 传给 Python 进程的命令行参数（EngineConfig 的字段，不像云端 Key 那样
+    // 能在引擎跑着的时候用 /api/cloud/configure 热更新），只改 settings.json
+    // 不重启引擎的话，界面上的开关和后端实际生效的状态会对不上。
     if (
       before.dataDir !== settings.dataDir ||
       before.modelDir !== settings.modelDir ||
-      before.concurrency !== settings.concurrency
+      before.concurrency !== settings.concurrency ||
+      before.cloud.enabled !== settings.cloud.enabled ||
+      before.enableImageDescription !== settings.enableImageDescription ||
+      before.enableFaceClustering !== settings.enableFaceClustering ||
+      before.lanPairingEnabled !== settings.lanPairingEnabled ||
+      before.pairingToken !== settings.pairingToken ||
+      // 联网这一路同理，全是启动参数。
+      // 🔴 `allowNetwork` 尤其不能漏 —— 用户在隐私围栏里点「一键全断网」，
+      // 如果引擎不重启，它照样能出网，而界面显示的是已断网。
+      // 那是最坏的一种半成品：**看起来生效了，实际没有**
+      before.allowNetwork !== settings.allowNetwork ||
+      before.webLineupSize !== settings.webLineupSize ||
+      before.verifyLevel !== settings.verifyLevel ||
+      JSON.stringify(before.webEngines) !== JSON.stringify(settings.webEngines) ||
+      JSON.stringify(before.webEndpoints) !== JSON.stringify(settings.webEndpoints) ||
+      JSON.stringify(before.trustProfile) !== JSON.stringify(settings.trustProfile)
     ) {
       void engine?.stop().then(() => startEngine());
     }
@@ -211,6 +296,25 @@ function registerIpc(): void {
     return shell.openExternal(url);
   });
 
+  // A16：安卓配对页要显示"手机该填哪个 IP"，列出这台机器所有局域网 IPv4 地址
+  // （虚拟网卡、VPN 会插进来好几个，全列出来让用户自己认——猜哪个是"真的"猜错的代价
+  // 比多列几行 UI 更大）
+  ipcMain.handle(IPC.sysGetLanAddresses, () => {
+    const nets = require('node:os').networkInterfaces() as Record<
+      string,
+      Array<{ address: string; family: string; internal: boolean }> | undefined
+    >;
+    const out: string[] = [];
+    for (const list of Object.values(nets)) {
+      for (const info of list ?? []) {
+        if (!info.internal && (info.family === 'IPv4' || info.family === 4)) {
+          out.push(info.address);
+        }
+      }
+    }
+    return out;
+  });
+
   // E4 剪贴板哨兵
   ipcMain.handle(IPC.clipList, () => clip?.list() ?? []);
   ipcMain.handle(IPC.clipArchive, (_e, id: string) => {
@@ -231,6 +335,50 @@ function registerIpc(): void {
   nativeTheme.on('updated', () => {
     broadcast(IPC.themeSystemChanged, nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
   });
+
+  // R8 云端简报：Key 走 safeStorage，settings.json 里只留一个"设没设"的布尔值
+  ipcMain.handle(IPC.cloudHasKey, () => hasCloudKey());
+  ipcMain.handle(IPC.cloudSetKey, (_e, apiKey: string) => {
+    const ok = saveCloudKey(apiKey);
+    if (ok) void pushCloudConfig();
+    return ok;
+  });
+  ipcMain.handle(IPC.cloudClearKey, () => {
+    clearCloudKey();
+    void pushCloudConfig();
+  });
+  ipcMain.handle(
+    IPC.cloudTest,
+    async (
+      _e,
+      draft: { provider: string; baseUrl: string; chatModel: string; apiKey: string },
+    ) => {
+      const port = engine?.getState().port;
+      if (!port) return { ok: false, error: '引擎还没就绪' };
+      try {
+        // 输入框里的草稿为空，说明用户测的是"已经保存过的那把 Key"，
+        // 不是没填——这时候要从 safeStorage 读出真实值，不能拿空串去配置
+        // （拿空串配的话，已保存过 Key 的用户点"测试连接"必然失败，
+        //  他会以为自己保存出了问题，而实际上问题出在这个 IPC 处理逻辑没接上）
+        const apiKey = draft.apiKey || loadCloudKey() || '';
+        await fetch(`http://127.0.0.1:${port}/api/cloud/configure`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...draft, apiKey }),
+        });
+        const r = await fetch(`http://127.0.0.1:${port}/api/cloud/test`, { method: 'POST' });
+        const body = (await r.json().catch(() => ({}))) as { detail?: string; reply?: string };
+        if (!r.ok) return { ok: false, error: body.detail ?? `HTTP ${r.status}` };
+        return { ok: true, reply: body.reply };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      } finally {
+        // 测试用的草稿别留在引擎里——把真正保存过的配置推回去，
+        // 没保存过就是 none，不能让一次"测试"意外地让云端功能变成可用状态
+        void pushCloudConfig();
+      }
+    },
+  );
 }
 
 // ── 生命周期 ─────────────────────────────────────────────────
@@ -296,6 +444,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', (e) => {
   globalShortcut.unregisterAll();
+  teardownRenderer(); // 隐藏窗口和渲染代理的 HTTP 服务不该活过主进程
   if (engine) {
     e.preventDefault();
     const eng = engine;

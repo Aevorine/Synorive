@@ -32,7 +32,9 @@ class EngineUnavailable extends Error {
   }
 }
 
-async function call<T>(path: string, init?: RequestInit, signal?: AbortSignal): Promise<T> {
+// 导出给 webApi.ts 复用——联网搜索/云端简报是独立的一批类型（见那边的注释），
+// 但走的是同一个"引擎端口从哪拿""怎么拼错误信息"的逻辑，不用另写一份
+export async function call<T>(path: string, init?: RequestInit, signal?: AbortSignal): Promise<T> {
   if (basePort == null) throw new EngineUnavailable();
   const r = await fetch(`http://127.0.0.1:${basePort}${path}`, {
     ...init,
@@ -85,7 +87,33 @@ export const api = {
 
   byImage: (req: { itemId?: string; path?: string; limit?: number; includeScenes?: boolean }) =>
     call<SearchResponse>('/api/search/by-image', { method: 'POST', body: JSON.stringify(req) }),
+
+  /**
+   * N6：这篇能回答哪些问题。
+   *
+   * 搜索的前提是你已经知道要问什么，而一篇四十页的 PDF 躺在库里，
+   * 难的恰恰是"我该问它什么"。这条接口反过来做 ——
+   * 从原文里读出它能回答的问题，每条都指向一个具体的段落。
+   */
+  questions: (itemId: string, limit = 20) =>
+    call<ItemQuestions>(`/api/items/${itemId}/questions?limit=${limit}`),
 };
+
+export interface ItemQuestions {
+  itemId: string;
+  title: string;
+  questions: {
+    question: string;
+    /** section 来自章节标题（最可靠）｜define/finding/method/compare/number 来自句式 */
+    kind: string;
+    chunkRowid: number;
+    section?: string;
+    page?: number;
+    preview: string;
+  }[];
+  chunkCount: number;
+  note: string;
+}
 
 export interface SceneRow {
   index: number;

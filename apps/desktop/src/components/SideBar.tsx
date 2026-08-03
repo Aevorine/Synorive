@@ -1,9 +1,9 @@
-import { FolderOpen, Network, PanelLeft, ScanSearch, Search, Settings, Clock } from 'lucide-react';
+import { FolderOpen, Globe, Network, PanelLeft, ScanSearch, Search, Settings, Clock } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { PAGE_TITLES, useApp, type PageId } from '../lib/store';
 
 /**
- * 侧栏：六个一级入口，多了就是没想清楚。
+ * 侧栏：七个一级入口，多了就是没想清楚。
  * 顺序按使用频率，不按功能分类。
  */
 const NAV: { id: PageId; icon: LucideIcon; hint: string }[] = [
@@ -12,6 +12,7 @@ const NAV: { id: PageId; icon: LucideIcon; hint: string }[] = [
   { id: 'analyze', icon: ScanSearch, hint: '投喂新内容并查看分析进度' },
   { id: 'timeline', icon: Clock, hint: '按时间铺开所有内容' },
   { id: 'graph', icon: Network, hint: '人物、地点、组织之间的关系' },
+  { id: 'research', icon: Globe, hint: '联网搜索、深挖简报、文献检索' },
 ];
 
 export function SideBar() {

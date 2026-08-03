@@ -536,6 +536,44 @@
   color: var(--syn-color-danger);
 }
 
+/* ── 安卓配对（A16） ─────────────────────────────────────── */
+
+.pairing-info {
+  margin-top: var(--syn-space-sm);
+  padding: var(--syn-space-md);
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-lg);
+}
+
+.pairing-info__addrs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+}
+
+.pairing-info__addrs code,
+.pairing-info__token code {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-md);
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  user-select: all;
+}
+
+.pairing-info__token {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  flex-wrap: wrap;
+}
+
+.pairing-info__token code {
+  word-break: break-all;
+}
+
 /* ---- 加载态 ---- */
 /* 起因是真实 bug：写成「!loading 且空 -> 空状态」「有数据 -> 内容」，
    加载中两个条件都不成立，页面一片空白，用户以为坏了。三态必须都有画面。 */
@@ -676,3 +714,57 @@
    否则用户既不能开、又看不懂为什么不能开。 */
 .toggle--disabled { cursor: not-allowed; }
 .toggle--disabled .toggle__label { color: var(--syn-color-text-muted); }
+
+/* ── R8 云端简报：设置页里的通道配置 ─────────────────────── */
+
+.cloudcfg {
+  margin-top: var(--syn-space-md);
+  padding-top: var(--syn-space-md);
+  border-top: 1px solid var(--syn-color-border);
+}
+
+.textinput {
+  width: 100%;
+  height: 34px;
+  padding-inline: var(--syn-space-md);
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text);
+  background: var(--syn-color-bg-sunken);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+}
+
+.textinput:focus {
+  outline: none;
+  border-color: var(--syn-color-border-focus);
+  box-shadow: var(--syn-shadow-focus);
+}
+
+.textinput::placeholder {
+  color: var(--syn-color-text-muted);
+}
+
+.keyrow {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+}
+
+.keyrow .textinput {
+  flex: 1;
+}
+
+.testresult {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-micro);
+}
+
+.testresult--ok {
+  color: var(--syn-color-success);
+}
+
+.testresult--error {
+  color: var(--syn-color-danger);
+}

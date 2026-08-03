@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { FolderPlus, Loader2, Search as SearchIcon } from 'lucide-react';
 import { ClipboardTray } from '../components/ClipboardTray';
+import { QuestionsPanel } from '../components/QuestionsPanel';
 import { Recovery } from '../components/Recovery';
 import { RankingPanel } from '../components/RankingPanel';
 import { SearchResults } from '../components/SearchResults';
@@ -15,6 +17,8 @@ const STAGE_LABEL: Record<string, string> = {
 };
 
 export function SearchPage() {
+  /** N6：正在看哪一篇的「能回答什么」。null = 抽屉关着 */
+  const [asking, setAsking] = useState<{ id: string; title: string } | null>(null);
   const { query, hits, stage, total, elapsedMs, loading, error, searched, recovery, weakMatch, filters } = useSearch();
   const setQuery = useSearch((s) => s.setQuery);
   const setFilters = useSearch((s) => s.setFilters);
@@ -117,11 +121,21 @@ export function SearchPage() {
             />
           )}
 
-          {hits.length > 0 && <SearchResults hits={hits} />}
+          {hits.length > 0 && (
+            <SearchResults hits={hits} onAsk={(id, t) => setAsking({ id, title: t })} />
+          )}
         </div>
 
         <RankingPanel />
       </div>
+
+      {asking && (
+        <QuestionsPanel
+          itemId={asking.id}
+          title={asking.title}
+          onClose={() => setAsking(null)}
+        />
+      )}
     </div>
   );
 }

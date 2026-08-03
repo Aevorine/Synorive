@@ -162,12 +162,18 @@ export class EngineClient {
     throw new Error('引擎 60 秒内没就绪。用 SYNORIVE_ENGINE_URL 指定一个已在运行的引擎试试');
   }
 
-  async call<T>(path: string, init?: RequestInit): Promise<T> {
+  /**
+   * `timeoutMs` 必须能按调用点单独给。
+   * 本地检索几十毫秒就回来了，而联网研究要搜五家再抓五篇正文，
+   * 一个 120 秒的固定值对前者太松、对后者又不够 ——
+   * 不够的那一头症状是"Claude Code 那边报超时，而引擎其实还在正常跑"。
+   */
+  async call<T>(path: string, init?: RequestInit, timeoutMs = 120_000): Promise<T> {
     const base = await this.url();
     const r = await fetch(`${base}${path}`, {
       ...init,
       headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!r.ok) {
       const text = await r.text().catch(() => '');
@@ -176,8 +182,8 @@ export class EngineClient {
     return (await r.json()) as T;
   }
 
-  post<T>(path: string, body: unknown): Promise<T> {
-    return this.call<T>(path, { method: 'POST', body: JSON.stringify(body) });
+  post<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
+    return this.call<T>(path, { method: 'POST', body: JSON.stringify(body) }, timeoutMs);
   }
 
   get<T>(path: string): Promise<T> {

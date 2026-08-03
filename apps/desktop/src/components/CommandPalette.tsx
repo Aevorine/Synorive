@@ -87,7 +87,7 @@ export function CommandPalette() {
   const commands = useMemo<Cmd[]>(() => {
     const pages: Array<[PageId, string]> = [
       ['search', 'ss'], ['library', 'wjglq'], ['analyze', 'fxzx'],
-      ['timeline', 'sjz'], ['graph', 'zsddtp'], ['settings', 'sz'],
+      ['timeline', 'sjz'], ['graph', 'zsddtp'], ['research', 'yjgzt'], ['settings', 'sz'],
     ];
     const list: Cmd[] = pages.map(([id, py]) => ({
       id: `go:${id}`,

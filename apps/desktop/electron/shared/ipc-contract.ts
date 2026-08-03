@@ -33,6 +33,8 @@ export const IPC = {
   openExternal: 'sys:open-external',
   openPath: 'sys:open-path',
   readDroppedPaths: 'sys:read-dropped-paths',
+  /** A16 安卓配对：列出本机所有局域网 IPv4 地址，给配对面板显示 */
+  sysGetLanAddresses: 'sys:get-lan-addresses',
 
   // ── E4 剪贴板哨兵 ────────────────────────────────────────
   clipList: 'clip:list',
@@ -45,6 +47,12 @@ export const IPC = {
   // ── 主题 ────────────────────────────────────────────────
   themeGetSystem: 'theme:get-system',
   themeSystemChanged: 'theme:system-changed',
+
+  // ── R8 云端简报生成：Key 走 safeStorage，不进 settings.json ──
+  cloudSetKey: 'cloud:set-key',
+  cloudHasKey: 'cloud:has-key',
+  cloudClearKey: 'cloud:clear-key',
+  cloudTest: 'cloud:test',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

@@ -220,6 +220,8 @@ export interface HitLocation {
   endSec?: number;
   /** 图片：命中区域（OCR 文字框），归一化坐标 0~1 */
   bbox?: { x: number; y: number; w: number; h: number };
+  /** L3：PDF 论文章节（Abstract/Method/Results…），非论文内容不存在这个字段 */
+  section?: string;
 }
 
 /** D6 可解释：为什么这条能匹配上 */
@@ -562,8 +564,75 @@ export interface AppSettings {
   /** C5 人脸聚类 / C13 登录态抓取：隐私敏感，默认关 */
   enableFaceClustering: boolean;
   enableAuthenticatedFetch: boolean;
+  /** C4 图片详细描述：调云端视觉模型给图片生成一段描述并入索引。
+   *  依赖 cloud.enabled 且配好了 cloud.visionModel，默认关（会把图片发去云端） */
+  enableImageDescription: boolean;
   /** 是否启用核显加速（DirectML） */
   enableGpuAcceleration: boolean;
+  /**
+   * A16 安卓配对：打开后引擎从只听 127.0.0.1 改成监听 0.0.0.0，
+   * 局域网里的手机才连得上。默认关——这会让同一局域网内的其他设备
+   * 看得到这台机器在跑这个服务。开着的时候所有非本机请求都要带
+   * `pairingToken`（`X-Synorive-Token` 头）才放行，本机（桌面端自己/
+   * MCP/CLI）不受影响，永远直连 127.0.0.1。
+   */
+  lanPairingEnabled: boolean;
+  /** 配对令牌，首次启动随机生成一次；界面上会显示出来给手机端手动输入 */
+  pairingToken: string;
+
+  // ── E12 隐私围栏 / 联网搜索（U9 · S1 · V5）───────────────
+  /**
+   * 联网搜索总闸。**和 `cloud.enabled` 是两个开关，绝不能合并** ——
+   * 联网搜索发出去的是**查询词**（泄露"我在查什么"），
+   * 云端推理发出去的是**你的资料原文**（泄露"我有什么"）。
+   * 很多人愿意接受前者而绝不接受后者，合成一个开关就是逼他们二选一。
+   * 关掉之后整个研究工作台停用，本地检索完全不受影响。
+   */
+  allowNetwork: boolean;
+  /**
+   * S1 每轮最多派几家引擎（按最近表现排班 + 一个探索位）。
+   * 0 = 全部派出（默认，也是老行为）。设成 5 之后，
+   * 一家最近老失败的引擎不会每轮都白等它一次。
+   */
+  webLineupSize: number;
+  /**
+   * V 组核查档位。
+   * annotate 只标注不出网 ｜ counter 反向检索+溯源+撤稿（默认）｜
+   * claim 再加断言级逐句核查（慢很多）
+   */
+  verifyLevel: 'annotate' | 'counter' | 'claim';
+  /**
+   * 引擎的非密钥类配置，比如自建 SearXNG 的地址。
+   * **API Key 不存这里** —— 那些走 Electron safeStorage（DPAPI）加密存放，
+   * 和云端 Key 同一条路，绝不落进 settings.json 明文。
+   */
+  webEndpoints: Record<string, string>;
+  /** 启用哪几家引擎。空数组 = 用各家自带的默认开关 */
+  webEngines: string[];
+  /**
+   * V5 可信度权重。这套权重里没有一个"客观正确"的值 ——
+   * 查学术的人要官方文档压倒一切，查产品体验的人恰恰需要社区博客。
+   * 默认值只是一个中位取舍，不是真理。
+   */
+  trustProfile?: TrustProfileConfig;
+}
+
+/** V5 可信度模型的可调参数。字段全可选，缺的用引擎侧默认值 */
+export interface TrustProfileConfig {
+  /** 六档来源权重：official / academic / mainstream / community / unknown / low */
+  tierWeights?: Record<string, number>;
+  multiSourceBonus?: number;
+  loneSourcePenalty?: number;
+  farmPenalty?: number;
+  aiPenalty?: number;
+  staleDays?: number;
+  stalePenalty?: number;
+  /** 可信度在最终排序里占的比重，剩下的是相关性 */
+  rankWeight?: number;
+  /** 用户自定义的域名分级覆盖 {域名: 档位} */
+  overrides?: Record<string, string>;
+  /** 用户自己的屏蔽名单。被屏蔽的仍然进「已排除」抽屉，随时能看能放回 */
+  blocklist?: string[];
 }
 
 export interface CloudConfig {

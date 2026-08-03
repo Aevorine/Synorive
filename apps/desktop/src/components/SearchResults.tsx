@@ -1,6 +1,14 @@
 import { useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { FileText, Film, Image as ImageIcon, Link2, MessageSquare, Music } from 'lucide-react';
+import {
+  FileText,
+  Film,
+  HelpCircle,
+  Image as ImageIcon,
+  Link2,
+  MessageSquare,
+  Music,
+} from 'lucide-react';
 import type { Modality, SearchHit } from '@synorive/shared-types';
 import { layout } from '@synorive/design-tokens';
 import { useApp } from '../lib/store';
@@ -25,7 +33,14 @@ const MODALITY_ICON: Record<Modality, typeof FileText> = {
  * 行高必须固定（从设计令牌取），变高行会让虚拟滚动每次都要测量，
  * 滚动时反而更卡。
  */
-export function SearchResults({ hits }: { hits: SearchHit[] }) {
+export function SearchResults({
+  hits,
+  onAsk,
+}: {
+  hits: SearchHit[];
+  /** N6：给每条文档一个「能回答什么」入口。不传就不显示这个按钮 */
+  onAsk?: (itemId: string, title: string) => void;
+}) {
   const parentRef = useRef<HTMLDivElement>(null);
   const density = useApp((s) => s.settings?.density ?? 'standard');
   const rowHeight = layout.resultRowHeight[density];
@@ -50,7 +65,7 @@ export function SearchResults({ hits }: { hits: SearchHit[] }) {
               className="results__row"
               style={{ height: `${v.size}px`, transform: `translateY(${v.start}px)` }}
             >
-              <ResultCard hit={hit} rank={v.index + 1} />
+              <ResultCard hit={hit} rank={v.index + 1} onAsk={onAsk} />
             </div>
           );
         })}
@@ -59,7 +74,15 @@ export function SearchResults({ hits }: { hits: SearchHit[] }) {
   );
 }
 
-function ResultCard({ hit, rank }: { hit: SearchHit; rank: number }) {
+function ResultCard({
+  hit,
+  rank,
+  onAsk,
+}: {
+  hit: SearchHit;
+  rank: number;
+  onAsk?: (itemId: string, title: string) => void;
+}) {
   const { item, highlight, explain, location } = hit;
   const Icon = MODALITY_ICON[item.modality] ?? FileText;
 
@@ -95,6 +118,8 @@ function ResultCard({ hit, rank }: { hit: SearchHit; rank: number }) {
           {location?.startSec != null && (
             <span className="card__loc">{formatTime(location.startSec)}</span>
           )}
+          {/* L3：命中的是论文哪一节，不用翻开就知道该看哪一段 */}
+          {location?.section && <span className="card__loc card__loc--section">{location.section}</span>}
         </div>
 
         {highlight && (
@@ -112,6 +137,20 @@ function ResultCard({ hit, rank }: { hit: SearchHit; rank: number }) {
           {item.sizeBytes != null && <span>{formatSize(item.sizeBytes)}</span>}
           {item.contentTime && <span>{formatDate(item.contentTime)}</span>}
           {explain && <span className="card__why">{explain.reason}</span>}
+          {/* N6：只对文档类给这个入口 —— 一张图片"能回答哪些问题"没有意义，
+              给了只会让用户点开发现是空的 */}
+          {onAsk && (item.modality === 'text' || item.modality === 'link') && (
+            <button
+              className="card__ask"
+              onClick={(e) => {
+                e.stopPropagation();
+                onAsk(item.id, item.title);
+              }}
+              title="从原文里读出它能回答的问题，点一条直接跳到那一段"
+            >
+              <HelpCircle size={12} strokeWidth={1.8} /> 能回答什么
+            </button>
+          )}
         </div>
       </div>
 

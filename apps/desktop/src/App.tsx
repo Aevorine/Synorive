@@ -7,6 +7,7 @@ import { TopBar } from './components/TopBar';
 import { AnalyzePage } from './pages/AnalyzePage';
 import { GraphPage } from './pages/GraphPage';
 import { LibraryPage } from './pages/LibraryPage';
+import { ResearchPage } from './pages/ResearchPage';
 import { SearchPage } from './pages/SearchPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TimelinePage } from './pages/TimelinePage';
@@ -17,6 +18,7 @@ import './styles/global.css';
 import './styles/shell.css';
 import './styles/search.css';
 import './styles/pages.css';
+import './styles/research.css';
 
 export default function App() {
   const settings = useApp((s) => s.settings);
@@ -108,6 +110,7 @@ const PAGES: Record<PageId, ComponentType> = {
   analyze: AnalyzePage,
   timeline: TimelinePage,
   graph: GraphPage,
+  research: ResearchPage,
   settings: SettingsPage,
 };
 
