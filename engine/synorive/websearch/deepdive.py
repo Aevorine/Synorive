@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 from typing import Any
@@ -42,9 +43,32 @@ log = logging.getLogger("synorive.websearch")
 #: 每轮搜索的预算（秒）。第二轮给得比第一轮短 —— 它是补充，
 #: 不该比主搜索还慢
 ROUND_BUDGET_S = (12.0, 9.0, 8.0)
-#: 抓正文的整体预算
+#: 抓正文的整体预算。**这是硬上限不是目标** —— 正常情况下靠下面
+#: 的早退提前收手，走到这个数就说明大半的页面都卡住了
 FETCH_BUDGET_S = 20.0
 MAX_ROUNDS = 3
+
+#: 搜索阶段：一个变体够几家引擎就先走（转给 `meta.search`）
+ENOUGH_ENGINES = 3
+#: 抓正文够几篇就先走（X3）。
+#:
+#: 🔴 X3 实测 P95 17.8s / 目标 8.0s，差的不是"哪里慢了一点"，是**结构**：
+#: 光第一轮的搜索预算就是 12s，比整个目标还大，再叠 20s 抓正文。
+#: 而这两段的时间几乎全花在等最后一两个慢的上 —— 抓 8 篇正文，
+#: 前 5 篇往往 1~2 秒内齐了，剩下的能拖十几秒。简报是**摘录**式的，
+#: 5 篇和 8 篇的差别远小于十几秒的差别，所以够数就收手。
+#:
+#: 🔴 **门槛算的是"有几个抓完了"，不是"抓成了几篇"** —— 我在 `meta.py`
+#: 刚栽过一次同样的跟头，这里又栽了第二次：第一版写 `len(docs) >= 5`，
+#: 而实测 8 个页面里只有 2~3 个能抓成（其余 404/超时/正文太短），
+#: 门槛永远够不着，于是照样等满 20s 预算。**那个 15.7s 的离群点就是它。**
+#: 教训同上：门槛的分母必须是当下的真实情况，抓失败也是一种"抓完了"。
+ENOUGH_DOCS_RATIO = 0.6
+#: 至少要有这么多个页面有结论（成或败），再少不足以判断"大部分已经回来了"
+ENOUGH_DOCS_MIN = 3
+#: 够数之后的宽限期。比搜索那边给得宽 —— 抓正文本来就慢，
+#: 0.35s 捞不回什么，0.8s 能多捞回一两篇
+GRACE_AFTER_ENOUGH_DOCS_S = 0.8
 
 
 #: 深挖的阶段清单。**界面据此画进度条，所以顺序和名字要稳定**——
@@ -259,7 +283,12 @@ async def _run_round(
     async def one(v: QueryVariant, eids: list[str] | None) -> dict[str, Any]:
         q, _p = apply_preset(v.text, preset)
         try:
-            res = await web.search(q, engines=eids, limit=limit, lang=v.lang)
+            # 显式开早退（X3）。这里必须显式传 —— `search()` 看到 `engines`
+            # 非空会当成"用户点名了引擎"而关掉早退，但这里的 `eids` 是
+            # `route_variants` 派的，不是用户点的。不传的话深挖每个变体
+            # 都要等齐它那几家，一轮就顶满 12s 预算
+            res = await web.search(q, engines=eids, limit=limit, lang=v.lang,
+                                   enough=ENOUGH_ENGINES)
         except Exception as e:  # noqa: BLE001 — 一个变体炸了不该让整轮失败
             log.debug("变体检索失败（忽略）：%s / %s", v.text, e)
             return {"clusters": [], "engines": []}
@@ -364,14 +393,56 @@ async def _fetch_docs(clusters: list[dict[str, Any]], n: int) -> list[dict[str, 
             "published": page.published or c.get("published"), "trust": c.get("trust"),
         }
 
-    try:
-        got = await asyncio.wait_for(
-            asyncio.gather(*(grab(c) for c in picked), return_exceptions=True),
-            timeout=FETCH_BUDGET_S,
+    # 够 ENOUGH_DOCS 篇就先走，不等最后那一两个慢页面（X3）。
+    #
+    # 🔴 原来这里是 `gather` + `wait_for(20s)`，是**全有或全无**：
+    # 20 秒内没抓齐就 `return []` —— 抓到 7 篇也整批丢掉，
+    # 白等 20 秒还一篇正文都没有，简报直接变空。
+    # 这个静默失败比慢更严重：接口 200、耗时很长、内容是空的。
+    tasks = {asyncio.create_task(grab(c)): c for c in picked}
+    pending = set(tasks)
+    docs: list[dict[str, Any]] = []
+    landed = 0          # 有结论的（抓成 + 抓失败都算）
+    started = time.monotonic()
+    grace_until: float | None = None
+    need = min(len(tasks), max(ENOUGH_DOCS_MIN, math.ceil(len(tasks) * ENOUGH_DOCS_RATIO)))
+
+    while pending:
+        now = time.monotonic()
+        left = FETCH_BUDGET_S - (now - started)
+        if left <= 0:
+            break
+        if grace_until is not None:
+            left = min(left, grace_until - now)
+            if left <= 0:
+                break
+        batch, pending = await asyncio.wait(
+            pending, timeout=left, return_when=asyncio.FIRST_COMPLETED,
         )
-    except (TimeoutError, asyncio.CancelledError):
-        return []
-    return [d for d in got if isinstance(d, dict)]
+        if not batch:
+            break
+        for t in batch:
+            landed += 1
+            try:
+                d = t.result()
+            except Exception as e:      # noqa: BLE001 — 一篇抓不到不该毁掉整轮
+                log.debug("抓正文任务异常（忽略）：%s", e)
+                continue
+            if isinstance(d, dict):
+                docs.append(d)
+        # 手里至少有一篇正文（没有正文的简报是空的），且大部分页面已有结论
+        if grace_until is None and docs and landed >= need:
+            grace_until = time.monotonic() + GRACE_AFTER_ENOUGH_DOCS_S
+
+    for t in pending:
+        t.cancel()
+    if pending:
+        # ⚠️ `grab` 里是 `asyncio.to_thread`，取消只是让**我们**不等了，
+        # 那个线程还会自己跑完（Python 没法从外面掐断一个正在阻塞的线程）。
+        # 这是可接受的代价：连接会在超时后自己断，结果被丢弃。
+        # 写在这里是因为"cancel 了就等于停了"这个想当然，正是下一个人会踩的坑
+        await asyncio.gather(*pending, return_exceptions=True)
+    return docs
 
 
 # ────────────────────────────────────────────────────────────────

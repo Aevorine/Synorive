@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -50,6 +51,39 @@ RENDER_TIMEOUT_S = 12.0
 FIRST_SCREEN_S = 1.5
 #: 整轮截止（P2 ≤4s）
 TOTAL_DEADLINE_S = 4.0
+
+#: 够几家就可以先走（X2）。0 = 关掉早退，退回"等齐所有引擎"的旧行为。
+#:
+#: 🔴 这条是 X2 不达标的正解，**不是调参能救的**：实测 P95 4.94s 死死卡在
+#: 4.0s 的总截止上，说明绝大多数搜索都在等最慢的那一家。而"最慢的那家"
+#: 当时是在返验证码页的百度/360 —— 等满 4 秒换回来一个验证码，
+#: 纯亏。把 deadline 从 4s 调到 3s 只会让**更多**引擎被砍成超时，
+#: 结果更差而不是更好。要快就得在"已经够用了"的那一刻主动收手。
+#:
+#: 🔴 **这个门槛必须相对于"实际派出去几家"，不能写死。** 第一版写死 3，
+#: 实测一次都没触发过 —— 现场是 6 家引擎里 3 家熔断中（`_pick` 阶段就
+#: 被挡掉，根本没进 `_fan_out`）、1 家在返验证码，真正派出去的只有 3 家、
+#: 其中只有 1 家给了结果。`good >= 3` 永远不成立，改了等于没改。
+#: 教训：**门槛的分母得是当下真实的阵容，不是理想阵容。**
+ENOUGH_ENGINES = 3
+#: 派出去的引擎里回来这个比例就可以走
+ENOUGH_RATIO = 0.6
+#: 但至少要等到这么多家有回音 —— 只凭一家就走等于放弃交叉印证（R2）
+ENOUGH_MIN = 2
+#: 拿到第一条真结果之后，最多再等这么久 —— **不管门槛够没够**。
+#:
+#: 🔴 这条是 X6 逼出来的。只按"landed >= need"早退有个洞：`need` 的分母是
+#: 这一轮派出去的家数，**多派一个坏引擎，门槛就跟着涨一档**（3 家派出去
+#: need=2，4 家就 need=3），于是多等一家真引擎。实测 X6 因此从 +14.2%
+#: 退到 +69.1% —— 一个坏引擎的代价反而被我放大了。
+#: 加这条绝对上界，等待时间就与"阵容里混进多少坏引擎"脱钩了。
+MAX_WAIT_AFTER_FIRST_GOOD_S = 1.2
+#: 够了之后再顺手等一下"将到未到"的那几家。
+#:
+#: 没有这个宽限期的话，早退会把交叉印证（R2 靠 engineCount）砍得太狠 ——
+#: 一家引擎往往就差几十毫秒就回来了，为省这几十毫秒丢掉一路印证不划算。
+#: 0.35s 是"几乎不影响体感、但能捞回大部分擦肩而过的引擎"的量级。
+GRACE_AFTER_ENOUGH_S = 0.35
 
 #: 熔断：连续 N 次解析失败就停用一段时间
 BREAK_AFTER = 3
@@ -205,6 +239,7 @@ class MetaSearch:
         time_range: str | None = None,
         use_cache: bool = True,
         deadline_s: float = TOTAL_DEADLINE_S,
+        enough: int | None = None,
     ) -> MetaSearchResult:
         query = (query or "").strip()
         if not query:
@@ -235,10 +270,23 @@ class MetaSearch:
         needs_longer = any(e.needs_browser for e in picked)
         effective_deadline = max(deadline_s, RENDER_TIMEOUT_S + 2.0) if needs_longer else deadline_s
 
+        # X2 早退：够 N 家就先走，不陪最慢的那家耗到硬截止。
+        #
+        # `enough=None` 时自动判：**用户点名了引擎就不早退** —— 沿用上面排班
+        # 那条同样的道理：他指名要 google，结果因为百度先回来了就把 google 砍了，
+        # 这个行为解释不清。点名 = 我要的就是这几家，慢也等。
+        #
+        # 🔴 但"点名"有两种，别混：用户点名要尊重；**深挖内部的变体路由
+        # 也会传 engines**（`expand.route_variants` 给每个查询变体指派引擎），
+        # 那不是用户的意思，是我们自己的实现细节。让它跟着"点名不早退"
+        # 一起被禁掉，X3 就永远快不了 —— 所以那条链路显式传 `enough=`。
+        if enough is None:
+            enough = 0 if engines is not None else ENOUGH_ENGINES
         t0 = time.monotonic()
         replies = pre_skipped + await self._fan_out(
             query, picked, limit=limit, lang=lang, region=region,
             time_range=time_range, deadline_s=effective_deadline,
+            enough=enough,
         )
         await self._resolve_redirects(replies)
         clusters = self._fold_and_rank([r for rep in replies for r in rep.results])
@@ -277,6 +325,10 @@ class MetaSearch:
         replies = pre_skipped + await self._fan_out(
             query, picked, limit=limit, lang="en", region="",
             time_range=None, deadline_s=deadline_s,
+            # 🔴 文献**不早退**：按 DOI 合并本来就是要把五家的字段拼全
+            #（这家有摘要、那家有引用数），少一家就是少一块，
+            # 跟网页搜索"结果重复度高、少一家几乎无损"完全不是一回事
+            enough=0,
         )
         papers = merge_scholar([r for rep in replies for r in rep.results])
         return {
@@ -634,6 +686,7 @@ class MetaSearch:
         region: str,
         time_range: str | None,
         deadline_s: float,
+        enough: int = ENOUGH_ENGINES,
     ) -> list[EngineReply]:
         if not engines:
             return []
@@ -650,29 +703,93 @@ class MetaSearch:
                 ): e
                 for e in engines
             }
-            done, pending = await asyncio.wait(tasks.keys(), timeout=deadline_s)
 
             replies: list[EngineReply] = []
-            for t in done:
-                try:
-                    replies.append(t.result())
-                except Exception as exc:  # noqa: BLE001
-                    eid = tasks[t].id
-                    self._breaker.record(eid, ok=False)
-                    replies.append(
-                        EngineReply(engine=eid, outcome=ParseOutcome.BROKEN,
-                                    error=f"{type(exc).__name__}: {exc}")
-                    )
-            # 到点还没回来的：取消并如实记一条超时，**不装作它没参与**。
-            # 少了这条，用户会以为"这家引擎没搜到东西"，而真相是根本没等它
+            pending = set(tasks)
+            started = time.monotonic()
+            good = 0        # 真给了结果的
+            landed = 0      # 有回音的（含空结果、含验证码）
+            # 门槛按**这一轮真派出去的家数**算，不是按理想阵容
+            need = min(len(tasks), max(ENOUGH_MIN, math.ceil(len(tasks) * ENOUGH_RATIO)))
+            if enough > 0:
+                need = min(need, enough)
+            #: 攒够之后的宽限截止；None = 还没攒够
+            grace_until: float | None = None
+            #: 早退了吗 —— 决定剩下那些没等的引擎该怎么记（见下面）
+            bailed_early = False
+
+            first_good_at: float | None = None
+            while pending:
+                now = time.monotonic()
+                left = deadline_s - (now - started)
+                if left <= 0:
+                    break
+                # 三条截止取最早的一条：硬截止 / 够数后的宽限 / 首条结果后的上界
+                cutoff = None
+                if grace_until is not None:
+                    cutoff = grace_until
+                if enough > 0 and first_good_at is not None:
+                    cap = first_good_at + MAX_WAIT_AFTER_FIRST_GOOD_S
+                    cutoff = cap if cutoff is None else min(cutoff, cap)
+                if cutoff is not None:
+                    left = min(left, cutoff - now)
+                    if left <= 0:
+                        bailed_early = True
+                        break
+
+                batch, pending = await asyncio.wait(
+                    pending, timeout=left, return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not batch:           # 等到点了，一个都没回来
+                    break
+
+                for t in batch:
+                    try:
+                        r = t.result()
+                    except Exception as exc:  # noqa: BLE001
+                        eid = tasks[t].id
+                        self._breaker.record(eid, ok=False)
+                        r = EngineReply(engine=eid, outcome=ParseOutcome.BROKEN,
+                                        error=f"{type(exc).__name__}: {exc}")
+                    replies.append(r)
+                    landed += 1
+                    if r.outcome is ParseOutcome.OK and r.results:
+                        good += 1
+                        if first_good_at is None:
+                            first_good_at = time.monotonic()
+
+                # 两个条件都要满足才早退：
+                #   good >= 1  —— 手里得**真有结果**。全是验证码页也算"够了"
+                #                 就走，那是把慢换成了错，比慢严重得多
+                #   landed >= need —— 大部分引擎已经有回音了
+                # 只用 good 计数是第一版的错：阵容一退化就永远凑不满，
+                # 早退形同虚设；只用 landed 又可能在一条结果都没有时收手
+                if grace_until is None and enough > 0 and good >= 1 and landed >= need:
+                    grace_until = time.monotonic() + GRACE_AFTER_ENOUGH_S
+
+            # 剩下没回来的分两种，**必须分开记**：
+            #   早退 —— 我们主动不等它了，它没有任何过错
+            #   超时 —— 它确实拖到了硬截止
+            # 混为一谈的代价很具体：早退每次都发生在"最慢的那几家"身上，
+            # 若按失败记账，排班分会被一路扣到底，最后把它们全踢出阵容 ——
+            # 于是它们再没机会证明自己，扣分变成自我实现的预言。
+            # 所以早退的那几家**既不熔断也不喂排班器**，只如实告诉用户没等。
+            early: set[str] = set()
             for t in pending:
                 t.cancel()
                 eid = tasks[t].id
-                replies.append(
-                    EngineReply(engine=eid, outcome=ParseOutcome.BROKEN,
-                                error=f"超时（>{deadline_s:.1f}s），本轮放弃")
-                )
-                self._breaker.record(eid, ok=False)
+                if bailed_early:
+                    early.add(eid)
+                    replies.append(
+                        EngineReply(engine=eid, outcome=ParseOutcome.EMPTY,
+                                    error=f"已有 {good} 家回来，本轮没等它")
+                    )
+                else:
+                    replies.append(
+                        EngineReply(engine=eid, outcome=ParseOutcome.BROKEN,
+                                    error=f"超时（>{deadline_s:.1f}s），本轮放弃")
+                    )
+                    self._breaker.record(eid, ok=False)
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
 
@@ -680,6 +797,8 @@ class MetaSearch:
         # 根本不经过 `_one` —— 记在 `_one` 里的话，一家老是超时的引擎
         # 永远不会被记一次失败，排班就成了摆设
         for r in replies:
+            if r.engine in early:
+                continue
             self.scheduler.observe(r.engine, r.outcome, r.elapsed_ms)
         self.scheduler.save()
 
