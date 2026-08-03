@@ -332,7 +332,23 @@ async function main() {
   // pip 报 Successfully installed 只说明文件落地了，不说明这个解释器
   // 能不能 import 到它 —— 而 `._pth` 写错正是「装完了但 import 不到」
   // 的典型，且这种失败要等到用户点开应用才暴露
-  const mods = ['fastapi', 'uvicorn', 'pydantic', 'httpx', 'jieba', 'PIL', 'sqlite_vec'];
+  // 🔴 **这个清单漏一个，就会发出去一个"装完打开才炸"的包。**
+  //
+  // 2026-08-03 实测教训：`tokenizers` 和 `lxml` 一直没被声明在 pyproject 里
+  // （开发机上作为传递依赖凑巧装着），而这个探针清单也没有它们 ——
+  // 于是**自检通过、包发出去、语义检索在装机版里整个是死的**，
+  // 界面只显示「向量模型不可用」，谁也看不出是打包漏了一个包。
+  //
+  // 判据不是"我觉得重要的都写上"，而是：**凡是引擎代码里硬 import 的
+  // 第三方模块，都必须在这里出现**。改依赖时同步改这里。
+  const mods = [
+    'fastapi', 'uvicorn', 'pydantic', 'httpx', 'jieba', 'PIL', 'sqlite_vec',
+    // 语义检索的地基：embedder / reranker 的 load() 里是硬导入，缺了它
+    // 向量模型加载不了，检索静默退化成只有关键词
+    'tokenizers',
+    // 多引擎搜索的 HTML 解析（websearch/engines.py 的 _doc()），硬导入无兜底
+    'lxml',
+  ];
   if (!SLIM) mods.push('numpy', 'onnxruntime');
   // extra 装了就必须 import 得到 —— 每个 extra 挑一个最有代表性的模块名。
   // **模块名和包名经常不一样**（pymupdf→fitz、python-docx→docx、
@@ -340,7 +356,9 @@ async function main() {
   const EXTRA_PROBE = {
     docs: ['fitz', 'docx', 'openpyxl', 'pptx', 'trafilatura'],
     sync: ['cryptography'],
-    media: ['rapidocr', 'av'],
+    // sherpa_onnx 是语音转写。2026-08-03 才被声明进 media —— 在那之前
+    // 它一直只是"碰巧装在开发机上"，探针里当然也没有
+    media: ['rapidocr', 'av', 'sherpa_onnx'],
     ann: ['usearch'],
     face: ['insightface', 'cv2'],
   };

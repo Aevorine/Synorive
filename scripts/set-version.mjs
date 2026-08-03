@@ -27,6 +27,13 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT_PKG = join(ROOT, 'package.json');
 const DESKTOP_PKG = join(ROOT, 'apps', 'desktop', 'package.json');
 const MOBILE_GRADLE = join(ROOT, 'apps', 'mobile', 'app', 'build.gradle.kts');
+// 🔴 **引擎这两处 2026-08-03 才被加进来，在那之前一直漏着。**
+// 后果不是"少改一个数"：`synorive.__version__` 会被 `/health` 返回，
+// 桌面端状态栏显示的就是它 —— 发了 v0.1.1 的包，应用里却写着 0.1.0，
+// 用户没法判断自己装的到底是不是新版。**版本号散在几处就一定会漏，
+// 所以判据是"全仓 grep 得到的每一处都在这个脚本里"。**
+const ENGINE_PYPROJECT = join(ROOT, 'engine', 'pyproject.toml');
+const ENGINE_INIT = join(ROOT, 'engine', 'synorive', '__init__.py');
 
 /**
  * versionName → versionCode。
@@ -50,6 +57,10 @@ function currentVersions() {
     desktop: readJson(DESKTOP_PKG).version,
     androidName: gradle.match(/versionName\s*=\s*"([^"]+)"/)?.[1] ?? '(没找到)',
     androidCode: gradle.match(/versionCode\s*=\s*(\d+)/)?.[1] ?? '(没找到)',
+    enginePyproject:
+      readFileSync(ENGINE_PYPROJECT, 'utf8').match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? '(没找到)',
+    engineInit:
+      readFileSync(ENGINE_INIT, 'utf8').match(/__version__\s*=\s*"([^"]+)"/)?.[1] ?? '(没找到)',
   };
 }
 
@@ -63,12 +74,21 @@ function check() {
   if (v.androidCode !== wantCode) {
     problems.push(`安卓 versionCode = ${v.androidCode}，应为 ${wantCode}`);
   }
+  if (v.enginePyproject !== want) {
+    problems.push(`engine/pyproject.toml = ${v.enginePyproject}，应为 ${want}`);
+  }
+  if (v.engineInit !== want) {
+    problems.push(`engine/synorive/__init__.py __version__ = ${v.engineInit}，应为 ${want}`
+      + '（它会被 /health 返回，桌面端状态栏显示的就是它）');
+  }
 
   console.log('当前版本：');
   console.log(`  根 package.json      ${v.root}`);
   console.log(`  桌面 package.json    ${v.desktop}`);
   console.log(`  安卓 versionName     ${v.androidName}`);
   console.log(`  安卓 versionCode     ${v.androidCode}（由 versionName 推导，应为 ${wantCode}）`);
+  console.log(`  引擎 pyproject       ${v.enginePyproject}`);
+  console.log(`  引擎 __version__     ${v.engineInit}  ← /health 报的就是它`);
 
   if (problems.length) {
     console.error('\n✗ 版本号不一致：');
@@ -94,19 +114,43 @@ function setVersion(next) {
   }
 
   let gradle = readFileSync(MOBILE_GRADLE, 'utf8');
-  const beforeName = gradle;
+  // 🔴 判据是**正则有没有命中**，不是"字符串变没变"。
+  //    原来写的是 `if (gradle === before) 报错` —— 那在
+  //    「本来就已经是目标版本」时会误报"没找到"并退出 1，
+  //    而那恰恰是重复执行同一条命令的正常情况。
+  //    replace 没匹配到时静默返回原串，所以必须显式 test。
+  for (const [re, label] of [
+    [/versionName\s*=\s*"[^"]+"/, 'versionName'],
+    [/versionCode\s*=\s*\d+/, 'versionCode'],
+  ]) {
+    if (!re.test(gradle)) {
+      console.error(`✗ 在 app/build.gradle.kts 里没找到 ${label}，没有改动它`);
+      process.exit(1);
+    }
+  }
   gradle = gradle.replace(/versionName\s*=\s*"[^"]+"/, `versionName = "${next}"`);
   gradle = gradle.replace(/versionCode\s*=\s*\d+/, `versionCode = ${code}`);
-  if (gradle === beforeName) {
-    // 🔴 replace 没匹配到时会**静默返回原字符串**。不检查的话，
-    //    这个脚本会报「已同步」而安卓版本号一个字没改
-    console.error('✗ 在 app/build.gradle.kts 里没找到 versionName/versionCode，没有改动它');
-    process.exit(1);
-  }
   writeFileSync(MOBILE_GRADLE, gradle, 'utf8');
 
+  // 引擎两处。同样要检查 replace 有没有真的命中 —— replace 没匹配到时
+  // **静默返回原字符串**，不检查的话脚本会报"已同步"而引擎版本一个字没改
+  for (const [path, re, make] of [
+    [ENGINE_PYPROJECT, /^version\s*=\s*"[^"]+"/m, () => `version = "${next}"`],
+    [ENGINE_INIT, /__version__\s*=\s*"[^"]+"/, () => `__version__ = "${next}"`],
+  ]) {
+    const before = readFileSync(path, 'utf8');
+    // 同上：判正则命中，不判字符串变没变 —— 否则"本来就对"会被误报成"没找到"
+    if (!re.test(before)) {
+      console.error(`✗ 在 ${path} 里没找到版本号，没有改动它`);
+      process.exit(1);
+    }
+    writeFileSync(path, before.replace(re, make()), 'utf8');
+  }
+
   console.log(`✓ 版本号已同步为 ${next}（安卓 versionCode = ${code}）`);
-  console.log('  改到了：package.json / apps/desktop/package.json / apps/mobile/app/build.gradle.kts');
+  console.log('  改到了：package.json / apps/desktop/package.json /');
+  console.log('          apps/mobile/app/build.gradle.kts /');
+  console.log('          engine/pyproject.toml / engine/synorive/__init__.py');
   console.log(`\n下一步：git commit 后打 tag —— git tag v${next}`);
 }
 

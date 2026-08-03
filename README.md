@@ -12,12 +12,25 @@ where **every sentence is verbatim from a real source**.
 Runs fully offline. Your files never leave your machine.
 Exposes 24 tools to **Claude Code** over MCP.
 
-[![Status](https://img.shields.io/badge/status-alpha%20v0.1.0-C8871B)](task-progress.md)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](#怎么跑起来)
+**English** · [简体中文](docs/i18n/README.zh-CN.md) · [Français](docs/i18n/README.fr.md) · [Español](docs/i18n/README.es.md) · [Русский](docs/i18n/README.ru.md) · [العربية](docs/i18n/README.ar.md)
+
+[![Download](https://img.shields.io/badge/download-v0.1.1-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![Engine](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](engine)
 [![Desktop](https://img.shields.io/badge/desktop-Electron%2041%20%2B%20React%2019-0F4C8C)](apps/desktop)
 [![Offline](https://img.shields.io/badge/works-fully%20offline-1E9E76)](#几个不显然的设计决定)
 [![MCP](https://img.shields.io/badge/MCP-24%20tools-C8871B)](mcp)
+
+### ⬇️ Download
+
+| | |
+|---|---|
+| **Windows installer** | [`Synorive-Setup-0.1.1.exe`](https://github.com/Aevorine/Synorive/releases/latest) — Python runtime bundled, **in-app auto-update** |
+| **Windows portable** | [`Synorive-0.1.1-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — no install; auto-update not available for this form |
+| **Android** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) — thin client, connects to the engine on your PC over LAN |
+
+No Python installation required — the interpreter and all engine dependencies ship inside the installer.
 
 </div>
 

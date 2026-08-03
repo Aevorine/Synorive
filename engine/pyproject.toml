@@ -1,6 +1,6 @@
 [project]
 name = "synorive-engine"
-version = "0.1.0"
+version = "0.1.1"
 description = "Synorive 引擎 —— 多模态并发分析与极速内容检索"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
@@ -28,6 +28,17 @@ dependencies = [
     # 两者互斥（同一个 onnxruntime 命名空间），不能同时装。
     "onnxruntime>=1.20",
     "numpy>=2.0",
+    # 🔴 **2026-08-03 补上。漏声明它的后果是：装机版里语义检索整个是死的。**
+    # `embedder.py` 和 `reranker.py` 的 load() 里 `from tokenizers import Tokenizer`
+    # 是硬导入。开发环境里它作为别人的传递依赖凑巧装上了，所以**开发时一切正常**；
+    # 而随包运行时只装声明过的包 —— 打出来的应用加载不了嵌入模型，
+    # 界面显示的是「向量模型不可用」，**完全看不出是打包漏了一个包**。
+    # 这就是「在我机器上是好的」的标准形态。
+    "tokenizers>=0.20",
+    # 同批补上。`websearch/engines.py` 的 `_doc()` 里 `from lxml import html`
+    # 是硬导入且没有兜底 —— 缺了它，多引擎搜索的 HTML 解析路径直接抛异常，
+    # 而外层把引擎异常当成"这家引擎挂了"，表现是**所有 HTML 类引擎全部常年失败**
+    "lxml>=5.0",
 
     # ── 图像 ────────────────────────────────────────────
     "pillow>=11.0",
@@ -72,6 +83,11 @@ media = [
     #    这里之前还写着旧包名，是文档和实现脱节的又一个例子（坑 28 那一类）
     "rapidocr>=3.9",
     "av>=13.0",
+    # 语音转写（`analyze/transcribe.py` 里 `import sherpa_onnx`）。
+    # 2026-08-03 补声明 —— 它一直没被写进任何依赖组，
+    # 只是碰巧在开发机上装着。归 media 而不是 core：**没有它只是转不了字幕，
+    # 视频的场景切分和关键帧照常能用**，属于"少一条检索通路"不是"整个坏掉"。
+    "sherpa-onnx>=1.10",
 ]
 # 核显加速（依赖医生一键切换，不要和 onnxruntime 同时装）
 gpu = [

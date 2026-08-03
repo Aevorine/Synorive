@@ -415,6 +415,16 @@ export class EngineManager {
         PYTHONIOENCODING: 'utf-8',
         // 别让 BLAS 抢线程 —— 并发度由我们自己的进程池控制
         OMP_NUM_THREADS: '1',
+        // 🔴 **把用户自己的 site-packages 挡在外面。**
+        // 随包运行时的 `._pth` 里有 `import site`，于是
+        // `%APPDATA%\Python\Python313\site-packages` 会被挂进 sys.path ——
+        // 那是用户历史上 `pip install --user` 装的一堆东西。
+        // 我们的 site-packages 排在前面所以同名包不会被顶掉，
+        // 但**我们没打包的模块会从那儿被意外 import 到**，
+        // 而且版本完全不可控。症状是"在你机器上好好的，在他机器上崩"，
+        // 且崩的位置和真正的原因隔着十万八千里。
+        // 一个独立可执行文件就该只用自己带的东西。
+        PYTHONNOUSERSITE: '1',
       },
       windowsHide: true,
     });
