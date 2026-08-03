@@ -243,8 +243,24 @@ class Repository:
             if self.ann_index is not None:
                 for rid in ann_removes:
                     self.ann_index.remove(rid)
-                for rid, vec in ann_adds:
-                    self.ann_index.add(rid, vec)
+                if ann_adds:
+                    # 🔴 **批量插，不要一条一条插**（A7）。
+                    #
+                    # 原来这里是 `for rid, vec in ann_adds: self.ann_index.add(...)`，
+                    # 每条都要：抢一次锁 + 一次 `np.asarray` + 一次单向量 HNSW 插入
+                    # + 一次 `len(idx)`。而 HNSW 插入是这条链路上最贵的单步操作之一。
+                    #
+                    # `add_many` 早就写好了（`ann_index.py:140`），走的是
+                    # `idx.add(keys_array, matrix, threads=0)` —— 一次锁、一次调用、
+                    # 用满所有核。**功能一样，只是原来没用它。**
+                    #
+                    # 为什么怀疑这里：`embedder.py:44` 的实测注释写着这颗 CPU 上
+                    # 嵌入本身能跑 110~247 段/秒，而 A7 端到端只有 47 ——
+                    # 差的那 60% 不在模型里，得在模型之外找。
+                    self.ann_index.add_many(
+                        [rid for rid, _ in ann_adds],
+                        [vec for _, vec in ann_adds],
+                    )
 
             return written
         except Exception:
