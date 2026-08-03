@@ -101,3 +101,9 @@ apps/desktop/resources/pyruntime/
 
 # uitest.mjs 的截图输出，不是产品资产
 /search-*.png
+
+# 基准脚本的输出 JSON，不是产品资产
+/a7*.json
+/g-series.json
+/g2.json
+/x3.json

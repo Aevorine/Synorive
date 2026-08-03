@@ -186,13 +186,36 @@ def g6_engine_failure(base: str, n: int) -> dict[str, Any]:
         return {"id": "G6", "label": "单引擎失败不拖累", "target": "总耗时增量 ≤15%",
                 "pass": None, "note": f"可用引擎只有 {len(ids)} 家，没法做对比"}
 
-    full = [_req(f"{base}/api/web/search", {"query": QUERIES[i % len(QUERIES)], "limit": 20})[0]
+    # 🔴 **必须关缓存（useCache: false）。**
+    #    2026-08-03 首跑就栽在这儿：全引擎组的中位耗时是 **0.01s**，
+    #    因为这批查询词前面的基准已经跑过、全在缓存里；而"少派一家"组
+    #    因为 engines 参数不同、缓存键不同，只能真出网（4.68s）。
+    #    于是算出 -99.7%，看起来像"少派一家反而慢 99%"这种荒唐结论。
+    #    **量的是出网耗时，就必须每次都真出网。**
+    full = [_req(f"{base}/api/web/search",
+                 {"query": QUERIES[i % len(QUERIES)], "limit": 20, "useCache": False})[0]
             for i in range(n)]
     subset = ids[:-1]
     less = [_req(f"{base}/api/web/search",
-                 {"query": QUERIES[i % len(QUERIES)], "limit": 20, "engines": subset})[0]
+                 {"query": QUERIES[i % len(QUERIES)], "limit": 20,
+                  "engines": subset, "useCache": False})[0]
             for i in range(n)]
     a, b = statistics.median(full), statistics.median(less)
+
+    # 🔴 **熔断全开时这条量不了，必须拒绝出数，而不是出一个荒唐的数。**
+    #    2026-08-03 实测踩到：连着跑了上百次搜索之后，熔断器把主要引擎
+    #    全断开（bing/baidu openFor 443s、duckduckgo 698s），默认路径
+    #    直接空手返回 0.0s；而"少派一家"因为显式传了 engines 绕过排班，
+    #    还在真出网 6.08s —— 算出 **-99.9%**，脚本却一本正经判了 ❌。
+    #    **一个基准吐出荒唐数字还敢下结论，比它不出数危险得多。**
+    if a < 0.2:
+        return {"id": "G6", "label": "单引擎失败不拖累", "target": "总耗时增量 ≤15%",
+                "allEnginesMedianS": round(a, 2), "minusOneMedianS": round(b, 2),
+                "pass": None,
+                "note": "🔴 **拒绝出数**：全引擎组中位耗时 <0.2s，说明熔断器已把引擎断开、"
+                        "请求根本没出网。看 /api/web/engines 的 breaker.openFor，"
+                        "等它归零（通常十几分钟）或换一个新引擎实例再测。"}
+
     delta = (a - b) / b * 100 if b else 0
     return {"id": "G6", "label": "单引擎失败不拖累", "target": "总耗时增量 ≤15%",
             "allEnginesMedianS": round(a, 2), "minusOneMedianS": round(b, 2),
