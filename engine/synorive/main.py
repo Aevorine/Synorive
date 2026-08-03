@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import sys
@@ -23,12 +24,61 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from . import __version__
 from .api.routes import router
 from .runtime import EngineConfig, Runtime
 
 log = logging.getLogger("synorive")
+
+#: A16 安卓配对闸放行的路径——不带令牌也能探测到"这是不是 Synorive"
+_UNGUARDED_PATHS = {"/health", "/status"}
+
+
+class _PairingGuardMiddleware:
+    """
+    A16 局域网配对闸。
+
+    用裸 ASGI 中间件而不是 `@app.middleware("http")`——后者只包住 http scope，
+    WebSocket 握手会直接绕过去，而 `/events` 推的内容（摄取进度、搜索分级结果）
+    一样是要保护的数据，不能只挡 REST 这一半。
+
+    本机（127.0.0.1，桌面端自己/MCP/CLI 全走这条）永远放行；局域网配对没开时
+    引擎压根不监听 0.0.0.0，外部连接根本进不来，这道闸碰不到；配对开着时，
+    非本机来源必须带匹配的令牌，没有的话直接拒绝——不然局域网里随便一台机器
+    扫到端口就能读写整个资料库。
+    """
+
+    def __init__(self, app: Any, runtime: Runtime) -> None:
+        self.app = app
+        self.runtime = runtime
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        client = scope.get("client")
+        client_host = client[0] if client else ""
+        if client_host in ("127.0.0.1", "::1", "localhost"):
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        token = self.runtime.config.pairing_token
+        headers = dict(scope.get("headers") or [])
+        given = headers.get(b"x-synorive-token", b"").decode("latin-1")
+
+        if path in _UNGUARDED_PATHS or (token and given == token):
+            await self.app(scope, receive, send)
+            return
+
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 4401})
+        else:
+            resp = JSONResponse({"detail": "未配对：缺少或错误的 X-Synorive-Token"}, status_code=401)
+            await resp(scope, receive, send)
 
 
 def build_app(runtime: Runtime) -> FastAPI:
@@ -55,11 +105,22 @@ def build_app(runtime: Runtime) -> FastAPI:
         # 模型后台预热，不挡启动（A1 冷启动 ≤2s）
         runtime.warmup_async()
         status_task = asyncio.create_task(runtime.status_loop())
+        deferred_task = asyncio.create_task(runtime.deferred_jobs_loop())
 
         yield
 
         status_task.cancel()
+        deferred_task.cancel()
         runtime.clear_endpoint()
+        # A17：干净关闭时把 ANN 索引落盘——这样重启就能直接从磁盘加载，
+        # 不用触发那条"发现落差就后台重建"的兜底路径（见 runtime.py
+        # 的 _load_ann_index）。那条兜底是为异常退出准备的安全网，
+        # 不是常态该走的路，正常关闭这里顺手存一次就不用每次都靠它
+        if runtime.repo.ann_index is not None:
+            try:
+                runtime.repo.ann_index.save()
+            except Exception as e:  # noqa: BLE001
+                log.warning("ANN 索引落盘失败（不影响数据本身，下次会自动重建）：%s", e)
         log.info("引擎关闭，累计运行 %.1fs", runtime.uptime_sec)
         runtime.db.close()
 
@@ -73,7 +134,9 @@ def build_app(runtime: Runtime) -> FastAPI:
     )
     app.state.runtime = runtime
 
-    # 只放行本机。安卓端走的是另一条带证书校验的通道，不从这里进。
+    # CORS 只放行本机的浏览器场景（file:// 打包页面 / 本机调试）。
+    # 这道闸对安卓端不起作用——CORS 是浏览器自己遵守的规矩，原生 App
+    # 发请求根本不看这层，真正挡安卓端的是下面注册的 `_PairingGuardMiddleware`。
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^(http://(127\.0\.0\.1|localhost)(:\d+)?|file://)$",
@@ -81,6 +144,8 @@ def build_app(runtime: Runtime) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.add_middleware(_PairingGuardMiddleware, runtime=runtime)
 
     app.include_router(router, prefix="/api")
 
@@ -160,8 +225,56 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
         help="分析并发度，1~16",
     )
     p.add_argument("--allow-cloud", action="store_true")
+    p.add_argument("--enable-image-description", action="store_true",
+                    help="C4：允许调云端视觉模型给图片生成描述并入索引（还要 --allow-cloud 且配置好视觉模型）")
+    p.add_argument("--enable-face-clustering", action="store_true",
+                    help="C5：本地人脸检测与聚类，默认关（隐私敏感）")
+    p.add_argument("--pairing-token", default=None,
+                    help="A16：安卓配对令牌。设了之后，非本机地址的 /api 请求"
+                         "必须带匹配的 X-Synorive-Token 头才放行")
+    # ── 联网搜索这一路（E12/U9 · S1 · S3 · V5）────────────────
+    # 🔴 用 `--no-network` 而不是 `--allow-network`：联网是这个软件的主要
+    # 用途之一，默认必须是开的（不然装完发现半个功能是灰的）。
+    # 而**关掉这件事必须是显式的一个参数** —— 靠"不传就是关"的话，
+    # 桌面端哪天忘了传，用户的隐私闸就被静默打开了
+    p.add_argument("--no-network", action="store_true",
+                   help="E12：完全关掉联网搜索。注意它和 --allow-cloud 是两回事："
+                        "这个管的是把**查询词**发出去，那个管的是把**你的资料原文**发出去")
+    p.add_argument("--web-lineup", type=int, default=0,
+                   help="S1：每轮最多派几家引擎（按最近表现排班 + 一个探索位）。0 = 全派")
+    p.add_argument("--verify-level", default="counter",
+                   choices=("annotate", "counter", "claim"),
+                   help="V 组核查档位：只标注 / 反向检索（默认）/ 断言级逐句核查")
+    p.add_argument("--web-engines", default="",
+                   help="启用哪几家引擎，逗号分隔。空 = 用各家自带的默认开关")
+    p.add_argument("--web-key", action="append", default=[], metavar="ID=VALUE",
+                   help="S3：引擎的 Key 或地址，如 serper=xxx、searxng=http://127.0.0.1:8888。"
+                        "可以重复传多次")
+    p.add_argument("--trust-profile", default="",
+                   help="V5：可信度权重的 JSON 串。空 = 用默认档")
     p.add_argument("--log-level", default="info")
     a = p.parse_args(argv)
+
+    # `--web-key serper=abc` → {"serper": "abc"}。
+    # 用 split("=", 1) 而不是 split("=")：SearXNG 的地址里可能带查询参数，
+    # 里面就有等号，切多了会把地址切断
+    web_keys: dict[str, str] = {}
+    for pair in a.web_key or []:
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            if k.strip() and v.strip():
+                web_keys[k.strip()] = v.strip()
+
+    trust_profile: dict[str, Any] | None = None
+    if a.trust_profile:
+        try:
+            got = json.loads(a.trust_profile)
+            if isinstance(got, dict):
+                trust_profile = got
+        except (TypeError, ValueError):
+            # 配置串坏了就用默认档 —— 让引擎因为一个可选的权重配置起不来，
+            # 是把小问题放大成大问题
+            log.warning("--trust-profile 不是合法 JSON，本次用默认可信度档")
 
     data_dir = a.data_dir.resolve()
     return EngineConfig(
@@ -171,6 +284,15 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
         model_dir=(a.model_dir.resolve() if a.model_dir else data_dir / "models"),
         concurrency=max(1, min(16, a.concurrency)),
         allow_cloud=a.allow_cloud,
+        allow_network=not a.no_network,
+        enable_image_description=a.enable_image_description,
+        enable_face_clustering=a.enable_face_clustering,
+        pairing_token=a.pairing_token,
+        web_engines=[s.strip() for s in a.web_engines.split(",") if s.strip()] or None,
+        web_keys=web_keys or None,
+        web_lineup_size=max(0, a.web_lineup),
+        verify_level=a.verify_level,
+        trust_profile=trust_profile,
     )
 
 

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .render_broker import RenderBroker
 from .store.db import Database
 
 log = logging.getLogger("synorive.runtime")
@@ -42,6 +43,38 @@ class EngineConfig:
     concurrency: int = 7
     """是否允许把内容送到云端（受隐私围栏二次约束）"""
     allow_cloud: bool = False
+    """
+    是否允许联网搜索出网。
+
+    和 `allow_cloud` **不是一回事，别合并成一个开关**：
+    联网搜索是把**查询词**发给搜索引擎，云端推理是把**你的资料原文**发给模型厂商。
+    前者泄露的是"我在查什么"，后者泄露的是"我有什么"。
+    很多人愿意接受前者而绝不接受后者 —— 合成一个开关就逼他们二选一。
+    """
+    allow_network: bool = True
+    """启用哪几家搜索引擎。None = 用各家的默认开关"""
+    web_engines: list[str] | None = None
+    """引擎的 Key（Brave/Serper/Tavily/Exa 的 API Key、自建 SearXNG 地址等）"""
+    web_keys: dict[str, str] | None = None
+    """S1 每轮最多派几家引擎（按最近表现排班 + 一个探索位）。
+    0 = 全派，即旧行为。设成 5 之后，一家最近老失败的引擎不会每轮都白等它一次"""
+    web_lineup_size: int = 0
+    """V5 可信度模型的可调权重（`trust.TrustProfile.from_dict` 的形状）。
+    None = 用默认档"""
+    trust_profile: dict[str, Any] | None = None
+    """V 组核查档位：annotate（只标注）/ counter（反向检索+溯源+撤稿，默认）/
+    claim（再加断言级逐句核查，慢很多）"""
+    verify_level: str = "counter"
+    """C4 图片详细描述：调云端视觉模型给图片生成一段描述并入索引。
+    默认关——这是隐私围栏 `allow_cloud` 之外的第二道闸，
+    用户可能开了云端简报生成（R8）但不想让"库里的照片"被发出去描述"""
+    enable_image_description: bool = False
+    """C5 人脸检测与聚类。默认关——人脸数据是最敏感的一类"""
+    enable_face_clustering: bool = False
+    """A16 安卓配对令牌。非空时，所有从非本机地址发来的 /api 请求
+    都必须带 `X-Synorive-Token` 头且和它一致，见 main.py 的 `_pairing_guard`。
+    本机（桌面端自己/MCP/CLI，全部走 127.0.0.1）永远不受这道闸影响。"""
+    pairing_token: str | None = None
 
     @property
     def db_path(self) -> Path:
@@ -54,6 +87,42 @@ class EngineConfig:
     @property
     def archive_dir(self) -> Path:
         return self.data_dir / "archive"
+
+
+@dataclass
+class CloudState:
+    """
+    云端简报生成的运行时状态。**纯内存，不是 EngineConfig 的一部分** ——
+    `EngineConfig` 是启动时定死的一份快照，而这个要能在引擎跑着的时候
+    随时被桌面端的"设置"页更新（用户改了 Key 或换了通道，不该要求重启引擎）。
+    """
+    provider: str = "none"  # none / openai-compatible / anthropic
+    api_key: str = ""
+    base_url: str = ""
+    chat_model: str = ""
+    #: C4 图片描述用的视觉模型。和 chat_model 分开——很多厂商的文本模型
+    #: 不支持读图（或者读图要换一个更贵的型号），逼用户共用一个字段
+    #: 会导致"填了聊天模型，结果描述图片时拿它去传图直接 400"
+    vision_model: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return self.provider != "none" and bool(self.api_key) and bool(self.chat_model)
+
+    @property
+    def vision_configured(self) -> bool:
+        return self.provider != "none" and bool(self.api_key) and bool(self.vision_model)
+
+    def status(self) -> dict[str, Any]:
+        """给设置页/MCP 看的状态——**绝不包含 api_key 本身**。"""
+        return {
+            "provider": self.provider,
+            "configured": self.configured,
+            "chatModel": self.chat_model,
+            "visionModel": self.vision_model,
+            "visionConfigured": self.vision_configured,
+            "baseUrl": self.base_url,
+        }
 
 
 class EventBus:
@@ -114,10 +183,25 @@ class Runtime:
         self.search: Any = None
         self.pipeline: Any = None
         self.doctor: Any = None
+        #: 联网元搜索（W/R/L）。**独立于本地检索** ——
+        #: 它是唯一会出网的部件，隐私围栏要关的就是它，所以单独挂一个字段，
+        #: 关掉时置 None，接口层据此返回明确的 503 而不是半死不活地跑着
+        self.web: Any = None
+        #: 浏览器渲染代理（8.5）。永远存在（不出网、不占资源），
+        #: 只有桌面端连上并注册了端口才 available=True
+        self.render_broker = RenderBroker()
+        #: 云端简报生成（R8 右栏）的运行时配置。
+        #: 🔴 密钥只活在这个进程的内存里，从不落盘、从不写日志 ——
+        #: 桌面端用 Electron `safeStorage` 加密存在本地，引擎重启后
+        #: 桌面端会用 `/api/cloud/configure` 重新推一次，不是引擎自己记住的
+        self.cloud = CloudState()
         self._embedder: Any = None
         self._reranker: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._jobs: dict[str, dict[str, Any]] = {}
+        #: 后台补跑循环的轮询间隔。有活干就勤快（3s），没活干就歇着（15s）——
+        #: 见 deferred_jobs_loop()
+        self._deferred_interval = 3.0
 
     def initialize(self) -> None:
         for d in (
@@ -150,6 +234,21 @@ class Runtime:
         self.search = SearchEngine(
             self.db, self.repo, self._get_query_embedder(), self._get_reranker()
         )
+
+        # 联网层：只建对象不发请求，所以放在 initialize 里不影响冷启动（A1）。
+        # 真正出网要等用户在界面上主动搜 —— 断网可用（A18）这条不受影响
+        if getattr(self.config, "allow_network", True):
+            from .websearch import MetaSearch
+
+            self.web = MetaSearch(
+                enabled=getattr(self.config, "web_engines", None),
+                keys=getattr(self.config, "web_keys", None),
+                renderer=self.render_broker,
+                # S1：引擎健康状态落盘，重启后接着用。不落盘的话每次重启
+                # 都要重新学一遍，而学习期正好是用户最需要它靠谱的时候
+                state_path=self.config.data_dir / "websearch-health.json",
+                lineup_size=getattr(self.config, "web_lineup_size", 0),
+            )
 
     def _get_query_embedder(self) -> Any:
         """
@@ -233,6 +332,12 @@ class Runtime:
         import threading
 
         def run() -> None:
+            # S2：顺手探一下本机有没有自建的 SearXNG，有就自动启用。
+            # **放在这条后台线程里而不是 initialize()**：它要发一个真实的
+            # HTTP 请求，同步做会给冷启动加上一个网络往返，
+            # 直接顶在 A1「≤2.0s」的头上。探不到就安静跳过，绝不报错
+            self._autodetect_websearch()
+
             emb = self._embedder
             if emb is None:
                 return
@@ -243,8 +348,120 @@ class Runtime:
                 log.info("向量模型预热完成，耗时 %.0fms", (time.time() - t0) * 1000)
             except Exception as e:  # noqa: BLE001
                 log.warning("向量模型预热失败，语义检索将不可用：%s", e)
+                return
+            self._load_ann_index(emb.dim, emb.model_id)
 
         threading.Thread(target=run, daemon=True, name="warmup").start()
+
+    def _autodetect_websearch(self) -> None:
+        """
+        探测并自动启用本机自建的 SearXNG。
+
+        用一次性的事件循环跑，而不是复用 FastAPI 那个 —— 这里是普通
+        后台线程，没有运行中的事件循环可用；而为了一次探测去抢主循环
+        的调度，是拿冷启动的确定性换一件可有可无的事。
+        """
+        web = getattr(self, "web", None)
+        if web is None:
+            return
+        try:
+            got = asyncio.run(web.autodetect_local())
+        except Exception as e:  # noqa: BLE001 — 探测失败绝不能影响引擎可用
+            log.debug("SearXNG 自动探测出错（忽略）：%s", e)
+            return
+        if got.get("enabled"):
+            self.events.publish("websearch.autodetect", got)
+        else:
+            log.debug("没有可用的本机 SearXNG：%s", got.get("reason"))
+
+    def _load_ann_index(self, dim: int, model_id: str) -> None:
+        """
+        A17：从磁盘加载持久化的 ANN 索引，放在后台预热线程里而不是
+        `initialize()` 同步做——大索引（百万级向量）光是读盘反序列化
+        就可能要几秒，同步做会把 A1「冷启动 ≤2s」直接顶穿。
+
+        这里补的是"引擎重启、库本来就很大"这条路径：只靠摄取流水线里
+        `_setup_ann_index` 那份（见 `pipeline.py`）只会在**下一次真的
+        写入新内容**时才触发，一个已经攒了几十万块、纯粹重启引擎的用户
+        永远等不到那一刻——语义检索会一直停留在暴力扫描，直到他下次投喂新内容。
+        """
+        if self.repo.ann_index is not None:
+            return  # 已经被摄取流水线设置过了
+        try:
+            from .search.ann_index import AnnIndex
+        except ImportError:
+            return
+
+        index_path = self.db.path.parent / "ann_index.usearch"
+        model_tag = f"{model_id}:{dim}"
+        ann = AnnIndex(dim=dim, model_tag=model_tag, index_path=index_path)
+        try:
+            loaded = ann.load()
+        except Exception as e:  # noqa: BLE001
+            log.warning("ANN 索引加载失败：%s", e)
+            return
+        self.repo.ann_index = ann
+        if loaded:
+            log.info("ANN 索引已从磁盘加载，%d 个向量，%s",
+                      ann.size, "已接管语义检索" if ann.active else "库还不够大，暂不接管")
+
+            # 🔴 增量维护（`write_chunks` 里那份）不是每写一条就存盘一次——
+            # 那样每次摄取都要付一次索引落盘的 I/O 代价，划不来。
+            # 意味着"最近一次存盘"和"数据库里实际有多少向量"之间可能存在落差：
+            # 引擎正常运行时不断在内存里 add()，只有下面这次 will_quit
+            # 干净关闭时才会真正存盘（见 main.py）。如果上次是异常退出
+            # （断电、强杀），磁盘上的索引就停留在上次存盘那一刻，
+            # 比数据库实际内容少了一截——不检查的话，这部分内容会在
+            # 语义检索里"消失"且没有任何报错或提示。
+            # 用同样的思路验过 A14 崩溃恢复：**发现不一致就重建，不检查就是没做完**
+            try:
+                real_count = self.db.connect().execute(
+                    "SELECT COUNT(*) AS n FROM vec_chunks"
+                ).fetchone()["n"]
+            except Exception:  # noqa: BLE001
+                real_count = ann.size
+            if real_count > ann.size:
+                log.warning(
+                    "ANN 索引里 %d 个向量，但库里实际有 %d 个（多半是上次没正常关闭）"
+                    "，后台重建补上差的 %d 个",
+                    ann.size, real_count, real_count - ann.size,
+                )
+                self.rebuild_ann_async()
+            return
+
+        # 没有磁盘文件（第一次用这个功能，或者索引文件丢了）。
+        # 如果库已经大到该用 ANN 了，自动在后台建一次——不用用户知道
+        # "还要手动点一下重建"这回事，这正是"自动配置需要的工具与内容"那条要求。
+        # 建的过程中查询照样走暴力扫描，只是慢一点，不会因为在重建就搜不出结果。
+        from .search.ann_index import ANN_THRESHOLD
+
+        try:
+            count = self.db.connect().execute(
+                "SELECT COUNT(*) AS n FROM vec_chunks"
+            ).fetchone()["n"]
+        except Exception:  # noqa: BLE001
+            count = 0
+        if count >= ANN_THRESHOLD:
+            log.info("库里已有 %d 个向量，超过 ANN 阈值，后台自动建一次索引", count)
+            self.rebuild_ann_async()
+
+    def rebuild_ann_async(self) -> None:
+        """后台全量重建 ANN 索引。规模大时要跑几分钟，不能挡着请求线程。"""
+        import threading
+
+        ann = self.repo.ann_index
+        if ann is None:
+            return
+
+        def run() -> None:
+            t0 = time.time()
+            try:
+                n = ann.rebuild_from_db(self.db.connect())
+                log.info("ANN 重建完成：%d 个向量，耗时 %.1fs", n, time.time() - t0)
+            except Exception as e:  # noqa: BLE001
+                log.warning("ANN 重建失败：%s", e)
+
+        threading.Thread(target=run, daemon=True, name="ann-rebuild").start()
 
     def status_snapshot(self) -> dict[str, Any]:
         """给状态栏用的实时快照。"""
@@ -284,6 +501,58 @@ class Runtime:
                 return
             except Exception as e:  # noqa: BLE001
                 log.debug("状态推送出错：%s", e)
+
+    async def deferred_jobs_loop(self) -> None:
+        """
+        后台补跑队列：OCR、语音转写、图片描述（C4）、人脸聚类（C5）。
+
+        🔴 这条循环补的是一个真实存在、这次之前没人发现的缺口——
+        `IngestPipeline.run_deferred_ocr()` / `run_deferred_transcribe()`
+        这两个方法**写好了，但从来没有任何代码调用过它们**。全仓搜索
+        只有函数定义和一处注释提到它们，`ingest_paths()`（真实摄取批处理的
+        入口）跑完主流程就直接返回，压根没有触发后台补跑这一步。
+        之前"补跑前后对比"的测试是在测试脚本里**手动直接调用**这两个方法
+        验证逻辑本身对不对，这证明了"补跑逻辑是对的"，但没有证明
+        "真实跑起来的引擎会自动补跑"——而它确实不会，这是两件事。
+        图片里的文字、视频里的话，在真实运行的应用里会一直停在 pending，
+        除非用户自己写代码调用这两个方法。现在把它们真正接上，
+        新加的图片描述、人脸聚类也走同一条队列，不用再犯第二次同样的错。
+        """
+        from .ingest.pipeline import IngestPipeline
+
+        while True:
+            try:
+                await asyncio.sleep(self._deferred_interval)
+                pipeline = self.pipeline
+                if not isinstance(pipeline, IngestPipeline):
+                    continue
+
+                did_any = False
+
+                n = await asyncio.to_thread(pipeline.run_deferred_ocr, 20)
+                did_any = did_any or n > 0
+
+                n = await asyncio.to_thread(pipeline.run_deferred_transcribe, 2)
+                did_any = did_any or n > 0
+
+                if self.config.enable_image_description and self.cloud.vision_configured:
+                    n = await asyncio.to_thread(
+                        pipeline.run_deferred_description, 10,
+                        self.cloud.provider, self.cloud.api_key,
+                        self.cloud.base_url, self.cloud.vision_model,
+                    )
+                    did_any = did_any or n > 0
+
+                if self.config.enable_face_clustering:
+                    n = await asyncio.to_thread(pipeline.run_deferred_faces, 20)
+                    did_any = did_any or n > 0
+
+                self._deferred_interval = 3.0 if did_any else 15.0
+            except asyncio.CancelledError:
+                return
+            except Exception as e:  # noqa: BLE001
+                log.warning("后台补跑任务出错：%s", e)
+                self._deferred_interval = 15.0
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """记下事件循环，工作线程要靠它把事件安全地送回来。"""
