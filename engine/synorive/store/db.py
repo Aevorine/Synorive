@@ -29,6 +29,27 @@ import sqlite_vec
 SCHEMA_VERSION = 1
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
+#: 加列迁移表：`(表名, 列名, 列声明)`。
+#:
+#: 🔴 这条不是可有可无的——`CREATE TABLE IF NOT EXISTS` 只对**全新**数据库
+#: 生效，已经建过的库（用户已经索引过内容的那个 .db 文件）不会因为
+#: schema.sql 改了就自动多出一列。不补这一步的后果是：新代码写
+#: `INSERT INTO chunks (..., section, ...)`，全新安装的用户测不出问题，
+#: 而任何一个已经用过这个应用的人一升级就会遇到
+#: `sqlite3.OperationalError: table chunks has no column named section`。
+#: 这个项目目前没有更完整的迁移框架，加一列就在这张表里加一行，
+#: 已经存在的列会被 `_migrate_columns` 自动跳过，天然幂等。
+_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("chunks", "section", "TEXT"),
+)
+
+
+def _migrate_columns(conn: sqlite3.Connection) -> None:
+    for table, column, decl in _COLUMN_MIGRATIONS:
+        cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
 
 class Database:
     def __init__(self, path: Path) -> None:
@@ -108,6 +129,7 @@ class Database:
                 self.capabilities["degraded"] = "trigram 不可用，标题子串搜索关闭"
 
             conn.executescript(_SCHEMA_SQL)
+            _migrate_columns(conn)
             cur = conn.execute("SELECT value FROM meta_kv WHERE key = 'schema_version'")
             row = cur.fetchone()
             if row is None:

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 连桌面引擎（局域网 HTTP）要的基本权限 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- 8.7/W5 拍照即搜：相机权限；不用 <uses-feature required="true">——
+         没摄像头的设备（平板/模拟器）应该能装、只是拍照搜索这一项灰掉，
+         不该拦住整个 App 装不上 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
+    <application
+        android:name=".SynoriveApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Synorive"
+        android:usesCleartextTraffic="true">
+        <!-- usesCleartextTraffic=true：引擎跑的是局域网内的明文 HTTP，地址是
+             用户手动配对时填的，构建期不可能预先知道要放行哪个域名/IP，没法
+             用只列白名单域名的 network security config 精确圈定。流量按设计
+             永远不出局域网，配对令牌见 PairingRepository —— 这不是"图省事
+             全局关安全"，是"目标本来就是局域网内一台自己电脑"这个场景决定的。 -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Synorive">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- 分享文本/链接进来：转发给 /api/ingest -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+
+            <!-- 分享图片进来：既能"存进资料库"也能"以图搜图" -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+
+            <!-- 分享视频进来：W6 视频反查 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- 拍照搜索用：相机把照片写到这个 provider 授权的临时文件里，
+             再把 content:// URI 传给相机 App，App 本身拿不到裸文件路径 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.synorive.mobile.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+
+</manifest>

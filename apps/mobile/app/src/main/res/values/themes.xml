@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 纯 Compose 界面，这个主题只在启动前那一瞬间和系统级 UI（如权限弹窗）用得到 -->
+    <style name="Theme.Synorive" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

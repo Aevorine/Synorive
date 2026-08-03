@@ -70,3 +70,12 @@ apps/desktop/src/styles/fonts.css
 
 # 打包产物（101MB，跑 npm run pack:win 可重建）
 /release/
+
+# ── Claude Code 本地状态：绝不进仓库 ───────────────────────────
+# 🔴 .pv-prompts.json 里存的是**你的原始提问被切成的词元**，
+#    拼起来就能还原你打过的字 —— 这是实打实的隐私数据。
+#    .pv-state.json 是会话计数器，settings.local.json 带本机绝对路径。
+#    三个都是「本机私有」，共享出去没有任何意义，只有泄露风险。
+#    （.claude/settings.json 和 skills/ 这类**该共享的**配置不受影响）
+.claude/.pv-*.json
+.claude/settings.local.json

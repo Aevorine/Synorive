@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -206,6 +207,80 @@ def _parse_csv(path: Path) -> ParsedDoc:
 
 
 # ── PDF ─────────────────────────────────────────────────────
+#
+# L3 分节：论文按 Abstract/Method/Result 分节索引，搜「实验方法」
+# 直接定位到那一节 —— 这是"极速搜索大量文献"里让搜索结果不再是
+# "在这篇 20 页论文里翻"，而是"就是这一段"的关键一步。
+#
+# 判据刻意保守，和这个项目一贯的"宁可漏也不要脏"是同一条原则（图谱实体抽取
+# 踩过反面教材：宽松判据把"索引""宋体"这类词误判成人名）。
+# 一行文字要同时满足：① 去掉可选的编号前缀和末尾冒号后，
+# ② **整行**（不是行的一部分）精确匹配已知的论文章节名，才算标题。
+# 只用"这行很短又是黑体"这种版面特征来判会把小标题、图注、作者单位
+# 一起认成章节标题；只匹配已知名称虽然会漏掉一些用词生僻的论文，
+# 但绝不会把正文一句话误判成新章节，检索结果不会因此"文不对题"。
+
+#: 章节别名 → 归一化后的粗粒度章节名。中英文都收，同一个概念只留一个显示名，
+#: 不然搜索结果里 "Method" 和 "Methodology" 被当成两个不同的地方
+_SECTION_ALIASES: dict[str, str] = {
+    "abstract": "Abstract", "摘要": "Abstract",
+    "introduction": "Introduction", "引言": "Introduction", "绪论": "Introduction",
+    "related work": "Related Work", "related works": "Related Work", "相关工作": "Related Work",
+    "background": "Background", "背景": "Background", "预备知识": "Background",
+    "method": "Method", "methods": "Method", "methodology": "Method",
+    "materials and methods": "Method", "approach": "Method", "proposed method": "Method",
+    "方法": "Method", "研究方法": "Method",
+    "experiment": "Experiments", "experiments": "Experiments", "experimental setup": "Experiments",
+    "experimental results": "Results", "实验": "Experiments", "实验设置": "Experiments",
+    "result": "Results", "results": "Results", "evaluation": "Results", "结果": "Results",
+    "实验结果": "Results", "评估": "Results",
+    "discussion": "Discussion", "讨论": "Discussion",
+    "conclusion": "Conclusion", "conclusions": "Conclusion", "concluding remarks": "Conclusion",
+    "future work": "Conclusion", "结论": "Conclusion", "总结": "Conclusion",
+    "acknowledgment": "Acknowledgments", "acknowledgement": "Acknowledgments",
+    "acknowledgments": "Acknowledgments", "acknowledgements": "Acknowledgments", "致谢": "Acknowledgments",
+    "references": "References", "bibliography": "References", "参考文献": "References",
+    "appendix": "Appendix", "appendices": "Appendix", "附录": "Appendix",
+}
+
+#: 整行必须匹配：可选数字编号（1. / 3.2 / IV.）+ 章节名 + 可选冒号，前后不能有别的字
+_SECTION_HEADING_RE = re.compile(
+    r"^(?:(?:\d+(?:\.\d+)*\.?)|(?:[IVXLC]+\.))?\s*("
+    + "|".join(re.escape(k) for k in sorted(_SECTION_ALIASES, key=len, reverse=True))
+    + r")\s*[:：]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _split_pdf_sections(pages: list[tuple[int, str]]) -> list[TextSegment]:
+    """把逐页正文按检测到的章节标题切开，每段带上它所属的章节名。"""
+    segs: list[TextSegment] = []
+    current_section: str | None = None
+    buf: list[str] = []
+    buf_page: int | None = None
+
+    def flush() -> None:
+        text = "\n".join(buf).strip()
+        if text:
+            segs.append(TextSegment(text=text, page=buf_page, section=current_section))
+        buf.clear()
+
+    for page_no, text in pages:
+        for line in text.split("\n"):
+            m = _SECTION_HEADING_RE.match(line.strip())
+            if m:
+                flush()
+                current_section = _SECTION_ALIASES[m.group(1).lower()]
+                buf_page = page_no
+                continue
+            if buf_page is None:
+                buf_page = page_no
+            buf.append(line)
+        # 换页时也切一刀，保持"位置信息=页码"的既有语义不受影响
+        flush()
+        buf_page = None
+    flush()
+    return segs
 
 
 def _parse_pdf(path: Path) -> ParsedDoc:
@@ -213,7 +288,7 @@ def _parse_pdf(path: Path) -> ParsedDoc:
 
     doc = fitz.open(str(path))
     try:
-        segs: list[TextSegment] = []
+        pages: list[tuple[int, str]] = []
         total = 0
         empty_pages = 0
 
@@ -222,10 +297,12 @@ def _parse_pdf(path: Path) -> ParsedDoc:
             if not text:
                 empty_pages += 1
                 continue
-            segs.append(TextSegment(text=text, page=i + 1))
+            pages.append((i + 1, text))
             total += len(text)
             if total > MAX_CHARS:
                 break
+
+        segs = _split_pdf_sections(pages)
 
         meta = doc.metadata or {}
         title = (meta.get("title") or "").strip() or path.stem

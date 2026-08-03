@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 拍照搜索的临时文件放这里，用完可以随时清 -->
+    <cache-path name="camera_captures" path="camera/" />
+</paths>

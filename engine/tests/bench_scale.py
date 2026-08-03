@@ -231,6 +231,29 @@ def measure(data_dir: Path, model_dir: Path) -> dict:
         stats = call("/api/stats")
         print(f"\n引擎就绪 {boot:.1f}s　库里 {stats['items']:,} 条 / {stats.get('chunks', 0):,} 块")
 
+        # A17 追加：库超过 ANN_THRESHOLD 时引擎会在后台自动建一次 usearch 索引
+        # （见 runtime.py `_load_ann_index`），这个数据目录之前没有 ANN 索引文件，
+        # 100 万个 512 维向量的 HNSW 图要建一阵子。不等它建完就跑语义检索基准，
+        # 量到的还是旧的暴力扫描延迟——等于白测，量的不是这次要验的东西。
+        ann_t0 = time.perf_counter()
+        ann_status = {}
+        for _ in range(1800):  # 最多等 30 分钟，先到先停
+            try:
+                ann_status = call("/api/search/ann/status", timeout=5)
+            except Exception:
+                ann_status = {}
+            if ann_status.get("active"):
+                break
+            time.sleep(1)
+        ann_wait_s = time.perf_counter() - ann_t0
+        if ann_status.get("active"):
+            print(f"ANN 索引已接管，等了 {ann_wait_s:.0f}s，{ann_status.get('size', 0):,} 个向量")
+        else:
+            print(
+                f"⚠ 等了 {ann_wait_s:.0f}s，ANN 索引仍未接管（状态：{ann_status}）——"
+                "下面量到的语义检索延迟可能还是暴力扫描的数字，不是 ANN 加速后的"
+            )
+
         queries = [
             "向量检索", "多模态分析", "关键帧", "断点续传", "语义搜索",
             "并发的分词器", "知识图谱聚合", "低延迟的重排序", "缩略图归档", "跨模态召回",
@@ -267,6 +290,9 @@ def measure(data_dir: Path, model_dir: Path) -> dict:
             "semantic_p95": round(pct(sem, 0.95), 1),
             "keyword_hits": kw_hits,
             "semantic_hits": sem_hits,
+            "ann_active": bool(ann_status.get("active")),
+            "ann_size": ann_status.get("size", 0),
+            "ann_wait_s": round(ann_wait_s, 1),
         }
         return out
     finally:
@@ -303,6 +329,8 @@ def main() -> int:
     print(f"  磁盘占用          {r['disk_mb']:,.1f} MB")
     print(f"  引擎内存          {r['engine_mem_mb']} MB")
     print(f"  冷启动            {r['boot_s']} s")
+    print(f"  ANN 索引          {'已接管 · ' + format(r['ann_size'], ',') + ' 个向量' if r['ann_active'] else '未接管'}"
+          f"（等待 {r['ann_wait_s']}s）")
     print(f"  首屏 keyword      P50 {r['keyword_p50']} ms　P95 {r['keyword_p95']} ms　（A2 门槛 ≤80 / ≤200）")
     print(f"  完整 semantic     P50 {r['semantic_p50']} ms　P95 {r['semantic_p95']} ms　（A3 门槛 P95 ≤500）")
     print(f"  命中总数          keyword {r['keyword_hits']}　semantic {r['semantic_hits']}")

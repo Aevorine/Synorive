@@ -36,6 +36,7 @@ from ..store.db import Database
 from ..store.repository import Repository
 from ..store.text import highlight_terms, to_query, to_trigram_query
 from .query_syntax import describe, parse_query
+from . import answer as answer_mod
 from .recovery import RecoveryPlanner
 
 log = logging.getLogger("synorive.search")
@@ -67,8 +68,22 @@ VECTOR_MATCH_THRESHOLD = float(os.environ.get("SYNORIVE_VECTOR_FLOOR", "0.50"))
 
 
 def _similarity(distance: float | None) -> float | None:
-    """sqlite-vec 给的是 L2 距离（向量已归一化），换算成 0~1 的相似度。"""
-    return None if distance is None else 1 - distance / 2
+    """
+    sqlite-vec 给的是 L2 距离（向量已归一化到单位长度），换算成余弦相似度。
+
+    🔴 实测纠过一次错：这里原来写的是 `1 - distance / 2`，是把 sqlite-vec
+    的 `distance` 当成了**平方** L2 距离（`2 - 2·cos`，那样才有 `cos = 1 - d/2`）。
+    直接拿 sqlite-vec 建一张表量出来的真实数字戳穿了这个假设——它给的是
+    **没开方的** L2 距离（`sqrt(2 - 2·cos)`），正确换算是 `cos = 1 - d² / 2`。
+    两个公式在 d 很小时数值接近（掩盖了问题），d 越大差得越离谱：
+    实测 cos_sim=0.7071 时，旧公式算出 0.6173，正确值是 0.7071。
+
+    这条 bug 不影响 RRF 融合排序本身（两个公式对 d 都是严格单调递减，
+    排序结果不变），但影响**任何拿绝对数值做判断**的地方——
+    D9 弱匹配阈值判定（`VECTOR_MATCH_THRESHOLD=0.50`）就是其中之一，
+    比较的分子从一开始就是算错的。
+    """
+    return None if distance is None else 1 - distance**2 / 2
 
 
 @dataclass
@@ -251,6 +266,23 @@ class Candidate:
     best_text: str = ""
     page: int | None = None
     start_sec: float | None = None
+    #: L3：命中的这一块属于论文的哪个章节（Abstract/Method/Results…）
+    section: str | None = None
+
+
+def _brute_force_knn(conn: sqlite3.Connection, qv: Any, knn_limit: int) -> list[tuple[int, float]]:
+    """sqlite-vec 的暴力扫描 KNN——A17 之前的唯一路径，现在是 ANN 关闭/不可用时的兜底。"""
+    blob = sqlite_vec.serialize_float32(qv.tolist())
+    try:
+        rows = conn.execute(
+            "SELECT chunk_rowid, distance FROM vec_chunks "
+            "WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+            (blob, knn_limit),
+        ).fetchall()
+    except sqlite3.OperationalError as e:
+        log.debug("向量召回失败（多半是还没建向量表）：%s", e)
+        return []
+    return [(int(r["chunk_rowid"]), float(r["distance"])) for r in rows]
 
 
 def _is_strong_match(c: Candidate) -> bool:
@@ -313,7 +345,7 @@ class SearchEngine:
         where, args = filters.sql("i")
         sql = f"""
             SELECT c.rowid AS chunk_rowid, c.item_id, c.text, c.channel, c.page, c.start_sec,
-                   bm25(chunks_fts) AS score
+                   c.section, bm25(chunks_fts) AS score
             FROM chunks_fts
             JOIN chunks c ON c.rowid = chunks_fts.rowid
             JOIN items  i ON i.id = c.item_id
@@ -343,6 +375,7 @@ class SearchEngine:
                 best_text=str(r["text"]),
                 page=r["page"],
                 start_sec=r["start_sec"],
+                section=r["section"],
             )
             c.matched_via.add(str(r["channel"]) or "body")
             seen[iid] = c
@@ -396,33 +429,40 @@ class SearchEngine:
             log.warning("查询向量化失败，本次只走关键词：%s", e)
             return []
 
-        blob = sqlite_vec.serialize_float32(qv.tolist())
-
         # 先做 KNN 再关联过滤：sqlite-vec 的 vec0 表要求 k 是常量条件，
         # 把过滤条件塞进 KNN 查询里会让它退化成全表扫。
         # 有筛选时多召回一些，过滤完还够用。
         knn_limit = limit * 3 if not filters.empty else limit
-        try:
-            rows = conn.execute(
-                "SELECT chunk_rowid, distance FROM vec_chunks "
-                "WHERE embedding MATCH ? AND k = ? ORDER BY distance",
-                (blob, knn_limit),
-            ).fetchall()
-        except sqlite3.OperationalError as e:
-            log.debug("向量召回失败（多半是还没建向量表）：%s", e)
+
+        # A17：库大到阈值以上时，ANN 索引接管这一步——
+        # 15 万块以下 ann_index 要么是 None（模型还没就绪过一次）要么 .active
+        # 是 False（见 ann_index.py 的阈值判据），两种情况都走原来的暴力扫描，
+        # 行为和这个功能上线前完全一样，一行代码都不受影响。
+        # 查询向量已经是归一化过的（写入侧和查询侧共用同一套约定，
+        # 暴力扫描那条路径也是直接拿它序列化去比对，不额外再归一化一次——
+        # 两条路径必须信任同一个前提，不然哪天前提变了只有一条路径悄悄跟着错）
+        ann = self.repo.ann_index
+        if ann is not None and ann.active:
+            try:
+                pairs = ann.search(qv.tolist(), knn_limit)
+            except Exception as e:  # noqa: BLE001
+                log.warning("ANN 召回失败，本次退回暴力扫描：%s", e)
+                pairs = _brute_force_knn(conn, qv, knn_limit)
+        else:
+            pairs = _brute_force_knn(conn, qv, knn_limit)
+
+        if not pairs:
             return []
 
-        if not rows:
-            return []
-
-        rowids = [int(r["chunk_rowid"]) for r in rows]
-        dist = {int(r["chunk_rowid"]): float(r["distance"]) for r in rows}
+        rowids = [rid for rid, _ in pairs]
+        dist = dict(pairs)
 
         where, args = filters.sql("i")
         marks = ",".join("?" * len(rowids))
         detail = conn.execute(
             f"""
-            SELECT c.rowid AS chunk_rowid, c.item_id, c.text, c.channel, c.page, c.start_sec
+            SELECT c.rowid AS chunk_rowid, c.item_id, c.text, c.channel, c.page, c.start_sec,
+                   c.section
             FROM chunks c JOIN items i ON i.id = c.item_id
             WHERE c.rowid IN ({marks})
               {'AND ' + where if where else ''}
@@ -449,6 +489,7 @@ class SearchEngine:
                 best_text=str(r["text"]),
                 page=r["page"],
                 start_sec=r["start_sec"],
+                section=r["section"],
             )
             c.matched_via.add("vector")
             out.append(c)
@@ -587,6 +628,7 @@ class SearchEngine:
         explain: bool = False,
         stage: str = "semantic",
         rerank: bool = False,
+        answer: bool = False,
     ) -> dict[str, Any]:
         """
         stage 控制跑哪几路 —— D2 三级瀑布靠它分次返回：
@@ -639,10 +681,14 @@ class SearchEngine:
         terms = highlight_terms(text_query)
 
         hits: list[dict[str, Any]] = []
+        # 与 hits 一一对应的原始块正文。D8 秒答卡要用它摘句子 ——
+        # 不能用 highlight，那个带标记和省略号，摘出来的句子原文里并不存在
+        raw_texts: list[str] = []
         for c, score, parts in page:
             r = rows.get(c.item_id)
             if r is None:
                 continue
+            raw_texts.append(c.best_text or "")
             hit: dict[str, Any] = {
                 "item": _row_to_item(r, self.repo.item_tags(c.item_id)),
                 "score": round(score, 6),
@@ -653,6 +699,10 @@ class SearchEngine:
                 loc["page"] = c.page
             if c.start_sec is not None:
                 loc["startSec"] = c.start_sec
+            if c.section:
+                # L3：这一条命中来自论文的哪个章节，界面据此显示
+                # "第 3 页 · Method"，用户不用翻开就知道该看哪一段
+                loc["section"] = c.section
             if loc:
                 hit["location"] = loc
 
@@ -660,9 +710,9 @@ class SearchEngine:
                 hit["explain"] = {
                     "scores": {
                         "keyword": round(-(c.bm25 or 0), 4) if c.bm25 is not None else None,
-                        "semantic": round(1 - (c.distance or 0) / 2, 4)
-                        if c.distance is not None
-                        else None,
+                        "semantic": (
+                            round(sim, 4) if (sim := _similarity(c.distance)) is not None else None
+                        ),
                         "recency": round(parts.get("recency", 0), 4),
                         "popularity": round(parts.get("popularity", 0), 4),
                         "sourceTrust": round(parts.get("sourceTrust", 0), 4),
@@ -686,6 +736,13 @@ class SearchEngine:
         weak = bool(hits) and not any(_is_strong_match(c) for c, _, _ in page)
         if weak:
             out["weakMatch"] = True
+
+        # D8 秒答卡：只在最终那一轮、且这一轮真的匹配上了才给。
+        # 首屏那一波就甩一句"答案"太急了 —— 语义还没跑完，很可能有更对的在后面。
+        if answer and stage == "semantic":
+            card = answer_mod.build(text_query, hits, weak=weak, texts=raw_texts)
+            if card:
+                out["answer"] = card
 
         # D9：搜不到、或者只搜到一堆弱匹配的时候，别让用户自己猜哪儿错了。
         # 只在**最终那一轮**算 —— keyword 首屏为空是正常的（语义还没跑完），
@@ -854,8 +911,9 @@ class SearchEngine:
             r = rows2.get(h["itemId"])
             if r is None:
                 continue
-            # L2 距离转相似度：向量已归一化，距离范围 [0,2]
-            score = max(0.0, 1.0 - h["distance"] / 2.0)
+            # L2 距离转相似度：和文本那边共用同一个换算（_similarity），
+            # vec_items 用的是同一套默认 vec0 度量（未开方 L2），同一条 bug 同一条修法
+            score = max(0.0, _similarity(h["distance"]) or 0.0)
             item = {
                 "item": _row_to_item(r, self.repo.item_tags(h["itemId"])),
                 "score": round(score, 6),
@@ -966,7 +1024,7 @@ def _reason(c: Candidate, parts: dict[str, float]) -> str:
     if c.rank_keyword:
         bits.append(f"关键词第 {c.rank_keyword} 名")
     if c.rank_vector:
-        sim = 1 - (c.distance or 0) / 2
+        sim = _similarity(c.distance) or 0.0
         bits.append(f"语义相似 {sim:.2f}")
     if c.rank_trigram:
         bits.append("文件名含查询串")

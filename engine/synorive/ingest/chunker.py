@@ -180,6 +180,10 @@ def _merge_tiny(chunks: list[Chunk]) -> list[Chunk]:
             and c.channel != "title"
             and out[-1].channel == c.channel
             and out[-1].page == c.page
+            # PDF 分节（L3）之后，同一页里可能挨着两个不同章节的碎块 ——
+            # 不检查这条的话，一小段 Results 的开头文字会被并进上一个
+            # Method 块，还保留着 Method 的 section 标签，检索定位就错了
+            and out[-1].section == c.section
             and len(c.text) < MIN_CHARS
             and len(out[-1].text) + len(c.text) <= MAX_CHARS
         ):

@@ -148,8 +148,34 @@ class IngestPipeline:
         with self._lock:
             if not self._vec_ready:
                 self.repo.db.ensure_vector_tables(emb.dim, emb.model_id)
+                self._setup_ann_index(emb.dim, emb.model_id)
                 self._vec_ready = True
         return emb
+
+    def _setup_ann_index(self, dim: int, model_id: str) -> None:
+        """
+        A17：维度和模型确定的这一刻，顺带把 ANN 索引也接上——
+        和 `ensure_vector_tables` 同一个时机、同一把锁，因为道理是一样的：
+        两者都要等实际嵌入维度确定了才能建。
+
+        usearch 没装（可选依赖，见 `doctor/registry.py` 的 `pkg-ann`）
+        就安静跳过，`self.repo.ann_index` 保持 None——写入路径本来就对
+        `ann_index is None` 做了判断，行为等价于这个功能不存在。
+        """
+        try:
+            from ..search.ann_index import AnnIndex
+        except ImportError:
+            log.info("usearch 没装，大规模检索提速功能不可用（不影响其它任何功能）")
+            return
+
+        index_path = self.repo.db.path.parent / "ann_index.usearch"
+        model_tag = f"{model_id}:{dim}"
+        ann = AnnIndex(dim=dim, model_tag=model_tag, index_path=index_path)
+        try:
+            ann.load()
+        except Exception as e:  # noqa: BLE001
+            log.warning("ANN 索引加载失败，等库大到需要时再重建：%s", e)
+        self.repo.ann_index = ann
 
     # ── 单个文件 ────────────────────────────────────────────
 
@@ -295,6 +321,7 @@ class IngestPipeline:
                     channel=c.channel,
                     index=c.index,
                     page=c.page,
+                    section=c.section,
                     token_count=c.token_estimate,
                 )
                 for c in chunks
@@ -486,6 +513,119 @@ class IngestPipeline:
                 self.repo.set_stage(item_id, "ocr", "failed", error=str(e))
 
         log.info("后台 OCR 补跑完成 %d 张", done)
+        return done
+
+    def run_deferred_description(
+        self, limit: int, provider: str, api_key: str, base_url: str, model: str,
+    ) -> int:
+        """
+        C4：后台补跑图片详细描述。调用方（`runtime.py` 的
+        `deferred_jobs_loop`）已经检查过 `enable_image_description` 和
+        `cloud.vision_configured` 都为真才会调这个方法，这里不重复判断，
+        但 `model` 传空字符串这种"配置本身不完整"的情况还是要挡一道，
+        不能假设调用方永远传对——这是个 public 方法，直接调用它的人
+        不一定经过 runtime.py 那层检查。
+
+        用 `asyncio.run()` 桥接：`cloud/adapters.py` 是给 FastAPI 路由写的
+        纯 async 接口，而这一整个流水线模块是同步的（后台线程池跑），
+        这个方法本身又是在 `asyncio.to_thread` 里被调用（见 runtime.py），
+        所以在这个独立线程里开一个新的事件循环跑几次 HTTP 请求是安全的——
+        不会和引擎主线程那个事件循环打架。
+        """
+        import asyncio
+
+        if not model or provider == "none" or not api_key:
+            return 0
+
+        pending = self.repo.pending_description_items(limit)
+        if not pending:
+            return 0
+
+        from ..cloud.adapters import CloudAdapterError, build_adapter
+        from ..cloud.describe import describe_image
+
+        adapter = build_adapter(provider, api_key=api_key, base_url=base_url or None)
+
+        async def one(path: Path) -> str:
+            return await describe_image(path, adapter=adapter, model=model)
+
+        done = 0
+        for item_id, locator in pending:
+            p = Path(locator)
+            if not p.exists():
+                self.repo.set_stage(item_id, "description", "skipped", error="文件已不存在")
+                continue
+            try:
+                self.repo.set_stage(item_id, "description", "running")
+                text = asyncio.run(one(p))
+                self.repo.write_chunks(
+                    item_id,
+                    [ChunkRow(text=text, channel="description", index=0, token_count=len(text))],
+                    None,
+                )
+                cur = self.repo.get_item(item_id)
+                base = str(cur["snippet"] or "") if cur else ""
+                # 描述并进摘要，和 OCR 文字一个待遇——列表里直接能看到
+                self.repo.update_item_fields(item_id, snippet=f"{base} · {text}".strip(" ·"))
+                self.repo.index_item_text(item_id)
+                self.repo.set_stage(item_id, "description", "done")
+                done += 1
+            except CloudAdapterError as e:
+                # 标 failed（不是 skipped）只是为了在界面上如实区分"没做"和"做了但没成"，
+                # 不代表会被自动重试——`pending_description_items` 的判据是
+                # "从没跑过"，failed 之后就不会再被这条队列捡起来，
+                # 和现有 OCR 补跑（`pending_ocr_items`）的重试行为是一致的，
+                # 不是这里刻意放松的
+                self.repo.set_stage(item_id, "description", "failed", error=str(e))
+            except Exception as e:  # noqa: BLE001
+                self.repo.set_stage(item_id, "description", "failed", error=str(e))
+
+        if done:
+            log.info("后台图片描述补跑完成 %d 张", done)
+        return done
+
+    def run_deferred_faces(self, limit: int = 100, on_progress: ProgressCb | None = None) -> int:
+        """C5：后台补跑人脸检测与聚类。单线程跑——和 OCR 同理，检测本身是 CPU 密集的
+        本地推理，多开线程只会跟主摄取流水线抢核，得不偿失。"""
+        pending = self.repo.pending_face_items(limit)
+        if not pending:
+            return 0
+
+        from ..analyze.face import FaceAnalyzer, bgr_from_pil
+
+        analyzer = FaceAnalyzer(self.model_dir)
+        if not analyzer.available():
+            for item_id, _ in pending:
+                self.repo.set_stage(item_id, "faces", "skipped", error="人脸模型未安装")
+            return 0
+
+        done = 0
+        for item_id, locator in pending:
+            p = Path(locator)
+            if not p.exists():
+                self.repo.set_stage(item_id, "faces", "skipped", error="文件已不存在")
+                continue
+            try:
+                self.repo.set_stage(item_id, "faces", "running")
+                from PIL import Image
+
+                with Image.open(p) as img:
+                    img_bgr = bgr_from_pil(img)
+                detected = analyzer.analyze(img_bgr)
+                if detected:
+                    self.repo.write_faces(
+                        item_id,
+                        [(f.bbox, f.det_score, f.embedding) for f in detected],
+                    )
+                self.repo.set_stage(item_id, "faces", "done")
+                done += 1
+                if on_progress and done % 10 == 0:
+                    on_progress({"stage": "faces", "done": done, "total": len(pending)})
+            except Exception as e:  # noqa: BLE001
+                self.repo.set_stage(item_id, "faces", "failed", error=str(e))
+
+        if done:
+            log.info("后台人脸聚类补跑完成 %d 张", done)
         return done
 
     # ── 网页 C11 ────────────────────────────────────────────

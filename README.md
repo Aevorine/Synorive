@@ -1,25 +1,91 @@
+<div align="center">
+
 # Synorive
 
-多模态并发分析与极速内容检索平台。桌面端（Windows）+ 安卓端，可被 Claude Code 直接调用。
+**Local-first multimodal search for everything you own — and a fact-checked web researcher.**
+**本地优先的多模态检索 + 会自己找反驳材料的联网研究工作台**
 
-把本地文件、网页链接、导出的聊天记录统一进一个索引；上传任意图片/文字/链接/视频，
-并发分析后在毫秒级找到相关内容；支持跨模态互搜（用图找文、搜到视频的第 3 分 24 秒）。
+Search your documents, code, images, videos and web archives by **meaning**, not filename.
+Then search the open web across multiple engines, cross-check every claim, and get a briefing
+where **every sentence is verbatim from a real source**.
+
+Runs fully offline. Your files never leave your machine.
+Exposes 16 tools to **Claude Code** over MCP.
+
+[![Status](https://img.shields.io/badge/status-alpha%20v0.1.0-C8871B)](task-progress.md)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](#怎么跑起来)
+[![Engine](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](engine)
+[![Desktop](https://img.shields.io/badge/desktop-Electron%2041%20%2B%20React%2019-0F4C8C)](apps/desktop)
+[![Offline](https://img.shields.io/badge/works-fully%20offline-1E9E76)](#几个不显然的设计决定)
+[![MCP](https://img.shields.io/badge/MCP-16%20tools-C8871B)](mcp)
+
+</div>
+
+---
+
+## What it does / 它做什么
+
+|  | English | 中文 |
+|---|---|---|
+| 🔍 | **Semantic search over your own files** — documents, source code, PDFs (split by section), images (OCR), video (down to the second), web archives | **搜自己的东西**：文档、代码、PDF（按章节）、图片（OCR）、视频（定位到秒）、网页存档 |
+| 🖼 | **Cross-modal**: find an image by describing it, or find *which video a frame came from and at what second* | **跨模态互搜**：以图搜图、以图搜视频镜头并定位到秒 |
+| 🌐 | **Multi-engine web search** — Bing / Baidu / 360 / Mojeek / Wikipedia, plus Google & DuckDuckGo via a self-hosted SearXNG | **多引擎联网搜索**，自建 SearXNG 后 Google 和 DuckDuckGo 也能用 |
+| 🛡 | **Actively hunts for counter-evidence** — searches for debunkings, traces a claim to its earliest source, flags retracted papers | **主动找打脸证据**：反向搜辟谣、溯源到最早出处、标出已撤稿文献 |
+| 📋 | **Extract-only briefings** — every line is a verbatim quote with its source. Conflicting claims are shown **side by side, undecided** | **只摘录不改写的简报**：每句都逐字来自原文并挂着出处；有分歧就并排放，不替你选 |
+| 🔌 | **16 MCP tools for Claude Code** — let your agent search your library and verify claims for you | **16 个 MCP 工具**，Claude Code 能直接检索你的库、替你核查说法 |
+| 🔒 | **Privacy fence** — network search and cloud inference are two *separate* switches, because one leaks *what you ask*, the other leaks *what you have* | **隐私围栏**：联网搜索和云端推理是两个开关，前者泄露"我在查什么"，后者泄露"我有什么" |
+
+**Keywords:** local semantic search · multimodal RAG · offline search engine · personal knowledge base ·
+fact checking · misinformation detection · MCP server · Claude Code · vector search · SQLite FTS5 ·
+sqlite-vec · HNSW · OCR · video search · Chinese NLP · Electron · privacy-first
+
+---
+
+## Why another search tool? / 为什么还要再造一个
+
+Most "search your files" tools stop at keyword matching, and most "AI research" tools
+hand you a fluent summary you cannot verify. Synorive refuses both:
+
+- **Retrieval is measured, not claimed.** Every performance number in this README was
+  benchmarked on real data, including the two that **did not** hit their targets — they're
+  listed with the reason instead of being quietly dropped.
+- **Nothing is silently discarded.** Results filtered out as low-quality go into an
+  "excluded" drawer with the reason, one click to bring back.
+- **It never tells you something is false.** It finds who disputes a claim and shows you
+  both sides — judging truth is not a capability it has, and pretending otherwise
+  would be the most dangerous thing it could do.
 
 ---
 
 ## 现在能跑到哪一步
 
-一到三期 + 五期已完成。**现在这个应用是真的能用的**：
+一到三期、五期、八期已完成。**现在这个应用是真的能用的**：
 
+**搜自己的东西**
 - 拖一个混着文档、代码、图片、视频的文件夹进去 → 后台并发索引，界面不卡
 - 中文语义搜文档（描述内容也能搜到，不用记文件名）
 - `type:pdf date:最近7天 -草稿 "精确短语"` 这类语法直接写在搜索框里
 - 搜图片里的文字（OCR 实测字符覆盖率 100%）
 - 用一张图找相似的图，或者**找它出自哪个视频的第几秒**
 - 搜一句台词，直接定位到视频的第 3 分 24 秒
-- `claude mcp add synorive` 之后，Claude Code 能直接检索你的库
+- 论文按 Abstract/Method/Results 分节索引，搜到直接标着「第 2 页 · Background」
+- 问一篇 PDF **「你能回答哪些问题」**，点一条直接展开那一段原文
 
-完整进度与实测数据见 `task-progress.md`，技术方案与 76 项功能菜单见 `docs/00-技术方案.md`。
+**搜全网并判真假**
+- 多引擎并发（cn.bing / 百度 / 360 / Mojeek / 维基），自建 SearXNG 后 **Google 与 DuckDuckGo 也能用**
+- 深挖会**读完第一轮再自己想出该追问什么**，然后再搜一轮
+- 中文查询自动补一个英文变体，派给英文覆盖更好的引擎（一手资料多半是英文的）
+- 主动反向搜「辟谣 / 质疑 / 争议 / debunked」，把打脸材料摆出来
+- 把一条信息**追溯到最早出处**，十几个站两天内发同一件事会被标成「转载爆发」
+- 引用的论文**被撤稿了会红字标出来**（走 OpenAlex）
+- 五家学术源按 DOI 合并，带被引数和 PDF 链接
+
+**给 Claude Code 用**
+- `claude mcp add synorive` 之后，Claude Code 能直接检索你的库、核查一个说法、
+  同时对比「你自己的资料」和「网上说的」
+
+完整进度与实测数据见 [`task-progress.md`](task-progress.md)，
+技术方案与 76 项功能菜单见 `docs/00-技术方案.md`。
 
 ### 实测数据（都是量出来的，不是估的）
 
@@ -90,10 +156,35 @@ node scripts/install-claude-integration.mjs
 ```
 
 装完新开一个 Claude Code 会话，问「我之前存过关于 X 的东西吗」就会自动触发检索。
-八个工具：`search` / `ingest` / `analyze` / `get_content` / `similar` / `timeline` / `graph` / `status`。
+
+**16 个工具**：
+- 本地库：`search` / `ingest` / `analyze` / `get_content` / `similar` / `timeline` / `graph` / `status` / `questions`
+- 联网：`web_search` / `research` / `scholar` / `read_url` / `web_engines` / `verify` / `unified_search`
+
+给 Claude 的返回**强制带可信度分项和出处**，工具描述里写死了能力边界
+（"判断不了这句话本身是不是事实"、"逐字摘录不是改写"、"有反驳材料 ≠ 原说法是假的"）——
+不写的话 Claude 会把内容农场的说法和官方文档等同看待，再用同样自信的语气转述。
 
 引擎地址是自动发现的（读 `data/engine.json`）：桌面端开着就连同一个引擎，
 没开就自己起一个。也可以用 `SYNORIVE_ENGINE_URL` 显式指定。
+
+### 让 Google 和 DuckDuckGo 也能用（可选，但强烈建议）
+
+2026-08 实测：Google 已强制 JavaScript（纯 HTTP 只拿到跳转页）、DuckDuckGo 的 html
+端点改成了 JS 落地页、Yandex 直接给验证码、**七个 SearXNG 公共实例全部 429/403**。
+免费拿到这几家结果，现实里只剩一条路：**自己跑一个 SearXNG**。
+
+```bash
+node scripts/setup-searxng.mjs            # 先看它打算做什么（默认干跑，什么都不动）
+node scripts/setup-searxng.mjs --apply    # 确认后再真装（要 Docker）
+node scripts/setup-searxng.mjs --status   # 看还活着没
+```
+
+装完引擎会在冷启动时**自动发现并启用**它，不用去设置里勾。
+实测装完后 `google cse` 单独贡献 20 条、DuckDuckGo 10 条 —— 这两家直连时都是零。
+
+> 脚本替你填掉了最容易踩的坑：SearXNG **默认只开放 HTML 格式**，
+> 不在 `settings.yml` 里加 `json` 的话，现象是"实例起来了却一条结果都没有"。
 
 ### 命令行
 
@@ -160,6 +251,19 @@ Times New Roman 取，汉字它没有就自动落到宋体。24px 以上的标�
 
 ---
 
-## 许可
+## 许可 / License
 
-私有项目。字体 Noto Serif SC 采用 SIL OFL 1.1，可商用。
+**[GNU AGPL-3.0](LICENSE)** — Copyright © 2026 Fusheng201
+
+你可以自由使用、修改、分发这个项目。但有一条硬约束：
+**任何基于它的修改版，只要被别人用到（包括做成网络服务），源码就必须一并公开。**
+选 AGPL 而不是 MIT，是为了防止有人把它闭源拿去商用。
+
+> You may use, modify and redistribute this project freely, with one hard condition:
+> **any modified version that other people can interact with — including over a network —
+> must have its complete source code made available.**
+
+第三方资源：
+- 字体 Noto Serif SC —— SIL OFL 1.1，可商用
+- 模型（BGE / CLIP / RapidOCR / SenseVoice / BGE-reranker）各自遵循原始许可，
+  由依赖医生按需下载，**不随仓库分发**

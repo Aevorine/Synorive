@@ -141,6 +141,52 @@ REGISTRY: tuple[Dependency, ...] = (
             ),
         ),
     ),
+    # ═══ C5 人脸检测与聚类：默认关，隐私最敏感的一类 ═══
+    #
+    # 模型来源实测核实过（2026-08-02）——这个项目早前吃过"想当然写模型仓库路径
+    # 结果 404"的亏（Chinese-CLIP 那次），这次先拿 HEAD 请求确认了文件真的存在：
+    #   官方源：github.com/deepinsight/insightface release v0.7 的 buffalo_l.zip
+    #          （276MB，含 5 个模型，只需要其中 2 个，不想为了 2 个文件下一个 zip）
+    #   单文件：huggingface.co/public-data/insightface，把 zip 内容原样按目录存了一份，
+    #          实测 HEAD 请求确认 det_10g.onnx=16,923,827 字节、
+    #          w600k_r50.onnx=174,383,860 字节，和官方 zip 里的大小吻合。
+    # ⚠️ 官方没有发布 SHA256（只有 GitHub blob 的 MD5 和 facefusion 镜像的 CRC32），
+    #    这里只能靠文件大小做完整性检查，做不到强校验和——如实标注，不假装有。
+    # ⚠️ License：insightface 预训练模型仅限非商业研究用途，见 analyze/face.py 顶部说明。
+    Dependency(
+        id="face-detect",
+        kind=DepKind.MODEL,
+        name="SCRFD（人脸检测）",
+        purpose="在照片里找出人脸的位置，是人脸聚类的第一步",
+        required_by=("C5 人脸聚类",),
+        degrades_to="人脸聚类功能整体不可用",
+        optional=True,
+        subdir="insightface/models/buffalo_l",
+        files=(
+            RemoteFile(
+                "det_10g.onnx",
+                _hf("public-data/insightface", "models/buffalo_l/det_10g.onnx"),
+                size_bytes=16_923_827,
+            ),
+        ),
+    ),
+    Dependency(
+        id="face-embed",
+        kind=DepKind.MODEL,
+        name="ArcFace w600k_r50（人脸特征）",
+        purpose="把每张检测到的脸转成一个特征向量，同一个人的向量会互相靠近，据此聚类",
+        required_by=("C5 人脸聚类",),
+        degrades_to="人脸聚类功能整体不可用",
+        optional=True,
+        subdir="insightface/models/buffalo_l",
+        files=(
+            RemoteFile(
+                "w600k_r50.onnx",
+                _hf("public-data/insightface", "models/buffalo_l/w600k_r50.onnx"),
+                size_bytes=174_383_860,
+            ),
+        ),
+    ),
     Dependency(
         id="embed-image-zh",
         kind=DepKind.MODEL,
@@ -282,6 +328,27 @@ REGISTRY: tuple[Dependency, ...] = (
         degrades_to="链接只存标题和 URL",
         optional=True,
     ),
+    Dependency(
+        id="pkg-face",
+        kind=DepKind.PY_PACKAGE,
+        name="insightface（人脸检测/识别推理库）",
+        purpose="加载 SCRFD/ArcFace 模型、做检测框解码和人脸对齐——这段解码逻辑很容易写错，"
+                 "直接用模型原作者维护的库，不自己重新实现",
+        required_by=("C5 人脸聚类",),
+        degrades_to="人脸聚类功能整体不可用",
+        optional=True,
+    ),
+    Dependency(
+        id="pkg-ann",
+        kind=DepKind.PY_PACKAGE,
+        name="usearch（向量近似索引）",
+        purpose="库大到十几万块以上时，让语义检索不再随库变大而线性变慢（A17）",
+        required_by=("大规模语义检索提速",),
+        # 缺了不影响任何功能——只是库大了以后语义检索会变慢（还是能用，
+        # 15 万块以内暴力扫描本来就够快，压根感觉不到差别）
+        degrades_to="库超过约 15 万块时语义检索延迟会随规模线性增长",
+        optional=True,
+    ),
     # ═══ 核显加速：可选，和 CPU 版互斥 ═══
     Dependency(
         id="gpu-directml",
@@ -317,6 +384,8 @@ IMPORT_PROBES: dict[str, tuple[str, ...]] = {
     "pkg-asr": ("sherpa_onnx",),
     "pkg-web": ("trafilatura",),
     "gpu-directml": ("onnxruntime",),
+    "pkg-ann": ("usearch",),
+    "pkg-face": ("insightface",),
 }
 
 #: 国内 pip 镜像。装包时先试镜像，不通再回官方源。
