@@ -12,7 +12,7 @@
 
 [English](../../README.md) · **简体中文** · [Français](README.fr.md) · [Español](README.es.md) · [Русский](README.ru.md) · [العربية](README.ar.md)
 
-[![下载](https://img.shields.io/badge/download-v0.1.2-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![下载](https://img.shields.io/badge/download-v0.1.3-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![许可证](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](../../LICENSE)
 [![平台](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![引擎](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](../../engine)
@@ -24,8 +24,8 @@
 
 | | |
 |---|---|
-| **Windows 安装包** | [`Synorive-Setup-0.1.2.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 自带 Python 运行时，**应用内自动更新** |
-| **Windows 便携版** | [`Synorive-0.1.2-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 免安装；这种形式不支持自动更新 |
+| **Windows 安装包** | [`Synorive-Setup-0.1.3.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 自带 Python 运行时，**应用内自动更新** |
+| **Windows 便携版** | [`Synorive-0.1.3-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 免安装；这种形式不支持自动更新 |
 | **安卓** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) —— 瘦客户端，通过局域网连你电脑上的引擎 |
 
 **不需要你装 Python。** 解释器和引擎的全部依赖都在安装包里，
@@ -188,7 +188,7 @@ npm run pack:win         # 打 Windows 安装包 + 便携版
 
 ```bash
 npm run version:check      # 四处版本号是不是一致
-npm run version:set 0.1.2  # 一条命令改完四处，别手动改
+npm run version:set 0.1.3  # 一条命令改完四处，别手动改
 npm run android:keystore   # 首次：生成安卓 release 签名密钥库（放仓库外）
 npm run release            # 出两端产物，**不上传**
 npm run release:publish    # 出产物并创建 GitHub Release（要 gh 已登录）
