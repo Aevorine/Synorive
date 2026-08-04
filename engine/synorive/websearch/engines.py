@@ -109,6 +109,15 @@ class EngineReply:
     results: list[WebResult] = field(default_factory=list)
     elapsed_ms: int = 0
     error: str = ""
+    #: 这一轮**有没有真的向对方发过请求**。
+    #:
+    #: 🔴 False 的那几种（熔断中 / 没配 Key / 没连桌面端 / 被排班挤下场）
+    #: **绝不能记进健康档案**。它们原来照样被当成一次观测写进去，后果是
+    #: 一条自我实现的下坡路：一家引擎偶然失败三次 → 熔断 → 熔断期间每轮
+    #: 再"观测"到一次失败 → 成功率继续掉 → 排班永远不再选它。
+    #: 实测健康档案里 DOAJ/OpenAIRE 那种「68 次全空、0 次成功」的记录，
+    #: 一部分就是这么攒出来的 —— **没派上场和搜了没结果，被记成了同一件事**。
+    attempted: bool = True
 
 
 # ────────────────────────────────────────────────────────────────
@@ -166,6 +175,128 @@ async def _pace(engine_id: str, min_interval_s: float) -> None:
         _pace_last[engine_id] = time.monotonic()
 
 
+#: 预热首页时用的头。要像"一个人刚打开这个网站"，而不是"一个接口调用者"——
+#: 少了 `Accept: text/html` 有些站直接不种 cookie
+_PRIME_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+
+
+#: 预热拿到的 cookie，**按引擎缓存、跨搜索复用**，值是 `(拿到的时刻, cookie)`。
+#:
+#: 🔴 **没有这层缓存的话预热是净亏的**：`meta.py` 里每次搜索都是
+#: `async with httpx.AsyncClient(...)` 现开一个 client，也就是**一个全新的
+#: 空 cookie 罐**。只按"每个 client 一次"去重，等于每搜一次就多发一次
+#: 百度首页请求 —— 而整轮总截止只有 4 秒（`meta.TOTAL_DEADLINE_S`），
+#: 白搭一个往返足以让百度每次都踩线出局。
+#: 那会变成一个很难看的结果：**为了修好百度而让百度变慢到用不了。**
+_prime_cache: dict[str, tuple[float, httpx.Cookies]] = {}
+#: cookie 放多久。百度的 BAIDUID 本身有效期很长，这里卡短一点是为了
+#: 让"cookie 被对方作废了"这种情况最多影响 20 分钟，而不是一直到重启
+_PRIME_TTL_S = 1200.0
+
+
+def _domain_cookies(client: httpx.AsyncClient, host: str) -> httpx.Cookies:
+    """把 client 罐子里**属于这个域**的 cookie 挑出来单独存一份。
+
+    不整罐存是有意的：一轮搜索里十几家引擎共用一个 client，
+    整罐存会把别家的 cookie 也缓存进来，下一轮再灌回去就成了跨站串味。
+    """
+    picked = httpx.Cookies()
+    for c in client.cookies.jar:
+        dom = (c.domain or "").lstrip(".")
+        if dom and (host == dom or host.endswith(f".{dom}")):
+            picked.jar.set_cookie(c)
+    return picked
+
+
+async def _prime(client: httpx.AsyncClient, engine: BaseEngine) -> None:
+    """
+    发正式请求前先备好这家的 cookie（见 `BaseEngine.prime_url`）。
+
+    两层去重：**这个 client 已经弄过就跳过**（一轮里的多个查询变体不重复发），
+    **进程里 20 分钟内拿过就直接灌回去**（跨搜索复用，不再多发一个往返）。
+
+    **预热失败不算这家引擎失败**：正式请求照发，最差也就是退回原来那个
+    验证码页 —— 让"拿 cookie 这一步网络抖了一下"直接判死一家引擎，
+    是把兜底做成了新的故障源。
+    """
+    if not engine.prime_url:
+        return
+    done: set[str] | None = getattr(client, "_syn_primed", None)
+    if done is None:
+        done = set()
+        # httpx 的 AsyncClient 没有 __slots__，可以挂属性
+        client._syn_primed = done  # type: ignore[attr-defined]
+    if engine.id in done:
+        return
+    done.add(engine.id)      # 先记后发：失败也不重试，否则整轮卡在预热上
+
+    host = urlparse(engine.prime_url).netloc.lower()
+    hit = _prime_cache.get(engine.id)
+    if hit and time.monotonic() - hit[0] < _PRIME_TTL_S and len(hit[1].jar):
+        for c in hit[1].jar:
+            client.cookies.jar.set_cookie(c)
+        return
+
+    try:
+        await client.get(engine.prime_url, headers=_PRIME_HEADERS)
+    except httpx.HTTPError as e:
+        log.debug("预热 %s 失败（不影响正式请求）：%s", engine.id, type(e).__name__)
+        return
+    got = _domain_cookies(client, host)
+    if len(got.jar):
+        _prime_cache[engine.id] = (time.monotonic(), got)
+
+
+def _drop_prime(engine_id: str) -> None:
+    """把某家缓存的 cookie 作废，下一轮重新去拿。
+
+    在**明知这套 cookie 没起作用**的时候调（撞上验证页）。不作废的话
+    一套已经失效的 cookie 会被复用满 20 分钟 —— 那正好是"修好了但看起来
+    还是坏的"最容易发生的窗口。
+    """
+    _prime_cache.pop(engine_id, None)
+
+
+def _err_hint(resp: httpx.Response) -> str:
+    """
+    从错误响应里挑一句**能指向根因**的话，给界面显示。
+
+    优先读 JSON 错误体里的 `message`/`error`/`exception` —— 服务端自己写的
+    那句话（比如 OpenAIRE 的「expected boolean」）比任何我猜的措辞都准。
+    """
+    try:
+        data = resp.json()
+    except (json.JSONDecodeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        for k in ("message", "error", "exception", "detail", "reason"):
+            v = data.get(k)
+            if isinstance(v, str) and v.strip():
+                return _clean(v)[:200]
+    return _clean(resp.text)[:200] or "（对方没给任何说明）"
+
+
+def _page_hint(resp: httpx.Response) -> str:
+    """
+    解析失败时附一句**页面长什么样**：多少字节、标题是什么。
+
+    没有这一句的话，「找不到结果容器」这句话对排查毫无帮助 ——
+    分不清是"对方改版了"（正常大小的结果页、标题是搜索词）、
+    "被挡了"（几 KB、标题是验证页）还是"网络给了个错误页"。
+    这三种的处理方式完全不同，而它们在旧的报错里长得一模一样。
+    """
+    title = ""
+    m = re.search(r"<title[^>]*>(.*?)</title>", resp.text[:4000], re.S | re.I)
+    if m:
+        title = _clean(m.group(1))[:60]
+    size = len(resp.content or b"")
+    return f"HTTP {resp.status_code}、{size} 字节" + (f"、标题「{title}」" if title else "")
+
+
 def _retry_after_s(resp: httpx.Response) -> float:
     """读 `Retry-After`。给的是秒数就用它，给日期或没给就用默认值。"""
     raw = (resp.headers.get("retry-after") or "").strip()
@@ -205,6 +336,16 @@ class BaseEngine:
     #: 被限流时告诉用户**能做什么**。空串就用通用那句。
     #: 「稍后会自动恢复」对一个每次都撞 429 的接口来说是句废话
     limit_hint = ""
+    #: 正式发请求之前先访问一次这个地址，把对方种的 cookie 拿到手。空 = 不预热。
+    #:
+    #: 🔴 **这不是"伪装成浏览器"，是实测出来的必要步骤**（2026-08-04）：
+    #: 百度在**没有 BAIDUID 这个 cookie 的情况下必定**把请求送到 wappass
+    #: 安全验证页 —— 换 UA、降频率、加 Referer 全都没用，因为根因不是
+    #: "请求太密"而是"这个来源看起来根本没打开过百度"。
+    #: 先 GET 一次首页拿到 cookie 再搜，同一台机器同一秒就直接出结果页。
+    #: 之前界面上那句「连续请求太密会触发，隔一会儿就恢复」是**误诊**：
+    #: 按它去做（等一会儿再搜）永远等不到恢复。
+    prime_url = ""
 
     def build(
         self,
@@ -245,6 +386,7 @@ class BaseEngine:
             return self.build(query, limit=limit, lang=lang, region=region,
                               time_range=time_range, key=key)
 
+        await _prime(client, self)
         await _pace(self.id, self.min_interval_s)
         resp = await client.send(_req())
 
@@ -259,6 +401,28 @@ class BaseEngine:
         if resp.status_code in (403, 429):
             return resp.status_code, ParseOutcome.CHALLENGED, [], self.limit_hint
         outcome, results, reason = split_parse(self.parse(resp))
+
+        # 🔴 **HTTP 出错永远不许被报成「没有结果」**（2026-08-04 加）。
+        # 这条堵的是这一层最阴的一类故障：JSON 接口出错时回的是
+        # `{"status":"error","message":"…"}` 这种**结构完全不同**的正常 JSON，
+        # 于是 `data.get("results")` 拿到 None、解析器一路走到 `EMPTY`，
+        # 界面上显示"这个词没搜到东西"——用户据此以为全网没有，
+        # 而真相是这一家压根没执行查询。实测两例：
+        #   · OpenAIRE 收到中文裸词 → HTTP 409 `Syntax errors. expected boolean`
+        #   · DOAJ 收到带引号/问号的词 → HTTP 400 `disallowed Lucene features`
+        # 两家都因此在健康档案里留下几十次"空结果"，看起来像正常运作。
+        # 各家解析器自己认出错误体当然更好，但**兜底必须在唯一出口这里**：
+        # 指望十几个解析器每一个都记得处理错误体，是这类漏网复发的老原因。
+        if resp.status_code >= 400 and outcome is ParseOutcome.EMPTY:
+            return resp.status_code, ParseOutcome.BROKEN, [], (
+                reason or f"对方回了 HTTP {resp.status_code}：{_err_hint(resp)}"
+            )
+
+        # 带着预热 cookie 还是撞上验证页 = 这套 cookie 已经不管用了。
+        # 作废掉，下一轮重新去拿 —— 不作废的话它会被复用满 20 分钟，
+        # 而这 20 分钟里每一次搜索都注定失败
+        if outcome is ParseOutcome.CHALLENGED and self.prime_url:
+            _drop_prime(self.id)
         return resp.status_code, outcome, results, reason
 
     # 子类共用的小工具 ------------------------------------------------
@@ -317,62 +481,96 @@ def _first(node, *xpaths: str) -> list:
 class DuckDuckGo(BaseEngine):
     id = "duckduckgo"
     label = "DuckDuckGo"
-    #: 🔴 实测（2026-08-02）：`html.duckduckgo.com/html/` 现在返回 HTTP 202
-    #: 加一个 JS 落地页，不再返回结果列表。默认关。
-    #: 之前这里默认开且写着"最稳的免费通道"—— 那是我按印象写的，实测推翻了
+    #: 🔴 实测（2026-08-04）：**免 Key 的三条通道同时死了**，逐条试过 ——
+    #:   · `html.duckduckgo.com/html/`  → HTTP 202 anomaly 挡人页
+    #:   · `lite.duckduckgo.com/lite/`  → 同样 HTTP 202（换端点没用）
+    #:   · `links.duckduckgo.com/d.js`  → 拿到 vqd 也只回 `is506`（内部接口也挡）
+    #: 三条路的失败点是同一个反自动化判定，不是解析问题，所以**换选择器、
+    #: 换端点、换 UA 全都是白费**。这一家因此改走浏览器渲染：让桌面端
+    #: 自带的 Chromium 真的打开一次 duckduckgo.com，把渲染完的 HTML 拿回来解析。
+    #:
+    #: 仍然默认关：它要占一条渲染通道（只有两条，见 `meta.RENDER_PARALLEL`），
+    #: 默认开会和 Google/Yandex 抢，而那两家更需要这条通道
+    needs_browser = True
     default_on = False
-    note = "实测其 html 端点已改成返回 JS 落地页（HTTP 202），拿不到结果，默认关。可通过 SearXNG 间接使用"
+    note = (
+        "免 Key 的 html / lite / d.js 三条通道实测全被反自动化挡下（202 与 is506），"
+        "已改走**浏览器渲染**：打开时会用桌面端自带的 Chromium 真的访问一次。"
+        "默认关是因为渲染通道只有两条，别和 Google/Yandex 抢。也可以走 SearXNG 间接用"
+    )
 
     _TIME = {"day": "d", "week": "w", "month": "m", "year": "y"}
 
     def build(self, query, *, limit, lang, region, time_range, key):
-        params: dict[str, str] = {"q": query, "kl": _ddg_region(lang, region)}
+        # 走渲染通道只用得上这个 URL（`meta._one_browser` 不发这个请求，
+        # 只取 `req.url` 交给渲染代理）。所以这里必须是 **GET + 查询串**，
+        # 不能再用原来那个 POST 表单 —— 浏览器没法"打开一个 POST"
+        url = f"https://duckduckgo.com/?q={quote_plus(query)}&ia=web"
+        kl = _ddg_region(lang, region)
+        if kl:
+            url += f"&kl={kl}"
         if time_range and time_range in self._TIME:
-            params["df"] = self._TIME[time_range]
+            url += f"&df={self._TIME[time_range]}"
         return httpx.Request(
-            "POST",
-            "https://html.duckduckgo.com/html/",
-            data=params,
-            headers={
-                "User-Agent": UA,
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "text/html,application/xhtml+xml",
-            },
+            "GET", url,
+            headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml"},
         )
 
     def parse(self, resp):
         if resp.status_code == 202:
-            # 202 是它的挡人页 —— 不是"没结果"，报 BROKEN 才会熔断。
-            # 但这**不是改版**，是这个端点已经改成了 JS 落地页，
-            # 换多少套选择器都没用，所以原因必须说清楚
-            return ParseOutcome.BROKEN, [], (
-                "html.duckduckgo.com 这个免 Key 端点已改成 JS 落地页（HTTP 202），"
-                "不再返回结果列表 —— 换选择器没用。要用 DDG 的结果就走 SearXNG"
+            # 只有**没走渲染**（命令行/MCP 单跑引擎）时才会看到这个分支
+            return ParseOutcome.CHALLENGED, [], (
+                "DuckDuckGo 的免 Key 端点回了 202 挡人页 —— 这一家现在要靠浏览器渲染，"
+                "请开着桌面端；或者改用 SearXNG 间接拿它的结果"
             )
         doc = _doc(resp)
-        rows = _first(doc, f"//div[{_hc('result')}]", f"//div[{_hc('web-result')}]")
+        # 两套结构都留着：**渲染出来的是现在的 SPA 版**（`article[data-testid=result]`），
+        # 而 SearXNG 之类的中转、以及万一哪天 html 端点复活，回的是旧版
+        # （`div.result` + `a.result__a`）。两套都认才不会因为换了来源就整家报废
+        rows = _first(
+            doc,
+            "//article[@data-testid='result']",
+            "//li[@data-layout='organic']",
+            f"//div[{_hc('result')}]",
+            f"//div[{_hc('web-result')}]",
+        )
         if not rows:
-            # 没有 result 容器：要么改版了，要么真没结果。
-            # DDG 没结果时页面里有明确文案，据此区分
             if "No results" in resp.text or "没有找到" in resp.text:
                 return ParseOutcome.EMPTY, []
             if "anomaly" in resp.text.lower() or "unusual traffic" in resp.text.lower():
-                return ParseOutcome.CHALLENGED, [], "DDG 判定这台机器流量异常，降低频率或换个时间"
-            return ParseOutcome.BROKEN, [], "页面里找不到结果容器（.result）"
+                return ParseOutcome.CHALLENGED, [], (
+                    "DuckDuckGo 判定这次访问是自动流量（anomaly 页）—— "
+                    "降低频率或换个时间；长期稳定用它建议走 SearXNG"
+                )
+            return ParseOutcome.BROKEN, [], (
+                f"页面里找不到结果容器（article[data-testid=result] / .result）"
+                f"（{_page_hint(resp)}）"
+            )
 
         out: list[WebResult] = []
         for i, row in enumerate(rows, 1):
-            a = _first(row, f".//a[{_hc('result__a')}]")
+            a = _first(
+                row,
+                ".//a[@data-testid='result-title-a']",
+                f".//a[{_hc('result__a')}]",
+                ".//h2//a[@href]",
+            )
             if not a:
                 continue
             url = _ddg_unwrap(a[0].get("href") or "")
-            sn = _first(row, f".//*[{_hc('result__snippet')}]")
+            sn = _first(
+                row,
+                ".//*[@data-result='snippet']",
+                ".//*[@data-testid='result-snippet']",
+                f".//*[{_hc('result__snippet')}]",
+            )
             r = self._mk(_txt(a[0]), url, _txt(sn[0]) if sn else "", i)
             if r:
                 out.append(r)
         if not out:
             return ParseOutcome.BROKEN, [], (
-                f"找到 {len(rows)} 个结果容器，但一条标题链接都抽不出来（.result__a 失效）"
+                f"找到 {len(rows)} 个结果容器，但一条标题链接都抽不出来"
+                f"（result-title-a / .result__a / h2 a 三套都没命中）"
             )
         return ParseOutcome.OK, out
 
@@ -428,7 +626,9 @@ class Bing(BaseEngine):
             # 于是熔断永远不触发。改成只认明确的无结果文案
             if "没有与此相关的结果" in resp.text or "There are no results for" in resp.text:
                 return ParseOutcome.EMPTY, []
-            return ParseOutcome.BROKEN, [], "页面里找不到结果条目（li.b_algo / #b_results）"
+            return ParseOutcome.BROKEN, [], (
+                f"页面里找不到结果条目（li.b_algo / #b_results）（{_page_hint(resp)}）"
+            )
 
         out: list[WebResult] = []
         for i, row in enumerate(rows, 1):
@@ -506,6 +706,24 @@ class Google(BaseEngine):
         # 改成按结构找：带 href 的 <a> 里包着一个 <h3>。这个形状多年没变过。
         anchors = doc.xpath("//a[@href][.//h3]")
         if not anchors:
+            # 🔴 **验证码页要排在 enablejs 之前判**（2026-08-04 调序）：
+            # 走渲染通道时 `resp.url` 是我们自己拼的搜索地址、**不带 /sorry/**
+            # （渲染代理只把 HTML 送回来，不回最终跳转地址），
+            # 所以只能靠正文认。而 /sorry/ 页里也常带一段 noscript 提示，
+            # 排在 enablejs 后面会被那一条先接走，报成"要开浏览器渲染"——
+            # 可用户明明已经开着渲染了，这句话让人无从下手
+            if (
+                "/sorry/" in str(resp.url)
+                or "unusual traffic" in resp.text
+                or "检测到异常流量" in resp.text
+                or "recaptcha" in resp.text[:6000].lower()
+            ):
+                # 这是**人机验证**不是改版。分错了会把一家好引擎熔断掉
+                return ParseOutcome.CHALLENGED, [], (
+                    "Google 判定这台机器流量异常（/sorry/ 验证页）—— "
+                    "开着浏览器渲染也一样会遇到，它认的是出口 IP 不是浏览器。"
+                    "现实可行的两条路：自建 SearXNG（服务端替你问 Google），或填一个 Serper Key"
+                )
             if "enablejs" in resp.text or "Enable JavaScript" in resp.text:
                 # 这不是"没结果"也不是"改版了"，是**这条通道要求跑 JS**。
                 # 报 BROKEN 会让它被熔断 15 分钟然后再白试一次，
@@ -516,12 +734,11 @@ class Google(BaseEngine):
                 )
             if "did not match any documents" in resp.text or "未找到" in resp.text:
                 return ParseOutcome.EMPTY, []
-            if "/sorry/" in str(resp.url) or "unusual traffic" in resp.text:
-                # 这是**人机验证**不是改版。分错了会把一家好引擎熔断掉
-                return ParseOutcome.CHALLENGED, [], "Google 判定这台机器流量异常（/sorry/ 验证页）"
             if "consent.google.com" in str(resp.url) or "Before you continue" in resp.text:
                 return ParseOutcome.CHALLENGED, [], "被 Google 的 cookie 同意页挡住了"
-            return ParseOutcome.BROKEN, [], "页面里没有 <a><h3> 这种结果标题结构"
+            return ParseOutcome.BROKEN, [], (
+                f"页面里没有 <a><h3> 这种结果标题结构（{_page_hint(resp)}）"
+            )
 
         out: list[WebResult] = []
         seen: set[str] = set()
@@ -605,7 +822,7 @@ class Yandex(BaseEngine):
         doc = _doc(resp)
         rows = _first(doc, f"//li[{_hc('serp-item')}]", f"//div[{_hc('serp-item')}]")
         if not rows:
-            return ParseOutcome.BROKEN, [], "页面里找不到结果条目（.serp-item）"
+            return ParseOutcome.BROKEN, [], f"页面里找不到结果条目（.serp-item）（{_page_hint(resp)}）"
         out: list[WebResult] = []
         for i, row in enumerate(rows, 1):
             a = _first(
@@ -643,22 +860,43 @@ class Baidu(BaseEngine):
     label = "百度"
     note = "中文覆盖最好的一家。结果链接是跳转地址，会自动解析成真实网址（解析不出的会标出来）"
 
+    #: 🔴 **这一行是百度这一家从"183 次全挂"变成能用的全部原因**（2026-08-04 实测）。
+    #: 详见 `BaseEngine.prime_url`：没有 BAIDUID 这个 cookie 就必进验证页，
+    #: 跟请求密度没关系 —— 一台整天没搜过的机器，第一次搜也照样被拦。
+    prime_url = "https://www.baidu.com/"
+    #: 拿到 cookie 之后仍然稍微隔开一点：深挖会把一个问题拆成几个变体同时发，
+    #: 一秒内四发是真的会重新触发风控的（这一条才是"请求太密"真正适用的地方）
+    min_interval_s = 0.6
+
     def build(self, query, *, limit, lang, region, time_range, key):
-        url = f"https://www.baidu.com/s?wd={quote_plus(query)}&rn={min(50, max(10, limit))}"
+        url = (
+            f"https://www.baidu.com/s?ie=utf-8&wd={quote_plus(query)}"
+            f"&rn={min(50, max(10, limit))}"
+        )
         if time_range:
             days = {"day": 1, "week": 7, "month": 30, "year": 365}.get(time_range)
             if days:
                 url += f"&gpc=stf%3D{days}"
         return httpx.Request(
             "GET", url,
-            headers={"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9"},
+            headers={
+                "User-Agent": UA,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+                # Referer 指向首页 —— 配合上面的预热，整个请求看起来才是
+                # "在百度首页搜了一下"而不是"凭空访问一个结果页地址"
+                "Referer": "https://www.baidu.com/",
+            },
         )
 
     def parse(self, resp):
-        # 🔴 百度对连续请求很敏感：几次之后就把你送到 wappass 验证页。
-        # 那个页面**HTTP 200、长度 1.4KB、一条结果没有** ——
-        # 不专门认出来的话会被报成"对方改版了"，而真相是"慢一点就好了"。
-        # 报错报得不对，下次排查就会往完全错误的方向走
+        # 🔴 百度把请求送到 wappass 验证页时**HTTP 仍然是 200、长度 1.4KB、
+        # 一条结果没有** —— 不专门认出来会被报成"对方改版了"。
+        #
+        # 措辞已改（2026-08-04）：原来写「连续请求太密会触发，隔一会儿就恢复」，
+        # 那是**误诊**。实测冷启动第一发就被拦，等多久都不会好；
+        # 真正的根因是没有 cookie（见 `prime_url`）。一句让用户"等一会儿再试"
+        # 的提示，比不给提示更糟 —— 它让人去做一件必然无效的事。
         if (
             "百度安全验证" in resp.text
             or "wappass.baidu.com" in str(resp.url)
@@ -666,7 +904,8 @@ class Baidu(BaseEngine):
         ):
             return ParseOutcome.CHALLENGED, [], (
                 "百度把这次请求送到了安全验证页（这时 HTTP 仍然是 200）—— "
-                "连续请求太密会触发，隔一会儿或降低并发就恢复"
+                "正常情况下不该出现：搜索前会先访问一次百度首页把 cookie 拿到。"
+                "还撞上说明这次预热没成功（多半是网络抖动），下一轮通常就好了"
             )
         doc = _doc(resp)
         anchors = doc.xpath("//h3//a[@href]")
@@ -705,21 +944,42 @@ class So360(BaseEngine):
     label = "360 搜索"
     note = "中文第二路。优先读结果里的真实网址属性，读不到就解它的跳转链"
 
+    prime_url = "https://www.so.com/"
+    min_interval_s = 0.6
+
     def build(self, query, *, limit, lang, region, time_range, key):
         return httpx.Request(
             "GET", f"https://www.so.com/s?q={quote_plus(query)}&rn={min(50, max(10, limit))}",
-            headers={"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9"},
+            headers={
+                "User-Agent": UA,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+                "Referer": "https://www.so.com/",
+            },
         )
 
     def parse(self, resp):
         if "请输入验证码" in resp.text or "验证码" in resp.text[:2000]:
             return ParseOutcome.CHALLENGED, [], "360 弹了验证码页，降低频率或换个时间"
         doc = _doc(resp)
-        anchors = doc.xpath("//h3//a[@href]")
+        # 先按结果容器找，找不到再退回全页扫 h3。
+        # **容器优先**是因为全页 h3 里混着知识卡、图片卡、反馈按钮和导航位，
+        # 它们和真结果长得一样但没有一个是搜索结果
+        rows = _first(
+            doc,
+            f"//li[{_hc('res-list')}]",
+            "//ul[@id='m-result']//li",
+            f"//div[{_hc('res-list')}]",
+        )
+        anchors = [
+            a
+            for row in rows
+            for a in _first(row, ".//h3//a[@href]", f".//a[{_hc('res-title')}]")[:1]
+        ] or doc.xpath("//h3//a[@href]")
         if not anchors:
             if "没有找到与" in resp.text:
                 return ParseOutcome.EMPTY, []
-            return ParseOutcome.BROKEN, [], "页面里找不到 h3 标题链接"
+            return ParseOutcome.BROKEN, [], f"页面里找不到 h3 标题链接（{_page_hint(resp)}）"
         out: list[WebResult] = []
         for a in anchors:
             # 🔴 原来这里**只认 `data-mdurl`**：拿不到这个属性就 `continue`。
@@ -750,8 +1010,26 @@ class So360(BaseEngine):
         if not out:
             return ParseOutcome.BROKEN, [], (
                 f"找到 {len(anchors)} 个 h3 链接，但没有一个能取到可用网址"
+                f"（{_page_hint(resp)}）"
             )
         return ParseOutcome.OK, out
+
+
+#: 360 自家域名里**不算搜索结果**的那几个：跳转中转、图片站、反馈页、导航站。
+#:
+#: 🔴 原来的规则是一刀切 `host.endswith("so.com")` 就丢掉，代价实测很具体：
+#: 搜「量子计算」时首条是 `baike.so.com`（360 百科）、问答结果在
+#: `wenda.so.com` —— 这些是**真实内容页**，是 360 在中文长尾上最有价值的
+#: 那一部分，全被当成站内链扔了。丢完剩下三两条，再往下就报
+#: "没有一个能取到可用网址"并熔断。
+#: 判据从"是不是自家域名"改成"**是不是内容页**"：黑名单列非内容的那几个，
+#: 其余一律当真实结果。名单写少了最多混进一条导航位，写多了会丢真结果。
+_SO360_NON_CONTENT = frozenset({
+    "www.so.com", "so.com", "m.so.com",     # 跳转中转（带 /link? 的另算，见下）
+    "image.so.com", "info.so.com",          # 图片站、反馈页
+    "ai.so.com",                            # AI 回答卡：是 360 自己生成的，不是来源
+    "hao.360.com", "ranks.hao.360.com", "s.360.cn",   # 导航站与推广位
+})
 
 
 def _so360_real_url(a: Any) -> str:
@@ -760,11 +1038,12 @@ def _so360_real_url(a: Any) -> str:
 
       ① `data-mdurl` —— 它一直以来写真实网址的地方
       ② `data-url` / `data-res-url` / `data-realurl` —— 换过的几个同义属性
-      ③ `href` 本身就是外链 —— 直接用
-      ④ `href` 是 `so.com/link?...` 跳转链 —— 带回去交给跳转解析那一步
+      ③ `href` 是 `so.com/link?...` 跳转链 —— 带回去交给跳转解析那一步
+      ④ `href` 指向非内容的自家页面（见 `_SO360_NON_CONTENT`）—— 丢掉
+      ⑤ 其余 `href` 一律当真实外链用，**包括 baike/wenda 这些自家内容站**
 
-    ④ 是关键的一条：拿不到真实网址**不等于这条结果没用**，
-    跳转链照样能打开，只是要多解一次。原来的写法是直接扔掉。
+    ③ 是关键的一条：拿不到真实网址**不等于这条结果没用**，
+    跳转链照样能打开，只是要多解一次。最早的写法是直接扔掉。
     """
     for attr in ("data-mdurl", "data-url", "data-res-url", "data-realurl"):
         v = (a.get(attr) or "").strip()
@@ -777,11 +1056,10 @@ def _so360_real_url(a: Any) -> str:
         href = f"https:{href}"
     if not href.startswith("http"):
         return ""
-    host = urlparse(href).netloc.lower()
-    if host.endswith("so.com") or host.endswith("360.cn"):
-        # 站内跳转链：`/link?m=...`。留着让上层去解，解不出会标 unresolved
-        return href if "/link?" in href else ""
-    return href
+    if "/link?" in href:
+        # 站内跳转链。留着让上层去解，解不出会标 unresolved
+        return href
+    return "" if urlparse(href).netloc.lower() in _SO360_NON_CONTENT else href
 
 
 # ────────────────────────────────────────────────────────────────
@@ -791,6 +1069,12 @@ class Mojeek(BaseEngine):
     id = "mojeek"
     label = "Mojeek"
     note = "独立自建索引（不是转发 Bing/Google），能搜出别家漏掉的长尾内容"
+
+    #: 🔴 2026-08-04 实测：现在这套选择器抓下来**命中 10 条**，页面结构没变。
+    #: 也就是说健康档案里那串 broken **不是改版**，是间歇性被挡下来的。
+    #: 它是全阵容里最快的一家（约 400ms），于是并发时总是第一个撞上去。
+    #: 隔开一点比换选择器管用 —— 后者压根没坏。
+    min_interval_s = 0.8
 
     def build(self, query, *, limit, lang, region, time_range, key):
         url = f"https://www.mojeek.com/search?q={quote_plus(query)}"
@@ -819,7 +1103,17 @@ class Mojeek(BaseEngine):
                 return ParseOutcome.EMPTY, []
             if "captcha" in resp.text[:4000].lower() or "too many requests" in resp.text.lower():
                 return ParseOutcome.CHALLENGED, [], "Mojeek 挡下了这次自动访问，降低频率再试"
-            return ParseOutcome.BROKEN, [], "页面里找不到任何结果条目容器"
+            # 🔴 一份正常的 Mojeek 结果页约 34 KB。**明显偏小就不是"改版"而是被挡了** ——
+            # 这两种的处置完全相反（改版要改选择器，被挡要降频率），
+            # 而旧的报错对两者说的是同一句话。带上体积和标题才分得开
+            if len(resp.content or b"") < 8000:
+                return ParseOutcome.CHALLENGED, [], (
+                    f"Mojeek 回的页面明显偏小、没有结果区（{_page_hint(resp)}）—— "
+                    "更像是被挡下了而不是改版，降低频率或换个时间再试"
+                )
+            return ParseOutcome.BROKEN, [], (
+                f"页面里找不到任何结果条目容器（{_page_hint(resp)}）"
+            )
         out: list[WebResult] = []
         for i, row in enumerate(rows, 1):
             a = _first(

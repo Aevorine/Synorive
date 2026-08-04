@@ -1,0 +1,151 @@
+/* ============================================================
+ * A5 全局项目切换器（顶栏）
+ * ============================================================
+ * 它常驻顶栏，所以第一条约束是**不能挤掉窗口按钮**：
+ * 名字再长也要省略号截断，绝不换行、绝不撑宽。
+ * ============================================================ */
+
+.projsw {
+  position: relative;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.projsw__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  max-width: 200px;
+  min-height: var(--syn-d-control, 32px);
+  padding: 0 var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  border: 1px solid transparent;
+  border-radius: var(--syn-radius-pill);
+  transition: background-color var(--syn-dur-instant) var(--syn-ease-standard),
+    color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.projsw__btn:hover:not(:disabled) {
+  color: var(--syn-color-text);
+  background: var(--syn-color-bg-hover);
+}
+
+/* 归在某个项目下时给一点存在感——这是个持续生效的上下文，
+   完全不显眼的话用户会忘了自己开着它 */
+.projsw__btn--on {
+  color: var(--syn-color-primary);
+  background: var(--syn-color-primary-subtle);
+  border-color: var(--syn-color-border-focus);
+}
+
+.projsw__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.projsw__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 下拉面板。right:0 贴右对齐——按钮靠近窗口右侧，
+   左对齐会让面板伸出窗口外 */
+.projsw__pop {
+  position: absolute;
+  top: calc(100% + var(--syn-space-xs));
+  right: 0;
+  z-index: var(--syn-z-dropdown);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 300px;
+  max-height: 60vh;
+  padding: var(--syn-space-sm);
+  overflow-y: auto;
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-xl);
+  box-shadow: var(--syn-shadow-lg);
+}
+
+/* 这一句必须在，且必须在最上面：「选了项目会不会搜不到东西」
+   是用户点开这个菜单时最可能的疑问，不答的话他会不敢用 */
+.projsw__hint {
+  padding: var(--syn-space-xs) var(--syn-space-sm) var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-normal);
+  color: var(--syn-color-text-muted);
+  border-bottom: 1px solid var(--syn-color-border);
+  margin-bottom: var(--syn-space-xs);
+}
+
+.projsw__opt {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  width: 100%;
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text-secondary);
+  border-radius: var(--syn-radius-md);
+  text-align: left;
+}
+
+.projsw__opt:hover {
+  color: var(--syn-color-text);
+  background: var(--syn-color-bg-hover);
+}
+
+.projsw__opt--on {
+  color: var(--syn-color-primary);
+  background: var(--syn-color-primary-subtle);
+}
+
+/* 没选中的那些也要占掉勾的位置，否则选中项会比别的往右挪一格，
+   看起来像列表没对齐 */
+.projsw__dot {
+  display: inline-block;
+  width: 13px;
+  flex-shrink: 0;
+}
+
+.projsw__optname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projsw__optmeta {
+  flex-shrink: 0;
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.projsw__loading {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-normal);
+  color: var(--syn-color-text-muted);
+}
+
+.projsw__new {
+  display: flex;
+  gap: var(--syn-space-xs);
+  align-items: center;
+  margin-top: var(--syn-space-xs);
+  padding-top: var(--syn-space-sm);
+  border-top: 1px solid var(--syn-color-border);
+}
+
+.projsw__new .textinput {
+  flex: 1;
+  min-width: 0;
+}

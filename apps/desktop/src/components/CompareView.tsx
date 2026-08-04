@@ -25,11 +25,19 @@ export function CompareView() {
 
   function onDrop(e: React.DragEvent, slot: 'a' | 'b'): void {
     e.preventDefault();
-    const f = e.dataTransfer.files[0] as (File & { path?: string }) | undefined;
-    // Electron 里 File 对象带 `path`；浏览器里没有。
-    // 拿不到路径时**明确说出来**而不是静默失败 —— 用户拖了个文件
-    // 却什么都没发生，是最让人困惑的交互
-    const p = f?.path;
+    const f = e.dataTransfer.files[0];
+    // 🔴 **必须走 preload 的 `webUtils.getPathForFile`。**
+    //    这里原来读的是 `f.path` —— 那个属性 **Electron 32 起已经被移除**，
+    //    读出来永远是 undefined 且不报错。也就是说这个组件的拖拽
+    //    从升级到 Electron 41 那天起就一直走的是下面那条"拿不到路径"分支，
+    //    而提示语写的是"试试从文件管理器里拖"，把一个必然失败
+    //    引导成了用户的操作问题。（同一个坑 TopBar 的拖拽早就修过了。）
+    let p = '';
+    try {
+      if (f) p = window.synorive.sys.pathForFile(f);
+    } catch {
+      p = '';
+    }
     if (!p) {
       setErr('拿不到这个文件的路径，试试从文件管理器里拖，或者直接粘贴完整路径');
       return;

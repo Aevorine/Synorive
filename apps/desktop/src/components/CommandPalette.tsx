@@ -87,7 +87,7 @@ export function CommandPalette() {
 
   const commands = useMemo<Cmd[]>(() => {
     const pages: Array<[PageId, string]> = [
-      ['search', 'ss'], ['library', 'wjglq'], ['analyze', 'fxzx'],
+      ['today', 'jr'], ['search', 'ss'], ['library', 'wjglq'], ['analyze', 'fxzx'],
       ['timeline', 'sjz'], ['graph', 'zsddtp'], ['research', 'yjgzt'], ['settings', 'sz'],
     ];
     const list: Cmd[] = pages.map(([id, py]) => ({
@@ -125,6 +125,32 @@ export function CommandPalette() {
           if (files.length) await api.ingest({ targets: files, source: 'file', recursive: false });
         },
       },
+      // B1/A3：主输入区的两条直达。放在「检索」组最前面 ——
+      // 它们是这个软件最高频的两个动作，排在预设后面等于藏起来
+      {
+        id: 'stage:ask',
+        label: '问一句话',
+        py: 'wyjh',
+        hint: '展开大输入区，回一段带出处的答案（Ctrl+K）',
+        group: '检索',
+        icon: SearchIcon,
+        run: () => {
+          useApp.getState().setInputMode('ask');
+          useApp.getState().openStage();
+        },
+      },
+      {
+        id: 'stage:find',
+        label: '找东西',
+        py: 'zdx',
+        hint: '展开大输入区，回结果列表（Ctrl+Shift+K）',
+        group: '检索',
+        icon: SearchIcon,
+        run: () => {
+          useApp.getState().setInputMode('find');
+          useApp.getState().openStage();
+        },
+      },
       {
         id: 'search:focus',
         label: '跳到搜索框',
@@ -151,6 +177,11 @@ export function CommandPalette() {
       {
         id: 'preset:recent', label: '排序改为「最近优先」', py: 'pxzj',
         group: '检索', icon: Gauge, run: () => setPreset('recent'),
+      },
+      {
+        id: 'preset:deep', label: '排序改为「深读一处」', py: 'pxsdyc',
+        hint: '关掉多样性，把同一个文件夹里所有相关的一次看全',
+        group: '检索', icon: Gauge, run: () => setPreset('deep'),
       },
       {
         id: 'search:explain', label: '显示/隐藏排序理由', py: 'xspxly',
@@ -263,17 +294,33 @@ export function CommandPalette() {
           window.dispatchEvent(new CustomEvent('syn:open-compare'));
         },
       },
+      // 🔴 三主题之后**不能再写二元三目**（`theme === 'dark' ? A : B`）——
+      //    paper 会掉进 else，于是"切换主题"在纸感下永远只跳到深色，
+      //    而且不报错。这里改成显式轮转，加主题时只需在数组里加一项。
       {
-        id: 'theme:toggle',
-        label: settings?.theme === 'dark' ? '切到浅色' : '切到深色',
-        py: settings?.theme === 'dark' ? 'qdqs' : 'qdss',
+        id: 'theme:cycle',
+        label: '主题换一档',
+        py: 'zthyd',
+        hint: '浅色 → 深色 → 纸感，循环。纸感 = 纸黄底棕墨字，长时间读最省眼',
         group: '外观',
         icon: settings?.theme === 'dark' ? Sun : Moon,
         run: async () => {
-          await window.synorive.settings.patch({
-            theme: settings?.theme === 'dark' ? 'light' : 'dark',
-          });
+          const order = ['light', 'dark', 'paper'] as const;
+          const cur = settings?.theme;
+          const i = order.indexOf(cur as (typeof order)[number]);
+          // 当前是 system（indexOf = -1）时从浅色开始，不要跳到最后一档
+          const next = order[(i + 1) % order.length]!;
+          await window.synorive.settings.patch({ theme: next });
         },
+      },
+      {
+        id: 'theme:paper',
+        label: '切到纸感主题',
+        py: 'qdzgzt',
+        hint: '纸黄底 + 棕墨字，长时间读文字最省眼；它是独立配色不是滤镜，不影响流畅度',
+        group: '外观',
+        icon: Sun,
+        run: async () => { await window.synorive.settings.patch({ theme: 'paper' }); },
       },
       {
         id: 'theme:system', label: '主题跟随系统', py: 'ztgsxt',

@@ -6,6 +6,7 @@
  */
 
 import type {
+  AskResponse,
   ContentItem,
   GraphSlice,
   IngestRequest,
@@ -52,6 +53,16 @@ export const api = {
   search: (req: SearchRequest & { stage?: string }, signal?: AbortSignal) =>
     call<SearchResponse>('/api/search', { method: 'POST', body: JSON.stringify(req) }, signal),
 
+  /**
+   * A3 问一句话，拿一段带出处的答案。
+   *
+   * ⚠️ 它**不会**因为"库里没有答案"而 reject —— 那是正常业务结果，
+   *    走 `ask.enough === false` 分支，不是 catch 分支。
+   *    把它当错误处理会让"没搜到"和"引擎挂了"长得一模一样。
+   */
+  ask: (req: { query: string; filters?: SearchRequest['filters']; rerank?: boolean }, signal?: AbortSignal) =>
+    call<AskResponse>('/api/ask', { method: 'POST', body: JSON.stringify(req) }, signal),
+
   ingest: (req: IngestRequest) =>
     call<{ jobId: string }>('/api/ingest', { method: 'POST', body: JSON.stringify(req) }),
 
@@ -63,6 +74,14 @@ export const api = {
   recordOpen: (id: string) => call<{ ok: boolean }>(`/api/items/${id}/open`, { method: 'POST' }),
 
   stats: () => call<{ items: number; ready: number; failed: number; chunks: number }>('/api/stats'),
+
+  /** C6 性能看板：引擎侧的目标值 + 运行期采样 */
+  metricsBudgets: () =>
+    call<{
+      budgets: { id: string; label: string; target: string; how: string; hasBench: boolean }[];
+      ingestBudgets: { id: string; label: string; target: string; how: string; hasBench: boolean }[];
+      observed: Record<string, unknown>;
+    }>('/api/metrics/budgets'),
 
   doctor: () => call<DoctorEntry[]>('/api/doctor'),
 

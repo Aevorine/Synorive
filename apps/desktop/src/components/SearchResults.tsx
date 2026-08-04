@@ -14,6 +14,7 @@ import { layout } from '@synorive/design-tokens';
 import { useApp } from '../lib/store';
 import { useKeyNav } from '../lib/keynav';
 import { api } from '../lib/api';
+import { useSelection } from '../lib/useSelection';
 
 const MODALITY_ICON: Record<Modality, typeof FileText> = {
   text: FileText,
@@ -39,6 +40,7 @@ export function SearchResults({
   onAsk,
   onScenes,
   onPreview,
+  selectable,
 }: {
   hits: SearchHit[];
   /** N6：给每条文档一个「能回答什么」入口。不传就不显示这个按钮 */
@@ -47,6 +49,12 @@ export function SearchResults({
   onScenes?: (itemId: string, locator: string, title: string, sec?: number) => void;
   /** F8：Space 预览。不传就只是不响应 Space，其余键照常 */
   onPreview?: (hit: SearchHit) => void;
+  /**
+   * A4/D3：显示勾选框。**默认 false** ——
+   * 「读了这几条」那种展示性列表不该出现复选框，
+   * 出现了用户会以为勾了能干什么，而那里什么都没接
+   */
+  selectable?: boolean;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const density = useApp((s) => s.settings?.density ?? 'standard');
@@ -104,6 +112,7 @@ export function SearchResults({
                 active={v.index === active}
                 onAsk={onAsk}
                 onScenes={onScenes}
+                selectable={selectable}
               />
             </div>
           );
@@ -119,6 +128,7 @@ function ResultCard({
   active,
   onAsk,
   onScenes,
+  selectable,
 }: {
   hit: SearchHit;
   rank: number;
@@ -126,9 +136,15 @@ function ResultCard({
   active?: boolean;
   onAsk?: (itemId: string, title: string) => void;
   onScenes?: (itemId: string, locator: string, title: string, sec?: number) => void;
+  selectable?: boolean;
 }) {
   const { item, highlight, explain, location } = hit;
   const Icon = MODALITY_ICON[item.modality] ?? FileText;
+  // 只订阅"这一条选没选"，不订阅整个 picked 数组 ——
+  // 订阅数组的话，勾任意一条都会让**视口内所有卡片**重渲染，
+  // 一屏十几张 × 每次勾选，正好是虚拟滚动想避免的那种开销
+  const checked = useSelection((s) => s.ids.has(item.id));
+  const toggle = useSelection((s) => s.toggle);
 
   const open = () => {
     void api.recordOpen(item.id);
@@ -153,7 +169,24 @@ function ResultCard({
       }}
       title="双击打开　↑↓ 选　Enter 打开　Space 预览"
     >
-      <span className="card__rank">{rank}</span>
+      {selectable ? (
+        // 勾选框替掉序号，不是加在序号旁边 —— 卡片左侧那一列宽度是固定的，
+        // 两个都塞进去会把标题挤窄，而序号在能勾选的时候本来也没什么用
+        <label
+          className="card__pick"
+          onClick={(e) => e.stopPropagation()}
+          title={checked ? '取消选中' : '选中它，用于出稿或并排对比'}
+        >
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={() => toggle(hit)}
+            aria-label={`选中 ${item.title}`}
+          />
+        </label>
+      ) : (
+        <span className="card__rank">{rank}</span>
+      )}
       <Icon className="card__icon" size={17} strokeWidth={1.6} />
 
       <div className="card__main">

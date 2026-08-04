@@ -62,6 +62,15 @@ export const IPC = {
    */
   exportPdf: 'export:pdf',
 
+  /**
+   * A4 一键成稿：把一段纯文本（Markdown / 纯文字 / BibTeX）另存为文件。
+   *
+   * 单开一条而不是复用 exportPdf：那条要起一个渲染窗口打印，
+   * 而这里只是写个文本文件 —— 为写一行字启动一个 BrowserWindow
+   * 既慢又多一堆可能失败的环节。
+   */
+  saveText: 'export:text',
+
   /** 首次运行自举：自己找 Python、建 venv、装引擎 */
   engineBootstrap: 'engine:bootstrap',
   /** 自举进度（每一步都推，装依赖要一两分钟，不能只给一个转圈） */
@@ -76,6 +85,18 @@ export const IPC = {
   cloudHasKey: 'cloud:has-key',
   cloudClearKey: 'cloud:clear-key',
   cloudTest: 'cloud:test',
+
+  // ── S3 联网搜索引擎的 Key：同样走 safeStorage，不进 settings.json ──
+  //
+  // 🔴 这三条以前是**缺的**。`cloud-keys.ts` 里 `saveEngineKeys` /
+  // `engineKeyStatus` 早就写好了，却没有任何 IPC、没有 preload、没有界面
+  // 调用它们 —— 于是引擎端撞上 429 时提示"去设置里填一个 Key"，
+  // 而那个入口根本不存在。**一句让用户去做一件做不到的事的提示，
+  // 比不给提示更糟**：他会以为是自己没找到。
+  /** 回「哪几家配了 Key」，只回布尔，**永不回明文** */
+  engineKeyStatus: 'engine-key:status',
+  /** 存一家的 Key。空串 = 删掉这一家 */
+  engineKeySet: 'engine-key:set',
 
   // ── U 组 应用自更新 ─────────────────────────────────────
   /** 当前更新状态快照（界面挂载时先拉一次，之后靠事件推） */

@@ -22,6 +22,7 @@
     "engine:dev": "engine/.venv/Scripts/python.exe -m synorive.main --reload",
     "lint:tokens": "node scripts/check-hardcoded-style.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
     "version:check": "node scripts/set-version.mjs --check",
     "version:set": "node scripts/set-version.mjs",
     "release": "node scripts/release.mjs",

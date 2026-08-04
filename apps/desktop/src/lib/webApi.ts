@@ -9,6 +9,7 @@
  */
 
 import { call } from './api';
+import { recordWeb } from './perf';
 
 export interface TrustInfo {
   tier: string;
@@ -398,6 +399,20 @@ export interface GeneratedBriefing {
 export const webApi = {
   engines: (signal?: AbortSignal) => call<EnginesResponse>('/api/web/engines', undefined, signal),
 
+  /**
+   * 清掉引擎记分与熔断，从零重新学。
+   *
+   * 记分是最近 30 次的滑动窗口，所以一家引擎**修好之后仍会被旧失败压着**
+   * 显示成用不了。没有这个入口的话，用户唯一的办法是去数据目录里删
+   * `websearch-health.json` —— 那不该是一个"用户要做的事"。
+   */
+  resetHealth: (engine?: string, signal?: AbortSignal) =>
+    call<{ ok: boolean; cleared: number; engine: string }>(
+      `/api/web/engines/reset-health${engine ? `?engine=${encodeURIComponent(engine)}` : ''}`,
+      { method: 'POST' },
+      signal,
+    ),
+
   search: (
     req: {
       query: string;
@@ -411,7 +426,25 @@ export const webApi = {
       expand?: boolean;
     },
     signal?: AbortSignal,
-  ) => call<WebSearchResponse>('/api/web/search', { method: 'POST', body: JSON.stringify(req) }, signal),
+  ) => {
+    // C6 / E7：量**客户端感知到的**联网搜耗时。
+    //
+    // 🔴 刻意不用引擎回的 elapsedMs：那个只算引擎自己那一段，
+    //    而 E7「联网搜首字节」要回答的是"我点下去到看见东西有多久"。
+    //    两者在多引擎竞速下能差出好几百毫秒 —— 用引擎那个数会得出
+    //    "已经很快了"的结论，而用户那边其实还在等。
+    const t0 = performance.now();
+    return call<WebSearchResponse>(
+      '/api/web/search',
+      { method: 'POST', body: JSON.stringify(req) },
+      signal,
+    ).then((r) => {
+      recordWeb(performance.now() - t0);
+      return r;
+    });
+    // 失败不记样本：一次超时会以 30000ms 的形式把 P95 整个带偏，
+    // 而"搜失败了"属于 E8 稳定性那一栏，不该混进延迟里
+  },
 
   research: (
     req: {

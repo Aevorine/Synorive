@@ -39,6 +39,20 @@ export function defaultSettings(): AppSettings {
     eyeComfort: 'off',
     eyeReminderMinutes: 0,
     density: 'standard',
+    // A2：默认落在「今日」。它的全部价值就是"打开就有东西看"，
+    // 不做启动页的话没人会主动点进去，那这一页等于没做
+    startPage: 'today',
+    // A3：默认「问一句话」。找文件仍然一键可切，且输入内容不丢
+    defaultInputMode: 'ask',
+    // B7：默认不钉任何东西 —— 钉什么是用户自己的使用习惯，猜不出来
+    pinnedNav: [],
+    // D1：默认没有自存预设，内置那五个（均衡/求准/求全/看最近/深读）够用了
+    savedPresets: [],
+    // A5：默认不归属任何项目。**不自动建一个「默认项目」** ——
+    // 那会让第一次打开的人对着一个他没建过、也不知道是干嘛的东西
+    activeProjectId: null,
+    // C3：默认开。关掉它是排查手段，不是常规选项
+    offloadHeavyWork: true,
     // M5：默认 CPU 核数 - 1，可 1~16 调
     concurrency: Math.max(1, Math.min(16, (navigatorHardwareConcurrency() || 8) - 1)),
     runInTray: true,

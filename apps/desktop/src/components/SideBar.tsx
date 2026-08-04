@@ -1,15 +1,41 @@
-import { useEffect, useState } from 'react';
-import { FolderOpen, Globe, Network, PanelLeft, ScanSearch, Search, Settings, Clock } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Clock,
+  FolderOpen,
+  Globe,
+  Network,
+  PanelLeft,
+  Pin,
+  PinOff,
+  ScanSearch,
+  Search,
+  Settings,
+  Sun,
+} from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { UpdateState } from '@shared/ipc-contract';
 import { PAGE_TITLES, useApp, type PageId } from '../lib/store';
 
 /**
- * 侧栏：七个一级入口，多了就是没想清楚。
- * 顺序按使用频率，不按功能分类。
+ * 侧栏：一级入口 + 可钉的收藏区
+ * ====================================================================
+ * 顺序按**使用频率**排，不按功能分类。分类排法看着整齐，但用户每天点的
+ * 那两个会被排到中间去 —— 整齐是给设计稿看的，频率是给手看的。
+ *
+ * ── B7 为什么加"钉住" ────────────────────────────────────
+ * 用户原话（对"界面哪里没做对"的回答之一）：**「功能藏得深、步骤多」**。
+ * 固定的七个入口解决不了这个问题，因为**每个人常用的不是同一批**：
+ * 做研究的人天天开研究工作台，整理素材的人天天开分析中心。
+ * 与其我猜一个顺序，不如让他自己把常用的钉到最上面 ——
+ * 钉过一次之后，他的高频路径就永远是"一眼看到 + 一次点击"。
+ *
+ * 钉住状态存在设置里（`pinnedNav`），跟人走不跟窗口走。
  */
+
 const NAV: { id: PageId; icon: LucideIcon; hint: string }[] = [
-  { id: 'search', icon: Search, hint: '搜索全部已索引内容' },
+  // 「今日」排第一：它是启动页，也是唯一一个"不用想就有东西看"的页面
+  { id: 'today', icon: Sun, hint: '有什么新东西、有什么没读完' },
+  { id: 'search', icon: Search, hint: '问一句话，或搜全部已索引内容' },
   { id: 'library', icon: FolderOpen, hint: '浏览、筛选、管理库里的内容' },
   { id: 'analyze', icon: ScanSearch, hint: '投喂新内容并查看分析进度' },
   { id: 'timeline', icon: Clock, hint: '按时间铺开所有内容' },
@@ -57,22 +83,63 @@ export function SideBar() {
   const setPage = useApp((s) => s.setPage);
   const collapsed = useApp((s) => s.sideBarCollapsed);
   const toggle = useApp((s) => s.toggleSideBar);
+  const settings = useApp((s) => s.settings);
   const badge = useUpdateBadge();
+
+  const pinned = useMemo(() => settings?.pinnedNav ?? [], [settings?.pinnedNav]);
+
+  /**
+   * 钉 / 取消钉。
+   *
+   * 直接 patch 设置而不是先改本地 state —— 设置变更会通过 onChanged 广播回来，
+   * 自己先改一份的话，广播回来那一下会跟本地那份打架，表现是"点了之后闪一下又跳回去"。
+   */
+  const togglePin = (id: string) => {
+    const next = pinned.includes(id) ? pinned.filter((p) => p !== id) : [...pinned, id];
+    void window.synorive.settings.patch({ pinnedNav: next });
+  };
+
+  const pinnedItems = NAV.filter((n) => pinned.includes(n.id));
+  // 钉住的从下面那组里拿走 —— 同一个入口出现两次会让人以为是两个东西
+  const restItems = NAV.filter((n) => !pinned.includes(n.id));
+
+  const renderItem = (n: { id: PageId; icon: LucideIcon; hint: string }, isPinned: boolean) => (
+    <div key={n.id} className="sidebar__slot">
+      <button
+        className={`sidebar__item${page === n.id ? ' sidebar__item--active' : ''}`}
+        onClick={() => setPage(n.id)}
+        title={collapsed ? `${PAGE_TITLES[n.id]} —— ${n.hint}` : n.hint}
+        aria-current={page === n.id ? 'page' : undefined}
+      >
+        <n.icon className="sidebar__icon" size={18} strokeWidth={1.7} />
+        <span className="sidebar__label">{PAGE_TITLES[n.id]}</span>
+      </button>
+      {/* 收起时不显示钉按钮：那时候只剩一列图标，再塞一个按钮会挤成一团。
+          要钉先展开侧栏 —— 钉是个低频动作，为它牺牲收起态不划算 */}
+      {!collapsed && (
+        <button
+          className={`sidebar__pin${isPinned ? ' sidebar__pin--on' : ''}`}
+          onClick={() => togglePin(n.id)}
+          title={isPinned ? '取消钉住' : '钉到最上面'}
+          aria-label={isPinned ? `取消钉住${PAGE_TITLES[n.id]}` : `把${PAGE_TITLES[n.id]}钉到最上面`}
+        >
+          {isPinned ? <PinOff size={12} strokeWidth={1.8} /> : <Pin size={12} strokeWidth={1.8} />}
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <nav className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`} aria-label="主导航">
-      {NAV.map(({ id, icon: Icon, hint }) => (
-        <button
-          key={id}
-          className={`sidebar__item${page === id ? ' sidebar__item--active' : ''}`}
-          onClick={() => setPage(id)}
-          title={collapsed ? `${PAGE_TITLES[id]} —— ${hint}` : hint}
-          aria-current={page === id ? 'page' : undefined}
-        >
-          <Icon className="sidebar__icon" size={18} strokeWidth={1.7} />
-          <span className="sidebar__label">{PAGE_TITLES[id]}</span>
-        </button>
-      ))}
+      {pinnedItems.length > 0 && (
+        <>
+          {!collapsed && <div className="sidebar__group">常用</div>}
+          {pinnedItems.map((n) => renderItem(n, true))}
+          <div className="sidebar__rule" />
+        </>
+      )}
+
+      {restItems.map((n) => renderItem(n, false))}
 
       <div className="sidebar__spacer" />
 

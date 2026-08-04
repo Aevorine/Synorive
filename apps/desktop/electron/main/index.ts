@@ -16,11 +16,13 @@ import {
   clearCloudKey,
   hasCloudKey,
   loadCloudKey,
+  engineKeyStatus,
   loadEngineKeys,
   saveCloudKey,
+  saveEngineKeys,
 } from './cloud-keys.js';
 import { EngineManager } from './engine.js';
-import { exportPdf } from './pdf.js';
+import { exportPdf, saveText } from './pdf.js';
 import { teardown as teardownRenderer } from './render.js';
 import { ensureDataDirs, loadSettings, patchSettings } from './settings.js';
 import { TrayController, setLaunchAtLogin } from './tray.js';
@@ -426,6 +428,9 @@ function registerIpc(): void {
 
   // E5：引用可点的 PDF。渲染层把引擎生成的 single-html 交过来，
   // 这边用 Chromium 自己的 PDF 后端打印 —— 只有它会保留 <a> 的链接注解
+  ipcMain.handle(IPC.saveText, (_e, req: { content: string; name: string; ext: string }) =>
+    saveText(req?.content ?? '', req?.name ?? '文稿', req?.ext ?? 'md'),
+  );
   ipcMain.handle(IPC.exportPdf, (_e, req: { html: string; name: string }) =>
     exportPdf(req?.html ?? '', req?.name ?? '研究简报'),
   );
@@ -453,6 +458,25 @@ function registerIpc(): void {
   ipcMain.handle(IPC.cloudClearKey, () => {
     clearCloudKey();
     void pushCloudConfig();
+  });
+
+  // S3 联网搜索引擎的 Key。
+  //
+  // 🔴 **改完必须重启引擎**，和 webEndpoints 那一路同理：这些 Key 是
+  // 启动时通过 `--web-key id=值` 传给 Python 进程的命令行参数，
+  // 不像云端 Key 那样有热更新接口。不重启的话，用户填完 Key 会看到
+  // 引擎照旧报"没有配置 API Key" —— 又是一次"看起来生效了，实际没有"。
+  ipcMain.handle(IPC.engineKeyStatus, () => engineKeyStatus());
+  ipcMain.handle(IPC.engineKeySet, (_e, id: string, value: string) => {
+    const key = String(id || '').trim();
+    if (!key) return false;
+    const all = loadEngineKeys();
+    const next = String(value ?? '').trim();
+    if (next) all[key] = next;
+    else delete all[key];
+    const ok = saveEngineKeys(all);
+    if (ok) void engine?.stop().then(() => startEngine());
+    return ok;
   });
   // U 组 应用自更新。**下载和安装永远是用户点出来的**，
   // 这里没有任何一条路径会自己走到 quitAndInstall

@@ -72,6 +72,12 @@ export interface SynoriveApi {
       html: string,
       name: string,
     ) => Promise<{ ok: boolean; path?: string; error?: string }>;
+    /** A4 另存为文本文件。`ok:false` + 无 `error` 同样表示用户取消了 */
+    saveText: (
+      content: string,
+      name: string,
+      ext: string,
+    ) => Promise<{ ok: boolean; path?: string; error?: string }>;
   };
   theme: {
     getSystem: () => Promise<'light' | 'dark'>;
@@ -100,6 +106,15 @@ export interface SynoriveApi {
       chatModel: string;
       apiKey: string;
     }) => Promise<{ ok: boolean; reply?: string; error?: string }>;
+  };
+  /**
+   * S3 联网搜索引擎的 Key。`status()` 只回「哪几家配了」，
+   * **拿不到明文** —— 和 `cloud` 那组一样，明文只存在于主进程和 safeStorage 里。
+   * `set(id, '')` 表示删掉这一家。存完主进程会自己重启引擎让 Key 生效。
+   */
+  engineKeys: {
+    status: () => Promise<Record<string, boolean>>;
+    set: (id: string, value: string) => Promise<boolean>;
   };
 }
 

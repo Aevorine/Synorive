@@ -51,6 +51,10 @@ class RankingWeights(BaseModel):
     sourceTrust: float = 0.2
     popularity: float = 0.2
     titleBoost: float = 0.5
+    #: D1 结果多样性：同一个目录/域名下的第 2、3 条依次降权。0 = 允许一个目录霸屏
+    diversity: float = 0.5
+    #: D1 长度惩罚：很短的片段（目录行、页眉）降权
+    lengthPenalty: float = 0.3
 
 
 class SearchRequest(BaseModel):
@@ -64,6 +68,8 @@ class SearchRequest(BaseModel):
     rerank: bool = False
     explain: bool = False
     answer: bool = False
+    #: A3：横跨多条结果摘一份带出处的答案。和 answer（单条秒答卡）互不影响
+    ask: bool = False
     #: keyword = 只跑快的那两路（首屏）；semantic = 全跑
     stage: str = "semantic"
 
@@ -104,7 +110,57 @@ async def search(req: SearchRequest, request: Request) -> dict[str, Any]:
         stage=req.stage,
         rerank=req.rerank,
         answer=req.answer,
+        ask=req.ask,
     )
+
+
+@router.post("/ask")
+async def ask(req: SearchRequest, request: Request) -> dict[str, Any]:
+    """
+    A3 Ask 模式 —— 问一句话，回一段**带出处**的答案。
+
+    它就是一次 `stage=semantic` 的检索 + `ask=True`，单开一个路由的理由有两个：
+      ① 语义上是两件事。调用方（界面、MCP、CLI）写 `/ask` 比写
+         `/search {"ask":true,"stage":"semantic"}` 清楚得多，也不会写错组合 ——
+         `ask=True` 配 `stage=keyword` 是个静默无效的组合，引擎会照常返回
+         但 `ask` 字段永远不出现，调用方只会觉得"这功能坏了"。
+      ② 默认值不同。Ask 只需要少量高质量候选（摘录用不上第 40 条），
+         limit 默认压到 12，省掉一大半排序和高亮的开销。
+
+    答不上的时候**照样返回 200 和一个完整对象**（`enough:false` + `why` +
+    `suggest`），不返回 4xx —— "库里没有这个答案"是正常业务结果，不是错误。
+    用 4xx 表达它会让调用方的错误处理分支里混进一堆正常情况。
+    """
+    rt = _rt(request)
+    if rt.search is None:
+        raise HTTPException(503, "检索引擎还没就绪")
+
+    result = await asyncio.to_thread(
+        rt.search.search,
+        req.query,
+        filters=req.filters.model_dump(exclude_none=True) if req.filters else None,
+        weights=req.weights.model_dump() if req.weights else None,
+        preset=req.preset,
+        # Ask 只摘录，用不上长尾结果；12 条足够覆盖 MAX_SOURCES=4 个来源
+        limit=min(req.limit, 12),
+        offset=0,
+        explain=False,
+        # 🔴 写死 semantic。Ask 走 keyword 层会拿没排好序的候选去摘句子，
+        #    摘出来的东西一轮之后就被推翻 —— 那不是"快"，那是给错答案
+        stage="semantic",
+        rerank=req.rerank,
+        answer=False,
+        ask=True,
+    )
+    return {
+        "ask": result.get("ask") or {"question": req.query, "passages": [], "enough": False},
+        # 结果列表一并带回：答案下面就是"这几条是我读过的"，
+        # 用户想自己核对时不用再发一次请求
+        "hits": result.get("hits", []),
+        "elapsedMs": result.get("elapsedMs", 0),
+        "weakMatch": result.get("weakMatch", False),
+        "recovery": result.get("recovery"),
+    }
 
 
 @router.post("/ingest")
@@ -1107,6 +1163,20 @@ async def web_engines(request: Request) -> dict[str, Any]:
 
     web = _web(request)
     return {"engines": describe_engines(), "health": web.engine_health()}
+
+
+@router.post("/web/engines/reset-health")
+async def web_engines_reset_health(request: Request) -> dict[str, Any]:
+    """
+    清掉引擎记分与熔断，从零重新学（S1）。`?engine=baidu` 只清一家。
+
+    有这条是因为记分是**滑动窗口**：一家引擎修好之后，界面上仍会被
+    几十次旧失败压着显示成"用不了"，而其中相当一部分本来就是误记的
+    （没派上场被当成搜了没结果、查询串写错被当成引擎坏了）。
+    详见 `EngineScheduler.reset` 的注释。
+    """
+    eid = (request.query_params.get("engine") or "").strip() or None
+    return _web(request).reset_health(eid)
 
 
 @router.post("/web/search")

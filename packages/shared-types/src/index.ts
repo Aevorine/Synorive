@@ -161,6 +161,16 @@ export interface RankingWeights {
   popularity: number;
   /** 标题命中额外加权 */
   titleBoost: number;
+  /**
+   * D1 结果多样性：**同一个目录 / 同一个域名**下的第 2、3 条依次降权。
+   * 0 = 允许一个目录铺满整屏（已经知道东西在哪个文件夹时要的就是这个）。
+   *
+   * ⚠️ 不是"同一份资料的第几段" —— 召回和融合都已按 item 去重，
+   *    同一份资料最多出现一次，按段降权是进不去的死分支。
+   */
+  diversity: number;
+  /** D1 长度惩罚：很短的片段（目录行、页眉、单句标题）降权 */
+  lengthPenalty: number;
 }
 
 export const DEFAULT_WEIGHTS: RankingWeights = {
@@ -170,10 +180,29 @@ export const DEFAULT_WEIGHTS: RankingWeights = {
   sourceTrust: 0.2,
   popularity: 0.2,
   titleBoost: 0.5,
+  diversity: 0.5,
+  lengthPenalty: 0.3,
 };
 
-/** 排序预设：一键切换整套权重 */
-export type RankingPreset = 'balanced' | 'precise' | 'semantic' | 'recent' | 'custom';
+/** 排序预设：一键切换整套权重。'deep' = 深读一份（关掉多样性） */
+export type RankingPreset =
+  | 'balanced'
+  | 'precise'
+  | 'semantic'
+  | 'recent'
+  | 'deep'
+  | 'custom';
+
+/**
+ * D1 用户自己存的权重组合。
+ * 存在设置里，跟人走 —— 调好一套"找代码用的权重"却只活到关窗口为止，
+ * 等于每次都要重调，那这些滑块就白给了。
+ */
+export interface SavedRankingPreset {
+  id: string;
+  name: string;
+  weights: RankingWeights;
+}
 
 /** D5 结构化筛选 */
 export interface SearchFilters {
@@ -283,6 +312,51 @@ export interface SearchResponse {
   answer?: InstantAnswer;
   /** D9 零结果补救建议 */
   suggestions?: SearchSuggestion[];
+}
+
+/**
+ * A3 Ask 模式的一段逐字摘录
+ *
+ * 🔴 `text` **一定能在原文里逐字找到**。界面不许对它做任何"顺一下语句"的
+ *    处理（去空格、补标点、截断加省略号都算），否则"点回原文"会定位不到，
+ *    而定位不到的引用等于没有引用。
+ */
+export interface AskPassage {
+  text: string;
+  itemId: string;
+  title: string;
+  locator: string;
+  /** 0~1，这一段命中了问题里多少实词。仅用于排序和弱化显示 */
+  coverage: number;
+  /** 命中的词，界面拿它做高亮 —— 让用户看见"它凭什么被选中" */
+  matched: string[];
+  /** 永远是 'extract'。留字段是为了将来真接了生成式时能区分，而不是现在就有 */
+  kind: 'extract';
+  page?: number;
+  startSec?: number;
+}
+
+/** A3 一次问答的完整结果。**答不上时也返回它**，靠 enough 区分 */
+export interface AskAnswer {
+  question: string;
+  passages: AskPassage[];
+  sources: { itemId: string; title: string; locator: string }[];
+  /** false = 依据不足。此时 why/suggest 一定有值，界面必须显示它们 */
+  enough: boolean;
+  coverage: number;
+  kind: 'extract';
+  /** 为什么答不上（enough=false 时） */
+  why?: string;
+  /** 具体到可以直接照做的建议，不是「换个说法试试」这种废话 */
+  suggest?: string[];
+}
+
+export interface AskResponse {
+  ask: AskAnswer;
+  hits: SearchHit[];
+  elapsedMs: number;
+  weakMatch: boolean;
+  recovery?: unknown;
 }
 
 /** D8 秒答卡：从你自己的资料里答，每句都带出处 */
@@ -540,12 +614,58 @@ export type FontScheme = 'a' | 'b' | 'c';
 /** E16 护眼色温档位 */
 export type EyeComfortLevel = 'off' | 'low' | 'medium' | 'high';
 
+/**
+ * A3 主输入模式 —— 同一个输入框，两种意图
+ *   ask  = 问一句话，要的是**带出处的答案**
+ *   find = 找东西，要的是**文件列表**
+ * 两者共用一套检索管线，差别只在最后一层怎么组织输出。
+ */
+export type InputMode = 'ask' | 'find';
+
+/** A2 启动落地页 */
+export type StartPage = 'today' | 'search';
+
 export interface AppSettings {
-  theme: 'light' | 'dark' | 'system';
+  /**
+   * paper = 纸感（B4 第三档，长时间阅读）。
+   * ⚠️ 加了这一档以后，所有 `theme === 'dark' ? A : B` 的二元判断都变成了
+   *    **静默错误**：paper 会走进 else 分支拿到浅色那套。全仓判断一律要写成
+   *    显式三分支，不许用二元三目。
+   */
+  theme: 'light' | 'dark' | 'paper' | 'system';
   fontScheme: FontScheme;
   eyeComfort: EyeComfortLevel;
   eyeReminderMinutes: number;
   density: Density;
+  /**
+   * A2 打开软件先落在哪一页。默认 today ——
+   * 「今日」页存在的全部理由就是"打开就有东西看"，
+   * 而它如果不是启动页，用户永远不会主动点进去看。
+   */
+  startPage: StartPage;
+  /** A3 主输入框默认意图。默认 ask */
+  defaultInputMode: InputMode;
+  /**
+   * B7 钉在侧栏顶部的入口 id（PageId 或 `project:<id>` / `watch:<id>`）。
+   * 顺序即显示顺序。
+   */
+  pinnedNav: string[];
+  /** D1 用户存下来的排序权重组合。空数组 = 还没存过 */
+  savedPresets: SavedRankingPreset[];
+  /**
+   * A5 当前工作在哪个项目下。null = 不归属任何项目（默认）。
+   *
+   * 存在设置里而不是内存里：**项目是跨会话的工作上下文**，
+   * 关掉窗口第二天打开还该在同一个项目里 ——
+   * 每次启动都退回"没有项目"，等于逼用户每天早上重新选一次。
+   */
+  activeProjectId: string | null;
+  /**
+   * C3 把高开销渲染（高亮分词、差异比对、图谱布局）放进 Worker。
+   * 默认开；留开关是因为**极老的机器上创建 Worker 本身有开销**，
+   * 而且 Worker 挂掉时要能一键退回主线程路径排查。
+   */
+  offloadHeavyWork: boolean;
   /** M5 并发度 1~16 */
   concurrency: number;
   /** 托盘常驻 */

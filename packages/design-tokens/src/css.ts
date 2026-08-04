@@ -18,6 +18,7 @@ import {
   motion,
   zIndex,
   layout,
+  densityScale,
   brand,
   type ThemeName,
 } from './tokens.js';
@@ -81,9 +82,48 @@ function staticVars(): string {
     lines.push(`  --syn-row-h-${kebab(k)}: ${v}px;`);
   }
 
+  lines.push('  /* ── B1 主舞台（大输入区） ── */');
+  // 这两个是**无量纲**的，不能带 px：
+  //   verticalAnchor 是比例（0.32），带上 px 会让 calc 整个失效 ——
+  //     失效方式是"输入框跑到屏幕外面"，不报错、只是看不见
+  //   inputRows 是行数，给 <textarea rows> 用，带 px 就是一个假单位
+  const UNITLESS = new Set(['verticalAnchor', 'inputRows']);
+  for (const [k, v] of Object.entries(layout.stage)) {
+    lines.push(`  --syn-stage-${kebab(k)}: ${typeof v === 'number' && !UNITLESS.has(k) ? `${v}px` : v};`);
+  }
+
   lines.push('  /* ── 品牌原色（仅图标 / 启动页 / 关于页） ── */');
   for (const [k, v] of Object.entries(brand)) lines.push(`  --syn-brand-${kebab(k)}: ${v};`);
 
+  return lines.join('\n');
+}
+
+/**
+ * 密度变量（B5）
+ *
+ * 一档一个 `:root[data-density='x']` 块。组件写 `var(--syn-d-gap)` 就自动跟着变，
+ * **不需要每个组件各写三条 `[data-density]` 规则** —— 那正是原来那套失效的原因：
+ * 要求每个组件自觉去响应，结果 41 个组件里只有 1 个响应了。
+ *
+ * `standard` 这一档同时写进 `:root`，这样即使 `data-density` 属性因为任何原因
+ * 没被设上（首帧、设置读取失败、渲染进程刚起来），变量也**永远有值**。
+ * 没有兜底的话表现是全应用间距塌成 0，比"密度不生效"难看得多。
+ */
+function densityVars(name: keyof typeof densityScale): string {
+  const d = densityScale[name];
+  const lines: string[] = [];
+  lines.push(`  --syn-d-scale: ${d.scale};`);
+  lines.push(`  --syn-d-gap: ${d.gap}px;`);
+  lines.push(`  --syn-d-control: ${d.control}px;`);
+  lines.push(`  --syn-d-card-pad: ${d.cardPad}px;`);
+  lines.push(`  --syn-d-line-height: ${d.lineHeight};`);
+  lines.push(`  --syn-d-content-pad: ${d.contentPad}px;`);
+  // 由总倍率乘出来的间距阶梯 —— 组件用这一组，就自动是响应密度的
+  for (const [k, v] of Object.entries(spacing)) {
+    if (v === 0) continue;
+    lines.push(`  --syn-d-space-${kebab(k)}: ${Math.round(v * d.scale)}px;`);
+  }
+  lines.push(`  --syn-d-row-h: var(--syn-row-h-${kebab(name)});`);
   return lines.join('\n');
 }
 
@@ -96,6 +136,9 @@ export function generateCss(): string {
 
 :root {
 ${staticVars()}
+
+  /* ── 密度默认档（standard）：属性没设上时的兜底，见 densityVars 注释 ── */
+${densityVars('standard')}
 
   /* ── 颜色（浅色，默认） ── */
 ${colorVars('light')}
@@ -114,15 +157,40 @@ ${shadowVars('dark')}
   color-scheme: dark;
 }
 
-/* 跟随系统：仅在未手动指定 data-theme 时生效 */
+/* 纸感：长时间阅读档。用独立色板而不是整层 filter —— 见 tokens.ts 里 paper 的注释，
+   那一层 filter 同时也是滚动掉帧的来源之一。阴影沿用浅色那套。 */
+:root[data-theme='paper'] {
+${colorVars('paper')}
+
+${shadowVars('light')}
+
+  color-scheme: light;
+}
+
+/* 跟随系统：仅在未手动指定 data-theme 时生效。
+   ⚠️ paper 也要排除 —— 漏了它的话，用户选了纸感而系统是深色时，
+   这条媒体查询会把 paper 的颜色整个盖掉，表现是"选了没反应"。 */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']):not([data-theme='dark']) {
+  :root:not([data-theme='light']):not([data-theme='dark']):not([data-theme='paper']) {
 ${colorVars('dark')}
 
 ${shadowVars('dark')}
 
     color-scheme: dark;
   }
+}
+
+/* ── 密度三档（B5） ── */
+:root[data-density='compact'] {
+${densityVars('compact')}
+}
+
+:root[data-density='standard'] {
+${densityVars('standard')}
+}
+
+:root[data-density='comfortable'] {
+${densityVars('comfortable')}
 }
 `;
 }

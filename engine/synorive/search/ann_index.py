@@ -59,6 +59,15 @@ EXPANSION_SEARCH = 64
 
 INDEX_FILENAME = "ann_index.usearch"
 
+#: 攒够这么多条改动就在后台落一次盘（见 `_maybe_autosave`）。
+#:
+#: 5000 是这样估出来的：一次落盘的代价随索引规模走（百万级向量约几秒），
+#: 而 5000 条大约是"摄取几百个文档"的量级。取这个数意味着
+#: **最坏情况下异常退出丢掉的是几百个文档的语义索引**，
+#: 而不是"上次干净关闭以来的全部内容"——后者可能是几万条。
+#: 调小 = 更安全但摄取更慢；调大 = 反之。没有实测理由就别动它。
+AUTOSAVE_EVERY = 5_000
+
 
 class AnnIndex:
     """
@@ -76,6 +85,10 @@ class AnnIndex:
         self._lock = threading.Lock()
         self._index: Any = None
         self._count = 0
+        #: 自上次落盘以来新增/删除了多少条。见 `_maybe_autosave`
+        self._dirty = 0
+        #: 有没有一次后台落盘正在跑。防止摄取高峰期堆起一串落盘线程
+        self._saving = False
 
     # ── 生命周期 ────────────────────────────────────────────
     def _ensure_index(self) -> Any:
@@ -111,12 +124,23 @@ class AnnIndex:
             return False
 
     def save(self) -> None:
+        """
+        把整个 HNSW 图序列化到磁盘。
+
+        ⚠️ **全程持锁**。百万级索引序列化要几秒，这几秒里并发的 `add_many`
+           会被挡住。这是**有意的**：usearch 在写盘的同时被 add，
+           落盘的文件可能是撕裂的 —— 而撕裂的索引下次加载时才会暴露，
+           那时候数据早就写进去了。宁可摄取卡一下，也不能存出一份坏索引。
+        """
         if self._index is None or self._count == 0:
             return
         with self._lock:
             self.index_path.parent.mkdir(parents=True, exist_ok=True)
             self._index.save(str(self.index_path))
             self.index_path.with_suffix(".meta").write_text(self.model_tag, encoding="utf-8")
+            # 只有真的写成功了才清账。失败时保留 _dirty，
+            # 下一批改动会再触发一次自动落盘 —— 而不是"失败一次就等到关机"
+            self._dirty = 0
 
     # ── 维护 ────────────────────────────────────────────────
     @property
@@ -136,6 +160,8 @@ class AnnIndex:
             # 同样的"C 扩展只认 NumPy 数组"限制，见 search() 的注释
             idx.add(rowid, np.asarray(vector, dtype="float32"))
             self._count = len(idx)
+            self._dirty += 1
+        self._maybe_autosave()
 
     def add_many(self, rowids: list[int], vectors: Any) -> None:
         import numpy as np
@@ -146,6 +172,8 @@ class AnnIndex:
         with self._lock:
             idx.add(np.asarray(rowids), np.asarray(vectors, dtype="float32"), threads=0)
             self._count = len(idx)
+            self._dirty += len(rowids)
+        self._maybe_autosave()
 
     def remove(self, rowid: int) -> None:
         if self._index is None:
@@ -154,10 +182,59 @@ class AnnIndex:
             try:
                 self._index.remove(rowid)
                 self._count = len(self._index)
+                self._dirty += 1
             except Exception:  # noqa: BLE001
                 # rowid 本来就不在索引里（比如库还小、ANN 从没接管过），
                 # 删除一个不存在的 key 不该让删除操作本身失败
                 pass
+
+    # ── 自动落盘 ────────────────────────────────────────────
+
+    def _maybe_autosave(self) -> None:
+        """
+        攒够 `AUTOSAVE_EVERY` 条改动就在后台落一次盘。
+
+        🔴 **要治的病**：在这之前，索引**只在引擎干净关闭时才存盘**
+           （`main.py` 的 will_quit）。也就是说，只要发生一次异常退出
+           —— 断电、任务管理器强杀、装更新时被结束进程 ——
+           上次存盘之后新增的全部向量就都丢了。
+
+           丢了之后的表现极其隐蔽：数据库里 `vec_chunks` 一条不少，
+           搜索也不报错，只是**那批内容在语义检索里查不到**了。
+           兜底的重建逻辑要下次启动检测到落差才触发，
+           而在那之前用户完全不知道自己少搜到了东西。
+
+        🔴 **不是每写一条都存**：一次落盘是把整个 HNSW 图序列化到磁盘，
+           几十万向量要几百毫秒到几秒。摄取一万个文件时每条都存，
+           光落盘就能把整批摄取拖慢一个数量级。
+
+        🔴 **后台线程 + `_saving` 闸**：摄取高峰期 `add_many` 调得很密，
+           不设闸会堆起一串落盘线程同时写同一个文件。
+           已经有一次在跑就直接跳过 —— 反正下一批改动还会再触发。
+
+        落盘失败**只记日志不抛**：它是一个优化，失败的后果是回到
+        "只在关闭时存"这个原来的行为，而不该让正在进行的摄取整批失败。
+        """
+        with self._lock:
+            if self._dirty < AUTOSAVE_EVERY or self._saving or self._index is None:
+                return
+            # 只置 _saving，**不在这里清 _dirty** —— 清账的事交给 save()，
+            # 而它只在真的写成功之后才清。在这里乐观清掉的话，
+            # 一次失败的落盘会让计数归零，于是要再攒满 5000 条才会重试，
+            # 中间那一大批"以为存过了"的向量其实一直没落盘
+            self._saving = True
+
+        def run() -> None:
+            try:
+                self.save()
+                log.debug("ANN 索引自动落盘完成，当前 %d 个向量", self._count)
+            except Exception as e:  # noqa: BLE001
+                log.warning("ANN 索引自动落盘失败（不影响检索，关闭时会再试）：%s", e)
+            finally:
+                with self._lock:
+                    self._saving = False
+
+        threading.Thread(target=run, daemon=True, name="ann-autosave").start()
 
     def search(self, query_vector: list[float], k: int) -> list[tuple[int, float]]:
         """返回 `[(chunk_rowid, distance), ...]`，按距离升序。"""

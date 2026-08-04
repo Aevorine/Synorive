@@ -244,6 +244,30 @@ class EngineScheduler:
             st.total_ok = int(d.get("totalOk") or 0)
             self.stats[eid] = st
 
+    def reset(self, engine_id: str | None = None) -> int:
+        """
+        清掉记分重新学。`engine_id=None` 清全部，否则只清一家。返回清了几家。
+
+        🔴 **这个入口是必须有的，不是锦上添花。** 记分是滑动窗口（最近 30 次），
+        一家引擎被修好之后，界面上仍会有几十次旧失败压着它 —— 用户看到的
+        还是「百度 0/183」，会得出"根本没修好"的结论，然后不再相信这块面板。
+        而这些旧记录里有相当一部分本来就是**误记的**：
+        没派上场被当成搜了没结果（见 `EngineReply.attempted`）、
+        查询串写错被当成引擎坏了（arXiv/OpenAIRE 那两例）。
+
+        **拿旧口径攒的数据去评价改好之后的行为，本身就是错的。**
+        比起让用户去文件系统里删一个 .json，给一个按钮才是正经做法。
+        """
+        n = len(self.stats) if engine_id is None else int(engine_id in self.stats)
+        if engine_id is None:
+            self.stats.clear()
+        else:
+            self.stats.pop(engine_id, None)
+        if n:
+            self._dirty = True
+            self.save()
+        return n
+
     def save(self) -> None:
         """
         落盘。**只在真的有变化时写**——搜索是高频操作，每次都写盘

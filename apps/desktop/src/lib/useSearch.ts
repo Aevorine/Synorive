@@ -16,6 +16,7 @@ import type {
 } from '@synorive/shared-types';
 import { DEFAULT_WEIGHTS } from '@synorive/shared-types';
 import { createWaterfallSearch } from './api';
+import { recordSearch } from './perf';
 import { history } from './undo';
 
 const waterfall = createWaterfallSearch();
@@ -23,7 +24,8 @@ const waterfall = createWaterfallSearch();
 /** 敲字防抖。太短会白发很多请求，太长会有卡顿感。 */
 const DEBOUNCE_MS = 140;
 
-export type Preset = 'balanced' | 'precise' | 'semantic' | 'recent' | 'custom';
+/** 'deep' = 深读一份（关掉多样性，允许同一份资料铺满整屏） */
+export type Preset = 'balanced' | 'precise' | 'semantic' | 'recent' | 'deep' | 'custom';
 
 interface SearchState {
   query: string;
@@ -100,6 +102,10 @@ export const useSearch = create<SearchState>((set, get) => {
         limit: 60,
       },
       (r) => {
+        // C6：只记**最终那一轮**的耗时。
+        // 首屏关键词那一波天然只要几十毫秒，把它也记进去会让 P95 好看得失真 ——
+        // 而用户体感的"搜完了"是最后一波，不是第一波
+        if (r.final) recordSearch(r.elapsedMs);
         set({
           hits: r.hits,
           stage: r.stage,
@@ -146,6 +152,15 @@ export const useSearch = create<SearchState>((set, get) => {
 
     setQuery: (q) => {
       set({ query: q });
+      // C1 / A3：**「问一句」模式下打字不发请求。**
+      //
+      // 原来是敲一个字就发一次（140ms 防抖）。搜索场景下这是对的 ——
+      // 边打边看结果收窄很有用。但问句场景下它是纯浪费而且有害：
+      //   · 一句 30 字的问题会打出七八次请求，每次都跑一遍向量召回
+      //   · 更糟的是**对着半句话摘出来的答案会先显示出来**，
+      //     用户读到的第一版答案是错的，而它看起来和正确答案一模一样
+      // 所以问答模式一律等回车（AskStage 的 submit 走 useAsk.run）。
+      if (useApp.getState().inputMode === 'ask') return;
       schedule();
     },
     setWeights: (w) => {
@@ -164,7 +179,17 @@ export const useSearch = create<SearchState>((set, get) => {
       set((s) => ({ explain: !s.explain }));
       schedule();
     },
-    rerun: fire,
+    // C1：立刻搜之前**必须先掐掉排队中的那次防抖**。
+    // 不掐的话，"打字 → 140ms 内按回车"会发出两次一模一样的检索：
+    // rerun 一次、防抖计时器到点再一次。两次结果相同所以界面上完全看不出来，
+    // 只是每次回车都白跑一遍全量召回。
+    rerun: () => {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      fire();
+    },
     clear: () => {
       waterfall.cancel();
       set({ query: '', hits: [], stage: null, total: 0, searched: false, error: null, recovery: null, weakMatch: false, parsed: null });

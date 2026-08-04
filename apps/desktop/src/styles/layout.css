@@ -1,0 +1,815 @@
+/* ============================================================
+ * Synorive 布局原语层（B3 / B5）
+ * ============================================================
+ * 用户原话：「界面要统一」「眼睛感到舒服」「不卡顿」
+ *
+ * ── 为什么需要这一层 ──────────────────────────────────────
+ * 令牌（颜色/字号/间距）早就统一了，但**界面看起来还是不统一**，
+ * 因为统一的是"取值"，不统一的是"用法"。实测全仓 8227 行 CSS 里，
+ * 每个组件都自己发明了一套前缀和一套间距约定：
+ *     .syn-watch-item / .matrix__table / .rp__log / .lt__list
+ *     .eh__table / .sy__fp / .pb__item / .peek__list …
+ * 同样是"一个带标题的面板"，有七八种写法、七八种内边距。
+ * 单看每一个都没错，放在一起就是"像不同软件拼起来的"。
+ *
+ * 这一层做两件事，**不重写那 8227 行**（重写的风险远大于收益）：
+ *   ① 给新代码一套必须用的原语，从此不再长出第九种写法
+ *   ② 把密度真正接到已有的公共类上（.page/.panel/.btn/.chip/.empty）
+ *
+ * ── 密度为什么以前是死的 ──────────────────────────────────
+ * `data-density` 属性一直在往 <html> 上写，但全仓只有 search.css 响应了
+ * 3 次。设置页有开关、点了有反馈、属性也确实变了 —— 而界面上除了搜索
+ * 结果的摘要行数以外什么都不会变。**它不报错、不崩溃、只是什么都不做。**
+ * 现在密度是一组 `--syn-d-*` 变量（见 design-tokens/src/css.ts），
+ * 谁用了变量谁就自动响应，不再要求每个组件自觉写三条规则。
+ *
+ * ⚠️ 本文件必须在 App.tsx 的 import 顺序里**排在其他页面样式之后**，
+ *    否则同优先级下会被先前的规则按后来居上覆盖掉。
+ * ============================================================ */
+
+/* ── 1. 把密度接到已有的公共类上 ─────────────────────────── */
+/* 只动"容器的内外边距"和"控件的高度"这两类。
+   不动定位、不动 flex 方向、不动宽度 —— 那些一改就会把现有排版拉垮，
+   而密度本来也不该改变布局结构，只该改变"松紧"。 */
+
+body {
+  line-height: var(--syn-d-line-height, 1.6);
+}
+
+.page {
+  padding: var(--syn-d-content-pad, 24px);
+}
+
+.page__header {
+  margin-bottom: var(--syn-d-space-lg, 16px);
+  gap: var(--syn-d-space-md, 12px);
+}
+
+.panel,
+.card {
+  padding: var(--syn-d-card-pad, 12px);
+}
+
+.empty {
+  gap: var(--syn-d-space-md, 12px);
+  padding: var(--syn-d-space-xxl, 32px) var(--syn-d-space-lg, 16px);
+}
+
+/* 控件高度：紧凑 26 / 标准 32 / 宽松 38。
+   用 min-height 不用 height —— 有些按钮里是两行文字，写死 height 会裁掉第二行，
+   而且裁掉的方式是"文字被切一半"，看起来像渲染 bug 不像密度设置。 */
+.btn,
+.chip,
+.textinput,
+select {
+  min-height: var(--syn-d-control, 32px);
+}
+
+/* 列表项之间的缝。`> * + *` 只作用于相邻兄弟，
+   不会给第一项加上一段莫名其妙的顶部空白 */
+.list > * + *,
+.ranking__list > * + * {
+  margin-top: var(--syn-d-gap, 8px);
+}
+
+/* ── 2. 布局原语：新代码只准用这一套 ─────────────────────── */
+
+/**
+ * 页面外壳。所有新页面都是：
+ *   <div class="syn-page">
+ *     <header class="syn-page__head"> <h1 class="syn-page__title">…
+ *     <div class="syn-page__body"> …
+ *
+ * 滚动条挂在 __body 上而不是 __page 上 —— 挂在外层的话标题会跟着滚走，
+ * 用户滚到第三屏就不知道自己在哪一页了。
+ */
+.syn-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: var(--syn-d-content-pad, 24px);
+}
+
+.syn-page__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-d-space-md, 12px);
+  flex-shrink: 0;
+  margin-bottom: var(--syn-d-space-lg, 16px);
+}
+
+/* 「今日」「搜索」这类界面主标题 —— 用户点名要「更大的宋体」的就是它 */
+.syn-page__title {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-page-title);
+  font-weight: var(--syn-fw-semibold);
+  line-height: var(--syn-lh-tight);
+  letter-spacing: var(--syn-ls-display);
+  color: var(--syn-color-text);
+}
+
+.syn-page__sub {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+}
+
+.syn-page__spacer {
+  flex: 1;
+}
+
+.syn-page__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 滚动容器单独提层，滚动时不去重绘它外面的东西 */
+  contain: layout paint;
+}
+
+/* 纵向堆叠 —— 代替满地的 `display:flex; flex-direction:column; gap:…` */
+.syn-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-gap, 8px);
+}
+.syn-stack--lg {
+  gap: var(--syn-d-space-lg, 16px);
+}
+.syn-stack--xl {
+  gap: var(--syn-d-space-xl, 24px);
+}
+
+/* 横向排列，默认垂直居中 */
+.syn-row {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-d-gap, 8px);
+  min-width: 0;
+}
+.syn-row--wrap {
+  flex-wrap: wrap;
+}
+.syn-row--top {
+  align-items: flex-start;
+}
+.syn-row__grow {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 自适应网格：卡片列表统一走它，不再每处各写一遍 minmax */
+.syn-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--syn-d-space-lg, 16px);
+}
+.syn-grid--wide {
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+}
+
+/**
+ * 面板 —— 一个带标题的方框。全应用第八种写法到此为止。
+ * 边框 1px + 极淡阴影，不是彩色大阴影：
+ * 「高级感来自几乎看不见的阴影加一条 1px 的线」（tokens.ts 原话）。
+ */
+.syn-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-xl);
+  box-shadow: var(--syn-shadow-sm);
+  overflow: hidden;
+}
+
+.syn-panel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-d-space-sm, 8px);
+  padding: var(--syn-d-card-pad, 12px) var(--syn-d-space-lg, 16px);
+  border-bottom: 1px solid var(--syn-color-border);
+  flex-shrink: 0;
+}
+
+.syn-panel__title {
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-medium);
+  line-height: var(--syn-lh-tight);
+  color: var(--syn-color-text);
+}
+
+.syn-panel__count {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+}
+
+.syn-panel__body {
+  padding: var(--syn-d-card-pad, 12px) var(--syn-d-space-lg, 16px);
+  min-height: 0;
+}
+
+.syn-panel__body--flush {
+  padding: 0;
+}
+
+.syn-panel__body--scroll {
+  overflow-y: auto;
+  contain: layout paint;
+}
+
+/* 区块小标题（面板内部再分段时用），比 panel__title 低一级 */
+.syn-subhead {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-d-space-sm, 8px);
+  font-size: var(--syn-fs-caption);
+  font-weight: var(--syn-fw-semibold);
+  letter-spacing: var(--syn-ls-wide);
+  color: var(--syn-color-text-secondary);
+  text-transform: none;
+}
+
+/* 一条可点的列表项 —— 覆盖 .syn-watch-item / .peek__list li / .lt__list li 这一类 */
+.syn-item {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-d-space-md, 12px);
+  width: 100%;
+  padding: var(--syn-d-space-sm, 8px) var(--syn-d-space-md, 12px);
+  border-radius: var(--syn-radius-lg);
+  text-align: left;
+  color: inherit;
+  transition: background-color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.syn-item:hover {
+  background: var(--syn-color-bg-hover);
+}
+
+.syn-item--on {
+  background: var(--syn-color-bg-selected);
+}
+
+.syn-item__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.syn-item__title {
+  font-size: var(--syn-fs-body);
+  line-height: var(--syn-lh-normal);
+  color: var(--syn-color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.syn-item__meta {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 空态：统一一种，不再每页各写一个 */
+.syn-blank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--syn-d-space-md, 12px);
+  padding: var(--syn-d-space-xxl, 32px);
+  text-align: center;
+  color: var(--syn-color-text-muted);
+}
+
+.syn-blank__glyph {
+  color: var(--syn-color-border-strong);
+}
+
+.syn-blank__title {
+  font-size: var(--syn-fs-emphasis);
+  color: var(--syn-color-text-secondary);
+}
+
+.syn-blank__hint {
+  font-size: var(--syn-fs-caption);
+  max-width: 46ch;
+  line-height: var(--syn-lh-relaxed);
+}
+
+/* ── 3. 骨架屏（C2 的视觉部分）─────────────────────────── */
+/* 用 background-position 动画而不是 width/opacity：
+   只走合成层，不触发布局和绘制。写成动 width 的话，一屏二十条骨架
+   每帧都要重排一次，"加载中"本身反而成了最卡的一屏。 */
+
+.syn-skel {
+  border-radius: var(--syn-radius-md);
+  background: linear-gradient(
+    90deg,
+    var(--syn-color-bg-sunken) 25%,
+    var(--syn-color-bg-hover) 37%,
+    var(--syn-color-bg-sunken) 63%
+  );
+  background-size: 400% 100%;
+  animation: syn-skel-slide 1.4s ease-in-out infinite;
+}
+
+.syn-skel--line {
+  height: 12px;
+  margin-bottom: var(--syn-d-space-sm, 8px);
+}
+.syn-skel--title {
+  height: 18px;
+  width: 44%;
+}
+.syn-skel--short {
+  width: 62%;
+}
+
+@keyframes syn-skel-slide {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .syn-skel {
+    animation: none;
+  }
+}
+
+/* ── 4. 搜索页三形态的外壳 ──────────────────────────────── */
+
+/* 舞台态：整页让给输入区。不给 overflow:hidden ——
+   小窗口下舞台加剪贴板托盘可能超出一屏，那时候要能滚 */
+.page--stage {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  padding: 0 var(--syn-d-content-pad, 24px) var(--syn-d-content-pad, 24px);
+}
+
+.page--stage__under {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-space-lg, 16px);
+  width: 100%;
+  max-width: var(--syn-stage-max-width, 960px);
+  margin: 0 auto;
+}
+
+/* 问答态：单列，最大宽度卡在 820px。
+   ⚠️ 比舞台窄是刻意的 —— 舞台是"写"，一行长一点无所谓；
+      答案是"读"，一行超过 40 个汉字眼睛回行就会找错行。 */
+.asklayout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-space-lg, 16px);
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  contain: layout paint;
+}
+
+.asklayout__hits {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-space-sm, 8px);
+}
+
+/* ── 5. 今日页 ───────────────────────────────────────────── */
+
+/* 主行动区：整页最大最显眼的一个可点区域。
+   「重要功能显示在界面内重要核心的位置中」—— 今日页最重要的
+   不是那几个数字，是让用户想起"我可以直接问它" */
+.today__hero {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-d-space-lg, 16px);
+  width: 100%;
+  padding: var(--syn-space-xl) var(--syn-space-xl);
+  margin-bottom: var(--syn-d-space-xl, 24px);
+  color: var(--syn-color-text);
+  background: var(--syn-color-primary-subtle);
+  border: 1px solid var(--syn-color-border-focus);
+  border-radius: var(--syn-radius-xl);
+  text-align: left;
+  transition: box-shadow var(--syn-dur-fast) var(--syn-ease-standard),
+    transform var(--syn-dur-fast) var(--syn-ease-standard);
+}
+
+.today__hero:hover {
+  box-shadow: var(--syn-shadow-md);
+}
+
+/* 只动 transform 不动尺寸 —— 动 width/padding 会触发整页重排，
+   而这一块位于列表上方，重排会让下面几十张卡片跟着抖 */
+.today__hero:active {
+  transform: translateY(1px);
+}
+
+.today__hero svg {
+  flex-shrink: 0;
+  color: var(--syn-color-primary);
+}
+
+.today__herotext {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.today__herotext strong {
+  /* 三号 21.33px：这是首页上最大的一行功能名 */
+  font-size: var(--syn-fs-section-title);
+  font-weight: var(--syn-fw-semibold);
+  line-height: var(--syn-lh-tight);
+}
+
+.today__herotext span {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+}
+
+.today__herokbd {
+  display: inline-flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.today__grid {
+  align-items: start;
+}
+
+.today__nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--syn-d-space-lg, 16px);
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text-secondary);
+}
+
+.today__num {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+}
+
+.today__num b {
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--syn-color-text);
+}
+
+/* 只有真的有失败项时才用警示色。
+   没有失败的时候这一行就该是安静的数字，不占注意力 */
+.today__num--bad {
+  padding: 2px var(--syn-space-sm);
+  color: var(--syn-color-danger);
+  background: var(--syn-color-danger-subtle);
+  border-radius: var(--syn-radius-pill);
+}
+
+.today__num--bad b {
+  color: var(--syn-color-danger);
+}
+
+/* ── 6. 侧栏：收藏区与钉按钮（B7）─────────────────────── */
+
+/* 包一层 slot 是为了给钉按钮一个定位参照。
+   ⚠️ 必须显式 width:100% —— 原来 .sidebar__item 是 .sidebar 的直接子元素，
+      靠父级 flex 拉满宽度；中间插一层之后那个拉伸作用在 slot 上，
+      slot 不撑满的话所有导航项会缩成"文字有多宽就多宽"，看起来像布局塌了 */
+.sidebar__slot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.sidebar__slot .sidebar__item {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 钉按钮平时隐形，悬停或已钉住才出现。
+   常驻显示的话侧栏会变成一排图钉，而钉这个动作一辈子只做几次 */
+.sidebar__pin {
+  position: absolute;
+  right: var(--syn-space-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: var(--syn-color-text-muted);
+  border-radius: var(--syn-radius-sm);
+  opacity: 0;
+  transition: opacity var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.sidebar__slot:hover .sidebar__pin,
+.sidebar__pin:focus-visible,
+.sidebar__pin--on {
+  opacity: 1;
+}
+
+.sidebar__pin:hover {
+  color: var(--syn-color-primary);
+  background: var(--syn-color-bg-hover);
+}
+
+.sidebar__pin--on {
+  color: var(--syn-color-primary);
+}
+
+.sidebar__group {
+  padding: var(--syn-space-sm) var(--syn-space-md) var(--syn-space-xs);
+  font-size: var(--syn-fs-micro);
+  font-weight: var(--syn-fw-semibold);
+  letter-spacing: var(--syn-ls-wide);
+  color: var(--syn-color-text-muted);
+}
+
+.sidebar__rule {
+  height: 1px;
+  margin: var(--syn-space-sm) var(--syn-space-md);
+  background: var(--syn-color-border);
+}
+
+/* ── 7. D1 排序面板新增部分 ─────────────────────────────── */
+
+.ranking__saved {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-xs) 0;
+}
+
+.ranking__savedchip {
+  display: inline-flex;
+  align-items: center;
+  background: var(--syn-color-bg-sunken);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-pill);
+  overflow: hidden;
+}
+
+.ranking__savedname {
+  padding: 2px var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+}
+
+.ranking__savedname:hover {
+  color: var(--syn-color-primary);
+}
+
+/* 删按钮平时压暗。和名字挤在一个胶囊里，误点的代价是丢一个预设，
+   所以它要比名字难点一点，不能等宽等亮 */
+.ranking__savedx {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--syn-space-xs);
+  color: var(--syn-color-text-muted);
+  opacity: 0.6;
+}
+
+.ranking__savedx:hover {
+  color: var(--syn-color-danger);
+  opacity: 1;
+}
+
+.ranking__save {
+  display: flex;
+  gap: var(--syn-space-xs);
+  align-items: center;
+}
+
+.ranking__save .textinput {
+  flex: 1;
+  min-width: 0;
+}
+
+.ranking__addpreset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--syn-space-xs);
+  width: 100%;
+  min-height: var(--syn-d-control, 32px);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  background: transparent;
+  border: 1px dashed var(--syn-color-border-strong);
+  border-radius: var(--syn-radius-lg);
+}
+
+.ranking__addpreset:hover:not(:disabled) {
+  color: var(--syn-color-primary);
+  border-color: var(--syn-color-border-focus);
+  background: var(--syn-color-primary-subtle);
+}
+
+/* 置灰但**不隐藏**：藏起来用户会以为没这功能。
+   置灰 + title 说明"先调一个滑块"，他就知道差哪一步 */
+.ranking__addpreset:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── 8. B2 研究页大输入区 ───────────────────────────────── */
+/* 这几条覆盖 research.css 里 .omni__input 的 `resize: none`，
+   所以本文件必须排在它后面加载（App.tsx 的 import 顺序）。 */
+
+.omni__input {
+  /* 约 8 行小四 + 内边距。写 min-height 而不是 height：
+     rows 属性给的是初始值，min-height 保证它不会被 flex 压扁 */
+  min-height: 172px;
+  /* 上限半屏。再高的话「执行」按钮会被推到屏幕外面，
+     而用户只会觉得"这个框没法提交" */
+  max-height: 50vh;
+  /* 「输入的内容很多」的直接落地：让用户自己拉到他要的高度 */
+  resize: vertical;
+  overflow-y: auto;
+}
+
+/* 拖了文件时它退居次要，收窄 */
+.omni__files ~ .omni__box .omni__input,
+.omni__box:has(+ .omni__files) .omni__input {
+  min-height: 76px;
+}
+
+.omni__count {
+  align-self: flex-end;
+  flex: none;
+  padding-bottom: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  font-variant-numeric: tabular-nums;
+  color: var(--syn-color-text-muted);
+  white-space: nowrap;
+}
+
+/* 按钮跟着输入框一起长高时会被拉伸得很难看，钉在顶端 */
+.omni__box > .omni__clear,
+.omni__box > .omni__go {
+  align-self: flex-start;
+}
+
+/* ── 9. C6 性能看板 ─────────────────────────────────────── */
+
+.perf {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-space-md, 12px);
+}
+
+.perf__note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-normal);
+  color: var(--syn-color-text-secondary);
+  background: var(--syn-color-warning-subtle);
+  border-radius: var(--syn-radius-lg);
+}
+
+.perf__note svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--syn-color-warning);
+}
+
+.perf__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding-top: var(--syn-space-sm);
+}
+
+.perf__headtitle {
+  font-size: var(--syn-fs-caption);
+  font-weight: var(--syn-fw-semibold);
+  letter-spacing: var(--syn-ls-wide);
+  color: var(--syn-color-text-secondary);
+}
+
+.perf__spacer {
+  flex: 1;
+}
+
+.perf__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--syn-fs-caption);
+}
+
+.perf__table th {
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  text-align: left;
+  font-weight: var(--syn-fw-semibold);
+  color: var(--syn-color-text-muted);
+  border-bottom: 1px solid var(--syn-color-border);
+}
+
+.perf__table td {
+  padding: var(--syn-space-sm);
+  vertical-align: top;
+  border-bottom: 1px solid var(--syn-color-border);
+}
+
+.perf__label {
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text);
+}
+
+.perf__hint {
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-normal);
+  color: var(--syn-color-text-muted);
+}
+
+.perf__target,
+.perf__n {
+  white-space: nowrap;
+  color: var(--syn-color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.perf__value {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.perf__value b {
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-semibold);
+  color: var(--syn-color-text);
+}
+
+.perf__unit {
+  margin-left: 2px;
+  color: var(--syn-color-text-muted);
+}
+
+/* 「还没测」必须一眼看出**不是一个数字**。
+   和达标绿、超标红都拉开距离，用最低对比度的中性色 */
+.perf__unknown {
+  display: inline-flex;
+  align-items: center;
+  color: var(--syn-color-text-muted);
+  font-style: normal;
+}
+
+.perf__ok {
+  display: inline-flex;
+  color: var(--syn-color-success);
+}
+
+.perf__bad {
+  display: inline-flex;
+  color: var(--syn-color-danger);
+}
+
+.perf__nums {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--syn-d-space-lg, 16px);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+}
+
+.perf__num b {
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--syn-color-text);
+}
+
+.perf__more summary {
+  cursor: pointer;
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  padding: var(--syn-space-xs) 0;
+}
+
+.perf__more summary:hover {
+  color: var(--syn-color-primary);
+}

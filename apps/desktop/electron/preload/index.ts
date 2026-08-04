@@ -109,6 +109,14 @@ const api = {
       name: string,
     ): Promise<{ ok: boolean; path?: string; error?: string }> =>
       ipcRenderer.invoke(IPC.exportPdf, { html, name }),
+
+    /** A4 另存为文本文件（Markdown / 纯文字 / BibTeX）。同样：取消 ≠ 失败 */
+    saveText: (
+      content: string,
+      name: string,
+      ext: string,
+    ): Promise<{ ok: boolean; path?: string; error?: string }> =>
+      ipcRenderer.invoke(IPC.saveText, { content, name, ext }),
   },
 
   theme: {
@@ -142,6 +150,18 @@ const api = {
       apiKey: string;
     }): Promise<{ ok: boolean; reply?: string; error?: string }> =>
       ipcRenderer.invoke(IPC.cloudTest, draft),
+  },
+
+  /**
+   * S3 联网搜索引擎的 Key（Serper / Brave / Tavily / Exa / Semantic Scholar…）。
+   *
+   * 和 `cloud` 那组一样：**渲染层只能写和查有没有，永远读不到明文**。
+   * `set(id, '')` 就是删掉这一家。存完主进程会自己重启引擎让 Key 生效。
+   */
+  engineKeys: {
+    status: (): Promise<Record<string, boolean>> => ipcRenderer.invoke(IPC.engineKeyStatus),
+    set: (id: string, value: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.engineKeySet, id, value),
   },
 } as const;
 

@@ -10,6 +10,7 @@ import type {
 import { PrivacyFence } from '../components/PrivacyFence';
 import { HotkeyReport } from '../components/HotkeyReport';
 import { ModelPanel } from '../components/ModelPanel';
+import { PerfPanel } from '../components/PerfPanel';
 import { SyncPanel } from '../components/SyncPanel';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { PAGE_TITLES, useApp } from '../lib/store';
@@ -53,7 +54,7 @@ const DENSITIES: { id: Density; label: string; hint: string }[] = [
 ];
 
 const EYE_LEVELS: { id: EyeComfortLevel; label: string; hint: string }[] = [
-  { id: 'off', label: '关', hint: '不做色温调节' },
+  { id: 'off', label: '关', hint: '不做色温调节。想要暖色优先选上面的「纸感」主题——那个不花性能' },
   { id: 'low', label: '弱', hint: '略微偏暖，长时间看不容易累' },
   { id: 'medium', label: '中', hint: '明显偏暖，夜里用' },
   { id: 'high', label: '强', hint: '最暖，纯文字阅读时用；看图会偏色' },
@@ -83,15 +84,51 @@ export function SettingsPage() {
         <section className="panel">
           <h2 className="panel__title">外观</h2>
 
-          <Field label="主题" hint="深色模式用暖灰不用纯黑——纯黑在 OLED 上会让浅色文字产生光晕">
+          <Field
+            label="主题"
+            hint="深色用暖灰不用纯黑（纯黑在 OLED 上会让浅色文字产生光晕）。
+                  「纸感」是纸黄底 + 棕墨字，长时间读文字最省眼——
+                  它是一套独立配色，不是加滤镜，所以不影响滚动流畅度。"
+          >
             <Segmented
               options={[
                 { id: 'system', label: '跟随系统' },
                 { id: 'light', label: '浅色' },
                 { id: 'dark', label: '深色' },
+                { id: 'paper', label: '纸感', title: '纸黄底 + 棕墨字，长时间阅读用' },
               ]}
               value={settings.theme}
               onChange={(v) => patch({ theme: v as AppSettings['theme'] })}
+            />
+          </Field>
+
+          <Field
+            label="打开软件先看哪一页"
+            hint="「今日」会把到期的订阅、刚进库的内容、没结的研究一起摆出来，
+                  打开就有东西看；「搜索」直接进大输入区。"
+          >
+            <Segmented
+              options={[
+                { id: 'today', label: '今日', title: '有什么新东西、有什么没读完' },
+                { id: 'search', label: '搜索', title: '直接进大输入区' },
+              ]}
+              value={settings.startPage}
+              onChange={(v) => patch({ startPage: v as AppSettings['startPage'] })}
+            />
+          </Field>
+
+          <Field
+            label="输入框默认干什么"
+            hint="「问一句」回一段带出处的答案（按 Enter 才发，打字过程中不搜）；
+                  「找东西」回结果列表（边打边搜）。两者随时一键切换，输入的字不会丢。"
+          >
+            <Segmented
+              options={[
+                { id: 'ask', label: '问一句', title: '回一段带出处的答案' },
+                { id: 'find', label: '找东西', title: '回一个结果列表' },
+              ]}
+              value={settings.defaultInputMode}
+              onChange={(v) => patch({ defaultInputMode: v as AppSettings['defaultInputMode'] })}
             />
           </Field>
 
@@ -117,9 +154,16 @@ export function SettingsPage() {
             />
           </Field>
 
+          {/* ⚠️ 这一档是**整层滤镜**，开着会让浏览器把整个页面提成独立合成层，
+              滚动时每帧重做一遍。所以提示里明写"要暖色优先用纸感主题"——
+              不写的话用户会以为这两条路等价，然后为一点暖色付掉滚动流畅度 */}
           <Field
-            label="护眼色温"
-            hint={EYE_LEVELS.find((e) => e.id === settings.eyeComfort)?.hint ?? ''}
+            label="护眼色温（在主题之上再叠一层暖色）"
+            hint={`${EYE_LEVELS.find((e) => e.id === settings.eyeComfort)?.hint ?? ''}${
+              settings.eyeComfort !== 'off'
+                ? '　⚠️ 这一层是整页滤镜，长列表滚动会略微变涩；只想要暖色的话「纸感」主题零开销。'
+                : ''
+            }`}
           >
             <Segmented
               options={EYE_LEVELS.map((e) => ({ id: e.id, label: e.label, title: e.hint }))}
@@ -158,9 +202,31 @@ export function SettingsPage() {
             onChange={(v) => patch({ enableGpuAcceleration: v })}
           />
 
+          <Toggle
+            label="把重活丢到后台线程"
+            hint="搜索结果高亮、文本比对、图谱布局这些计算放进 Worker，
+                  界面线程只管画画面——长列表滚动和打字不会再被卡住。
+                  只有在怀疑 Worker 本身出问题时才关掉它排查。"
+            checked={settings.offloadHeavyWork}
+            onChange={(v) => patch({ offloadHeavyWork: v })}
+          />
+
           {/* E15 模型热插拔。放在核显开关正下方 ——
               它就是那个开关的「立即生效」按钮，隔远了没人会去点 */}
           <ModelPanel preferGpu={settings.enableGpuAcceleration} />
+        </section>
+
+        {/* ── C6 性能看板 ──────────────────────────────
+            紧跟在「性能」后面：上面那几个开关是"调什么"，
+            这里是"调完到底有没有变快"。隔开的话没人会把两者对上 */}
+        <section className="panel">
+          <h2 className="panel__title">跑得多快（实测）</h2>
+          <p className="panel__hint">
+            八项技术指标在你平时用的过程中自动采样。
+            <strong>没采到样本的显示「还没测」，不会拿 0 冒充"很快"</strong>；
+            样本不够的也不给达标结论。
+          </p>
+          <PerfPanel />
         </section>
 
         {/* ── U 组 应用更新 ───────────────────────────────
@@ -363,6 +429,8 @@ export function SettingsPage() {
               }
             />
           </Field>
+
+          <EngineKeys />
         </section>
 
         {/* ── 隐私（单项细调）─────────────────────────── */}
@@ -673,6 +741,129 @@ function CloudProviderConfig({
 }
 
 // ── 小组件 ──────────────────────────────────────────────────
+
+/**
+ * S3 —— 联网搜索引擎的 API Key。
+ *
+ * 🔴 **这一块以前是缺的**，而引擎侧一直在提示用户"去设置里填一个 Key"。
+ * 后端其实早就写好了（`cloud-keys.ts` 的 `saveEngineKeys` 用 safeStorage
+ * 加密落盘），只是没有任何东西调用它 —— IPC、preload、界面三层全断。
+ * 于是 Semantic Scholar 每次撞 429 都给出一条**用户无法执行的建议**。
+ *
+ * 和云端 Key 一样：这里只发得出去、查得到"设没设"，**读不回明文**。
+ */
+function EngineKeys() {
+  const [status, setStatus] = useState<Record<string, boolean>>({});
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState('');
+
+  useEffect(() => {
+    void window.synorive.engineKeys.status().then(setStatus);
+  }, []);
+
+  const save = async (id: string, value: string) => {
+    setBusy(id);
+    const ok = await window.synorive.engineKeys.set(id, value);
+    if (ok) {
+      setStatus(await window.synorive.engineKeys.status());
+      setDraft((d) => ({ ...d, [id]: '' }));
+    }
+    setBusy('');
+  };
+
+  return (
+    <>
+      <Field
+        label="引擎 API Key"
+        hint="填了就存在系统凭据里加密保管，界面上再也读不出明文。
+              改完会自动重启一次引擎让它生效（几秒钟，不用手动点）。
+              一个都不填也能用，只是下面这几家会受额度限制或干脆用不了。"
+      >
+        <div className="enginekeys">
+          {ENGINE_KEY_SLOTS.map((slot) => (
+            <div className="enginekeys__item" key={slot.id}>
+              <div className="enginekeys__head">
+                <span className="enginekeys__name">{slot.label}</span>
+                <span className="enginekeys__state">
+                  {status[slot.id] ? '已保存' : '未配置'}
+                </span>
+              </div>
+              <p className="field__hint">{slot.hint}</p>
+              <div className="keyrow">
+                <input
+                  className="textinput"
+                  type="password"
+                  autoComplete="off"
+                  value={draft[slot.id] ?? ''}
+                  placeholder={status[slot.id] ? '●●●●●●●●●●●●' : slot.placeholder}
+                  onChange={(e) => setDraft((d) => ({ ...d, [slot.id]: e.target.value }))}
+                />
+                <button
+                  className="btn btn--sm"
+                  disabled={busy === slot.id || !(draft[slot.id] ?? '').trim()}
+                  onClick={() => void save(slot.id, (draft[slot.id] ?? '').trim())}
+                >
+                  {busy === slot.id ? <Loader2 size={13} className="spin" strokeWidth={2} /> : '保存'}
+                </button>
+                {status[slot.id] && (
+                  <button
+                    className="btn btn--sm"
+                    disabled={busy === slot.id}
+                    onClick={() => void save(slot.id, '')}
+                  >
+                    清除
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Field>
+    </>
+  );
+}
+
+/**
+ * 能填 Key 的几家，**按"填了能解决什么问题"排序**，不按字母也不按厂商。
+ *
+ * 排第一的是 Semantic Scholar：它免 Key 也能用，但额度是全世界共享的
+ * 1 RPS，撞 429 是常态而不是异常 —— 这是唯一一家"填个免费 Key 就从
+ * 基本不可用变成基本不失败"的。其余四家不填就完全用不了。
+ */
+const ENGINE_KEY_SLOTS: { id: string; label: string; hint: string; placeholder: string }[] = [
+  {
+    id: 'semanticscholar',
+    label: 'Semantic Scholar（免费）',
+    hint: '免 Key 也能用，但额度全世界共用，实测几乎每次都撞 429。'
+      + '去 semanticscholar.org/product/api 申请一个免费 Key，这一家就基本不会再失败。',
+    placeholder: '免费申请，几分钟到邮箱',
+  },
+  {
+    id: 'serper',
+    label: 'Serper（拿 Google 结果）',
+    hint: '转发 Google 的真实结果，不用浏览器也不会碰到验证码——'
+      + '实测 Google 直连和浏览器渲染都会被判异常流量，这是目前最可靠的一条路。有免费额度。',
+    placeholder: 'google.serper.dev 申请',
+  },
+  {
+    id: 'brave',
+    label: 'Brave Search API',
+    hint: '独立索引的官方接口，稳定不被封，有免费额度。',
+    placeholder: 'brave.com/search/api 申请',
+  },
+  {
+    id: 'tavily',
+    label: 'Tavily（直接带正文）',
+    hint: '专为 AI 检索做的接口，结果里直接带正文，深挖时能省掉一次抓取往返。有免费额度。',
+    placeholder: 'tavily.com 申请',
+  },
+  {
+    id: 'exa',
+    label: 'Exa（语义检索）',
+    hint: '按意思检索而不是按关键词，用一句话描述要找什么。关键词搜不到的长尾资料它常能找到。',
+    placeholder: 'exa.ai 申请',
+  },
+];
 
 function Field({
   label,

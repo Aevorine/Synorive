@@ -267,6 +267,94 @@ class Repository:
             conn.execute("ROLLBACK")
             raise
 
+    def backfill_vectors(
+        self, item_id: str, embeddings: Any, *, model_id: str = ""
+    ) -> int:
+        """
+        A1 渐进索引：给**已经写好的**分块补上向量，不动 chunks 表。
+
+        ── 为什么需要它 ────────────────────────────────────
+        原来流水线的顺序是 `chunk → embed → write_chunks`，也就是说
+        **一份文件在向量算完之前完全搜不到**。而向量是整条链路里最慢的一步，
+        于是"选个文件夹开始索引"之后有很长一段时间界面上什么都搜不出来，
+        用户看到的是一个"好像没在干活"的空列表。
+
+        改成 `chunk → write_chunks(无向量) → embed → backfill_vectors` 之后，
+        关键词层立刻可用，语义层在后台补齐并静默升级。
+
+        ── 为什么不直接再调一次 write_chunks ──────────────
+        那个方法会**先删光旧分块再重插**，于是：
+          ① 全部 rowid 变一遍，ANN 索引要整份删掉重建
+          ② 中间存在一个"分块已删、新分块还没插完"的窗口，
+             这期间搜索会**搜不到这份刚刚还能搜到的文件**
+        ②比①严重得多 —— 那是功能在用户眼皮底下闪断，
+        而且只在"边索引边搜"时出现，最难复现的一类。
+
+        返回真正写进去的向量条数。**数量对不上直接抛**，不静默截断：
+        错位的向量会让搜索结果驴唇不对马嘴，且极难定位到是这里。
+        """
+        rows = self.db.connect().execute(
+            "SELECT rowid FROM chunks WHERE item_id = ? ORDER BY chunk_index",
+            (item_id,),
+        ).fetchall()
+        if not rows:
+            return 0
+        if embeddings is None:
+            return 0
+        if len(embeddings) != len(rows):
+            raise ValueError(
+                f"回填向量数 {len(embeddings)} 与已存分块数 {len(rows)} 对不上（item={item_id}）—— "
+                "多半是 chunk 阶段和 embed 阶段之间分块被改过；"
+                "宁可整条失败也不能写进去一批错位的向量"
+            )
+
+        ann_adds: list[tuple[int, list[float]]] = []
+        conn = self.db.connect()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for i, r in enumerate(rows):
+                rid = int(r["rowid"])
+                vec = embeddings[i].tolist()
+                # 先删后插而不是 UPDATE：vec_chunks 是虚拟表，
+                # 不同 sqlite_vec 版本对 UPDATE 的支持不一致，
+                # 而"删+插"在所有版本上行为相同
+                conn.execute("DELETE FROM vec_chunks WHERE chunk_rowid = ?", (rid,))
+                conn.execute(
+                    "INSERT INTO vec_chunks (chunk_rowid, embedding) VALUES (?,?)",
+                    (rid, sqlite_vec.serialize_float32(vec)),
+                )
+                if self.ann_index is not None:
+                    ann_adds.append((rid, vec))
+
+            if model_id:
+                conn.execute(
+                    "INSERT INTO meta_kv (key, value) VALUES ('last_embed_model', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (model_id,),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+        # 与 write_chunks 同一条纪律：ANN 索引不是 SQLite 的一部分，
+        # 必须等 COMMIT 真正成功之后才落地，否则回滚时两边会不一致
+        if self.ann_index is not None and ann_adds:
+            for rid, _ in ann_adds:
+                # 这些 rowid 之前是"有分块无向量"，ANN 里本来就没有它们；
+                # 但重跑 embed 的情况下可能已经在了，先移除保证不重复
+                try:
+                    self.ann_index.remove(rid)
+                except Exception:  # noqa: BLE001
+                    # 不存在时 remove 抛异常是正常的，不该让整批回填失败
+                    pass
+            self.ann_index.add_many(
+                [rid for rid, _ in ann_adds],
+                [vec for _, vec in ann_adds],
+            )
+
+        return len(ann_adds) if self.ann_index is not None else len(rows)
+
     def write_phash(self, item_id: str, phash: str) -> None:
         """
         感知哈希按 16 位分段存（E9 近重复检测）。

@@ -754,6 +754,45 @@
   flex: 1;
 }
 
+/* ── S3 引擎 API Key 列表 ──────────────────────────────────
+   五家竖排，每家自带一句"填了能解决什么"。
+   一家一块分隔开，是因为它们的作用**完全不同**（一家是提额度，
+   四家是从不可用变可用）—— 挤成一行输入框会让人以为是同一类东西。 */
+.enginekeys {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-md);
+  width: 100%;
+}
+
+.enginekeys__item {
+  padding: var(--syn-space-sm) 0 0;
+  border-top: 1px solid var(--syn-color-border);
+}
+
+.enginekeys__item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.enginekeys__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--syn-space-sm);
+}
+
+.enginekeys__name {
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text);
+}
+
+/* 「已保存 / 未配置」是状态不是标题，压到次要级别 —— 它只在你找它时才需要显眼 */
+.enginekeys__state {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+}
+
 .testresult {
   display: inline-flex;
   align-items: center;

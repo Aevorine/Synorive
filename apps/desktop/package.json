@@ -14,6 +14,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
     "prepack:runtime": "node ../../scripts/bundle-python.mjs",
     "pack:dir": "npm run prepack:runtime && npm run build && electron-builder --dir",
     "pack:win": "npm run prepack:runtime && npm run build && electron-builder --win",
@@ -40,6 +41,7 @@
     "react-dom": "^19.0.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
+    "vitest": "^3.2.7",
     "zustand": "^5.0.3"
   }
 }

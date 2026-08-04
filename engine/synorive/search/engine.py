@@ -37,6 +37,7 @@ from ..store.repository import Repository
 from ..store.text import highlight_terms, to_query, to_trigram_query
 from .query_syntax import describe, parse_query
 from . import answer as answer_mod
+from . import ask as ask_mod
 from .recovery import RecoveryPlanner
 
 log = logging.getLogger("synorive.search")
@@ -65,6 +66,34 @@ RECALL_LIMIT = 200
 #: 同时挂上 D9 补救建议。用户真正的困扰是"分不清真结果和凑数的"，
 #: 那就直接告诉他，而不是替他删掉可能有用的东西。
 VECTOR_MATCH_THRESHOLD = float(os.environ.get("SYNORIVE_VECTOR_FLOOR", "0.50"))
+
+
+def _diversity_bucket(locator: str) -> str:
+    """
+    D1 多样性的分组键：文件取**父目录**，链接取**域名**。
+
+    为什么不是 item_id：召回和融合都已经按 item 去重，同一份资料只会出现
+    一次，按它分组永远只有 n=0，降权分支进不去。分组必须比 item 更粗才有意义。
+
+    为什么是父目录而不是整条路径：整条路径就等于 item 本身（同一目录下
+    不同文件的路径也不同），又退化成"每条都是一组"。
+
+    取不到就回一个唯一值（用 locator 本身），效果等同于"这条自成一组、不降权" ——
+    **不能回空串**：那样所有取不到目录的条目会被归成同一组互相降权，
+    表现是"某些结果莫名其妙排到后面去了"，而且完全看不出规律。
+    """
+    s = (locator or "").strip()
+    if not s:
+        return "\x00empty"
+    low = s.lower()
+    if low.startswith("http://") or low.startswith("https://"):
+        rest = s.split("://", 1)[1]
+        host = rest.split("/", 1)[0].split("@")[-1].split(":")[0]
+        return f"host:{host.lower()}" if host else s
+    # 本机路径：取父目录。Windows 反斜杠和 POSIX 斜杠都要认 ——
+    # 只切一种的话，另一种平台上整条路径会被当成"目录"，又退化成每条自成一组
+    cut = max(s.rfind("\\"), s.rfind("/"))
+    return f"dir:{s[:cut].lower()}" if cut > 0 else s
 
 
 def _similarity(distance: float | None) -> float | None:
@@ -97,6 +126,25 @@ class Weights:
     popularity: float = 0.2
     title_boost: float = 0.5
 
+    #: D1 结果多样性：**同一个目录 / 同一个域名**下的第 2、3 条依次降权。
+    #:
+    #: 治的毛病：在一个按项目分文件夹的库里搜东西，某个文件夹里有二十个
+    #: 沾边的文件时，整个首屏会被那一个文件夹占满 ——
+    #: 用户以为"库里只有这一堆相关的"，而别的目录里那份更对的排在第 30 位。
+    #: 调到 0 = 允许一个目录铺满（已经知道东西在哪个文件夹时要的就是这个）。
+    #:
+    #: 🔴 **第一版写的是"同一份资料的第 2、3 段降权"，那是死代码。**
+    #:    召回路径（`recall_vector`）和融合（`fuse`）**都已经按 item_id 去重**，
+    #:    同一份资料在结果里最多出现一次 —— 按"第几段"降权的分支
+    #:    结构上永远进不去。滑块拖满也一个字不变。
+    #:    是 `tests/test_progressive_and_ranking.py` 的 D1① 当场抓出来的：
+    #:    我按错误的心智模型设计了它，而它看起来完全正常。
+    diversity: float = 0.5
+
+    #: D1 长度惩罚：很短的片段（目录行、页眉、一句标题）降权。
+    #: 它们天然含查询词、天然覆盖率高，是弱匹配里最常见的一类噪声。
+    length_penalty: float = 0.3
+
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> Weights:
         if not d:
@@ -108,17 +156,29 @@ class Weights:
             source_trust=float(d.get("sourceTrust", 0.2)),
             popularity=float(d.get("popularity", 0.2)),
             title_boost=float(d.get("titleBoost", 0.5)),
+            # 🔴 新增字段必须给默认值再 get —— 老客户端（安卓端 / MCP / CLI）
+            #    发上来的 weights 里没有这两个键，不给默认会直接 KeyError，
+            #    表现是"手机上一搜就 500"，而桌面端一切正常
+            diversity=float(d.get("diversity", 0.5)),
+            length_penalty=float(d.get("lengthPenalty", 0.3)),
         )
 
 
 PRESETS: dict[str, Weights] = {
     "balanced": Weights(),
-    # 求准：关键词为主，语义只做补充
-    "precise": Weights(semantic=0.4, keyword=1.5, recency=0.1, title_boost=0.8),
-    # 求全：语义为主，能理解同义和近义
-    "semantic": Weights(semantic=1.5, keyword=0.5, recency=0.1),
+    # 求准：关键词为主，语义只做补充。短片段惩罚加重 ——
+    # 求准场景下，一行目录撞上查询词是最讨厌的一类假阳性
+    "precise": Weights(
+        semantic=0.4, keyword=1.5, recency=0.1, title_boost=0.8, length_penalty=0.6
+    ),
+    # 求全：语义为主，能理解同义和近义。多样性拉高，尽量让更多份资料露头
+    "semantic": Weights(semantic=1.5, keyword=0.5, recency=0.1, diversity=0.8),
     # 找最近的：时间权重拉满
-    "recent": Weights(semantic=0.8, keyword=0.8, recency=1.5),
+    "recent": Weights(semantic=0.8, keyword=0.8, recency=1.5, diversity=0.3),
+    # D1 新增「深读一处」：多样性关掉，允许同一个目录铺满整屏。
+    # 场景是**已经知道东西在哪个文件夹里**，要把那一堆一次看全 ——
+    # 这时候"每个目录只露头一两条"恰好是帮倒忙
+    "deep": Weights(semantic=1.2, keyword=1.0, diversity=0.0, length_penalty=0.2),
 }
 
 
@@ -639,6 +699,15 @@ class SearchEngine:
             )
             parts["sourceTrust"] = trust
 
+            # D1 长度惩罚：很短的片段（目录行、页眉、单句标题）降权。
+            # 它们天然含查询词、覆盖率还高，是弱匹配噪声里最常见的一类。
+            #
+            # 用 240 字做拐点：低于它线性扣分，高于它一律不扣。
+            # **不做"越长越好"**——那会把整章正文顶上来，同样是错的方向。
+            n_chars = len(c.best_text or "")
+            short = max(0.0, 1.0 - n_chars / 240.0) if n_chars else 1.0
+            parts["lengthPenalty"] = short
+
             # 加分项统一缩到 RRF 的量级（RRF 满打满算约 0.03）
             SCALE = 0.01
             score = base + SCALE * (
@@ -646,10 +715,46 @@ class SearchEngine:
                 + weights.popularity * pop
                 + weights.title_boost * title_hit
                 + weights.source_trust * trust
+                - weights.length_penalty * short
             )
+            # 🔴 **必须夹到非负。** 长度惩罚是唯一一个做减法的项，
+            #    base（RRF）小到 0.003 量级、而惩罚满打满算 0.003 时分数会变成负数。
+            #    负分本身还排得对，但下面的多样性是**乘一个小于 1 的系数** ——
+            #    乘在负数上是把它往 0 推，也就是**越降权排得越前**。
+            #    这个 bug 不会报错，只会让"同一份文档的第二段莫名其妙冲到第一"。
+            score = max(1e-9, score)
             out.append((c, score, parts))
 
         out.sort(key=lambda x: -x[1])
+
+        # D1 结果多样性：**同一个目录 / 同一个域名**下的第 2、3 条依次降权，然后重排。
+        #
+        # 🔴 **不能按 item_id 分组** —— 召回和融合都已经按 item_id 去重了，
+        #    同一份资料在这里最多出现一次，按它分组的分支永远进不去（死代码）。
+        #    分组键必须是**比 item 更粗的粒度**才有意义，所以取父目录 / 域名。
+        #
+        # 🔴 **必须在排完序之后做**，因为"第几条"这个概念只有在有序列表里才成立。
+        #    放到打分循环里做的话，降权多少取决于遍历顺序，同一次搜索跑两遍
+        #    结果可能不一样 —— 而且不报错，只是排名偶尔莫名其妙地变。
+        #
+        # 衰减用 1/(1+k·n)，不用指数：指数衰减到第 4 条基本归零，
+        # 而"一个目录里有 4 份真的都相关"是完全正常的情况。
+        if weights.diversity > 0 and out:
+            seen: dict[str, int] = {}
+            adjusted: list[tuple[Candidate, float, dict[str, float]]] = []
+            for c, score, parts in out:
+                r = rows.get(c.item_id)
+                bucket = _diversity_bucket(str(r["locator"]) if r is not None else "")
+                n = seen.get(bucket, 0)
+                seen[bucket] = n + 1
+                if n:
+                    factor = 1.0 / (1.0 + weights.diversity * n)
+                    parts["diversity"] = round(factor, 4)
+                    score *= factor
+                adjusted.append((c, score, parts))
+            adjusted.sort(key=lambda x: -x[1])
+            out = adjusted
+
         return out
 
     # ── 对外：一次完整检索 ──────────────────────────────────
@@ -667,6 +772,7 @@ class SearchEngine:
         stage: str = "semantic",
         rerank: bool = False,
         answer: bool = False,
+        ask: bool = False,
     ) -> dict[str, Any]:
         """
         stage 控制跑哪几路 —— D2 三级瀑布靠它分次返回：
@@ -781,6 +887,18 @@ class SearchEngine:
             card = answer_mod.build(text_query, hits, weak=weak, texts=raw_texts)
             if card:
                 out["answer"] = card
+
+        # A3 Ask 模式：横跨多条结果摘出一份带出处的答案。
+        #
+        # 和上面那张秒答卡是**两件事**，可以同时开也可以各开各的：
+        # 秒答卡是"顺手给一句"，拿不准就不给；Ask 是用户明确在问问题，
+        # 答不上也要回一个说明为什么答不上的对象（所以 build 永不返回 None）。
+        #
+        # 同样只在最终那一轮算 —— keyword 首屏跑 Ask 会拿一批还没排好序的
+        # 候选去摘句子，摘出来的东西下一轮就被推翻，界面上表现为
+        # "答案闪了一下变成另一个"，比晚 150ms 出现难受得多。
+        if ask and stage == "semantic":
+            out["ask"] = ask_mod.build(text_query, hits, texts=raw_texts, weak=weak)
 
         # D9：搜不到、或者只搜到一堆弱匹配的时候，别让用户自己猜哪儿错了。
         # 只在**最终那一轮**算 —— keyword 首屏为空是正常的（语义还没跑完），

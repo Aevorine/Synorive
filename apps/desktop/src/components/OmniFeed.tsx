@@ -117,10 +117,15 @@ export function OmniFeed({ onRun, busy, initial, placeholder }: OmniFeedProps) {
     >
       <div className="omni__box">
         <Sparkles size={18} className="omni__icon" aria-hidden />
+        {/* B2：从 2 行改成 8 行、可手动拉高到半屏。
+            用户原话「输入的内容很多则显示的位置的界面要很大」——
+            研究工作台恰恰是最容易粘进一大段材料的地方，2 行意味着
+            粘进来之后只看得见开头两行，改错字都得靠滚。
+            拖了文件时收成 3 行：那时候主体是文件列表，输入框只是补一句说明 */}
         <textarea
           ref={inputRef}
           className="omni__input"
-          rows={files.length ? 1 : 2}
+          rows={files.length ? 3 : 8}
           value={text}
           placeholder={placeholder ?? '把图片 / 视频 / 链接 / 文件拖进来，或者直接打字问一句'}
           onChange={(e) => {
@@ -135,6 +140,13 @@ export function OmniFeed({ onRun, busy, initial, placeholder }: OmniFeedProps) {
             }
           }}
         />
+        {/* 字数：粘一大段进来时，"它到底收了多少"必须看得见。
+            600 字以上才显示 —— 平时挂个「3 字」是纯噪声 */}
+        {text.length > 600 && (
+          <span className="omni__count" aria-label={`已输入 ${text.length} 字`}>
+            {text.length} 字
+          </span>
+        )}
         {hasInput && (
           <button className="omni__clear" onClick={clear} title="清空" aria-label="清空">
             <X size={16} />

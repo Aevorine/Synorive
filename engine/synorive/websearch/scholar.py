@@ -83,11 +83,26 @@ class ArxivSource(BaseEngine):
     group = "scholar"
     note = "预印本。物理/数学/计算机最全，每条都直接给 PDF 地址，能一键存进库"
 
+    #: arXiv 官方要求同一来源的请求之间隔开。并发四发它不会报错，
+    #: 而是**把每一发都拖慢到几十秒**，在 4 秒总截止面前等于全灭
+    min_interval_s = 1.0
+
     def build(self, query, *, limit, lang, region, time_range, key):
+        # 🔴 **多词查询必须加引号，这一条是 arXiv 那 66 次"空结果"的根因**
+        # （2026-08-04 实测，同一台机器同一分钟内）：
+        #     search_query=all:quantum computing    → 25 秒仍未返回，直接超时
+        #     search_query=all:"quantum computing"  → 4.4 秒返回 5 条
+        #     search_query=all:quantum              → 7.4 秒返回 5 条
+        # arXiv 的查询解析器碰到「没有布尔运算符连接的多个词」会退化成一种
+        # 极慢的路径。它**不报错**，只是一直不返回 —— 于是这一家的失败
+        # 全部表现为超时/空结果，看起来像"网络不好"，实际是查询串写法的问题。
+        # 加引号当短语搜，既快又更贴合"我要找这个主题"的本意。
+        term = query.strip()
+        phrase = f'"{term}"' if " " in term else term
         url = (
-            "http://export.arxiv.org/api/query?search_query=all:"
-            f"{quote_plus(query)}&max_results={min(50, max(1, limit))}"
-            "&sortBy=relevance"
+            "https://export.arxiv.org/api/query?search_query="
+            f"{quote('all:' + phrase, safe='')}"
+            f"&max_results={min(50, max(1, limit))}&sortBy=relevance"
         )
         return httpx.Request("GET", url, headers={"User-Agent": UA})
 
@@ -274,7 +289,7 @@ class DoajSource(BaseEngine):
 
     def build(self, query, *, limit, lang, region, time_range, key):
         url = (
-            f"https://doaj.org/api/search/articles/{quote(query, safe='')}"
+            f"https://doaj.org/api/search/articles/{quote(_doaj_safe(query), safe='')}"
             f"?pageSize={min(50, max(1, limit))}"
         )
         return httpx.Request("GET", url, headers={"User-Agent": UA,
@@ -282,10 +297,19 @@ class DoajSource(BaseEngine):
 
     def parse(self, resp):
         try:
-            items = resp.json().get("results") or []
-        except (json.JSONDecodeError, ValueError, AttributeError):
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError):
             return ParseOutcome.BROKEN, []
+        if not isinstance(data, dict):
+            return ParseOutcome.BROKEN, [], "DOAJ 回的不是对象结构"
+        if data.get("error") or str(data.get("status", "")).lower() in ("error", "bad_request"):
+            return ParseOutcome.BROKEN, [], f"DOAJ 拒绝了这个查询：{data.get('error') or data.get('status')}"
+        items = data.get("results") or []
         if not items:
+            # 这里的空**多半是真的空**：DOAJ 收的是开放获取期刊，中文长尾词
+            # 常常一篇都没有（实测「RAG 检索增强 生成 大模型 综述」total=0，
+            # 而同一时刻「量子计算」有 1143 篇）。所以不改判成故障 ——
+            # 把"这个库确实没收录"说成"这家坏了"，同样是误诊
             return ParseOutcome.EMPTY, []
 
         out: list[WebResult] = []
@@ -309,6 +333,24 @@ class DoajSource(BaseEngine):
                 r.published = f"{b.get('year')}-01-01" if b.get("year") else None
                 out.append(r)
         return (ParseOutcome.OK, out) if out else (ParseOutcome.BROKEN, [])
+
+
+#: DOAJ 走的是 Lucene 查询语法，但它**禁用了其中一部分**并对含有这些
+#: 字符的查询直接回 HTTP 400 `Query contains disallowed Lucene features`
+#: （实测：`what is "AI"?` → 400）。用户当然不会知道自己输的是查询语法，
+#: 于是一个正常问句就把这一家整轮打掉了。这里在发出去之前先洗掉。
+#:
+#: 留着 `+ - ( )` 是有意的：实测它们能过，而且去掉会改变词义（`C++`）。
+#: 实测 `a/b 测试` 能过（98 篇），所以 `/` 不在名单里；`:` 在，因为
+#: `AI: 现状` 虽然回 200 却是 total=0 —— 它被当成了字段查询 `AI:现状`，
+#: 而 DOAJ 没有叫 AI 的字段。这是这一层最容易漏的一种：**HTTP 正常、
+#: 结果为空、原因是查询被当成语法解释了**，看起来和"确实没有"一模一样。
+_DOAJ_BAD_CHARS = str.maketrans({c: " " for c in '"?*\\^~[]{}!:'})
+
+
+def _doaj_safe(query: str) -> str:
+    """把 DOAJ 明确拒收的 Lucene 特殊字符换成空格。"""
+    return re.sub(r"\s+", " ", (query or "").translate(_DOAJ_BAD_CHARS)).strip() or (query or "").strip()
 
 
 class PubMedSource(BaseEngine):
@@ -415,7 +457,8 @@ class SemanticScholarSource(BaseEngine):
     limit_hint = (
         "Semantic Scholar 免 Key 的额度是所有用户共享的，撞 429 是常态 —— "
         "已经自动等过一轮再补发还是没过。去 semanticscholar.org/product/api "
-        "申请一个免费 Key 填进设置，这一家就基本不会再失败"
+        "申请一个免费 Key，填在**设置页 → 联网搜索 → 引擎 API Key**里，"
+        "这一家就基本不会再失败"
     )
 
     def build(self, query, *, limit, lang, region, time_range, key):
@@ -552,9 +595,18 @@ class OpenAireSource(BaseEngine):
     note = "欧盟开放科研聚合。社科人文覆盖较好，但返回结构很乱，偶尔会漏字段"
 
     def build(self, query, *, limit, lang, region, time_range, key):
+        # 🔴 **必须加引号**（2026-08-04 实测）：OpenAIRE 会把 keywords 当成一个
+        # 布尔表达式去解析，而它的分词器对中文**不切词**，于是
+        #     keywords=量子计算   → HTTP 409 `Syntax errors. expected boolean, got ''`
+        #     keywords="量子计算" → HTTP 200，正常返回
+        # 英文多词碰巧能过（它自动补成 `quantum and computing`），中文一律炸。
+        # 而炸出来的 409 错误体结构完全不同，旧代码把它读成"没有结果"——
+        # 这一家 68 次全空就是这么来的，界面上一次红字都没有。
+        # 查询词里自带的引号要先去掉，否则拼出来是 `""量子计算""`，又是一个语法错
+        phrase = '"' + query.strip().replace('"', " ").strip() + '"'
         url = (
             "https://api.openaire.eu/search/publications"
-            f"?keywords={quote_plus(query)}&format=json&size={min(50, max(1, limit))}"
+            f"?keywords={quote_plus(phrase)}&format=json&size={min(50, max(1, limit))}"
         )
         return httpx.Request("GET", url, headers={"User-Agent": UA,
                                                   "Accept": "application/json"})
@@ -564,6 +616,13 @@ class OpenAireSource(BaseEngine):
             data = resp.json()
         except (json.JSONDecodeError, ValueError):
             return ParseOutcome.BROKEN, []
+        # 服务端出错时回的是 `{"status":"error","message":…,"exception":…}` ——
+        # 结构和正常响应完全不同，不认出来就会一路走到"没有结果"。
+        # `BaseEngine.run` 那道 HTTP≥400 的兜底已经能拦住绝大多数，
+        # 这里再认一次是因为**它偶尔用 HTTP 200 回错误体**
+        if isinstance(data, dict) and str(data.get("status", "")).lower() == "error":
+            why = data.get("exception") or data.get("message") or "（没给说明）"
+            return ParseOutcome.BROKEN, [], f"OpenAIRE 拒绝了这个查询：{why}"
         results = _oa_list(
             ((data.get("response") or {}).get("results") or {}).get("result")
         )

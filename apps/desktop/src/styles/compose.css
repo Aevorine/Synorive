@@ -1,0 +1,476 @@
+/* ============================================================
+ * A4 成稿 / D2 筛选芯片 / D3 并排对比 / D4 历史 / D5 存监控
+ * ============================================================
+ * 单开一个文件而不是继续往 layout.css 里堆：那个文件已经 815 行，
+ * 而这一批是**同一轮里加的一组功能**，放一起将来要删要改是一个整体。
+ *
+ * ⚠️ 加载顺序：必须在 search.css 之后（要覆盖 `.searchlayout` 第二列的假设）。
+ * ============================================================ */
+
+/* ── 1. 搜索页右侧栏（D1 排序 + D4 历史）─────────────────── */
+/* 原来 .searchlayout 的第二列直接就是 .ranking。加了历史之后要包一层可滚的列——
+   不包的话历史长起来会把排序面板挤出视口，而排序面板是更常用的那个。 */
+
+.searchlayout__side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-space-md, 12px);
+  min-height: 0;
+  overflow-y: auto;
+  contain: layout paint;
+}
+
+/* ── 2. A4 成稿条 ───────────────────────────────────────── */
+/* 贴在结果列表下方而不是 fixed 浮在窗口底部：fixed 会盖住最后一条结果，
+   而用户勾选时正在看的往往就是最后几条。 */
+
+.compose {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-space-sm, 8px);
+  flex-shrink: 0;
+  margin-top: var(--syn-d-space-md, 12px);
+  padding: var(--syn-d-card-pad, 12px);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border-strong);
+  border-radius: var(--syn-radius-xl);
+  box-shadow: var(--syn-shadow-md);
+}
+
+.compose__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+}
+
+.compose__tick {
+  color: var(--syn-color-success);
+}
+
+.compose__count b {
+  font-size: var(--syn-fs-card-title);
+  font-variant-numeric: tabular-nums;
+  color: var(--syn-color-text);
+}
+
+.compose__warn {
+  color: var(--syn-color-warning);
+}
+
+.compose__spacer {
+  flex: 1;
+}
+
+.compose__done {
+  color: var(--syn-color-success);
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compose__x {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  padding: 2px var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  border-radius: var(--syn-radius-pill);
+}
+
+.compose__x:hover {
+  color: var(--syn-color-danger);
+  background: var(--syn-color-danger-subtle);
+}
+
+/* 挑满 40 条时这一片会很高，给个上限让它自己滚 */
+.compose__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--syn-space-xs);
+  max-height: 108px;
+  overflow-y: auto;
+}
+
+.compose__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  max-width: 240px;
+  padding: 2px var(--syn-space-xs) 2px 2px;
+  font-size: var(--syn-fs-caption);
+  background: var(--syn-color-bg-sunken);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-pill);
+}
+
+.compose__chipn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  font-size: var(--syn-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--syn-color-text-inverse);
+  background: var(--syn-color-primary);
+  border-radius: var(--syn-radius-pill);
+}
+
+.compose__chiptext {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--syn-color-text-secondary);
+}
+
+.compose__chipx {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--syn-color-text-muted);
+}
+
+.compose__chipx:hover {
+  color: var(--syn-color-danger);
+}
+
+.compose__opts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--syn-d-space-sm, 8px);
+}
+
+.compose__title {
+  flex: 1;
+  min-width: 180px;
+}
+
+.compose__seg {
+  display: inline-flex;
+  gap: var(--syn-space-xxs);
+}
+
+.compose__check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  cursor: pointer;
+}
+
+.compose__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--syn-space-sm);
+}
+
+/* ── 3. 结果卡片勾选框（A4/D3）──────────────────────────── */
+
+.card__pick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.card__pick input {
+  cursor: pointer;
+}
+
+/* ── 4. D3 并排对比 ─────────────────────────────────────── */
+
+.sbs {
+  position: absolute;
+  inset: var(--syn-space-xl);
+  z-index: var(--syn-z-modal);
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-space-md, 12px);
+  padding: var(--syn-d-space-lg, 16px);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border-strong);
+  border-radius: var(--syn-radius-xl);
+  box-shadow: var(--syn-shadow-lg);
+  overflow-y: auto;
+}
+
+.sbs__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  flex-shrink: 0;
+}
+
+.sbs__title {
+  font-size: var(--syn-fs-section-title);
+  font-weight: var(--syn-fw-semibold);
+}
+
+.sbs__stat,
+.sbs__note {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+}
+
+.sbs__spacer {
+  flex: 1;
+}
+
+.sbs__loading {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-xl);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+}
+
+.sbs__cols {
+  display: grid;
+  gap: var(--syn-d-space-md, 12px);
+}
+
+.sbs__col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+  min-width: 0;
+  padding: var(--syn-d-card-pad, 12px);
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-lg);
+}
+
+.sbs__colhead {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  min-width: 0;
+}
+
+.sbs__coln {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-inverse);
+  background: var(--syn-color-primary);
+  border-radius: var(--syn-radius-pill);
+}
+
+.sbs__coltitle {
+  font-size: var(--syn-fs-body);
+  font-weight: var(--syn-fw-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* display:contents 让 dt/dd 直接落到外层 grid 上，
+   两列对齐不用给每一对再包一层 */
+.sbs__facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+}
+
+.sbs__facts > div {
+  display: contents;
+}
+
+.sbs__facts dt {
+  color: var(--syn-color-text-muted);
+}
+
+.sbs__facts dd {
+  color: var(--syn-color-text);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sbs__snip {
+  padding-top: var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+  color: var(--syn-color-text-secondary);
+  border-top: 1px solid var(--syn-color-border);
+}
+
+.sbs__diff {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+
+.sbs__difflist {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-caption);
+  line-height: 1.55;
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+  overflow: hidden;
+}
+
+.sbs__line {
+  display: flex;
+  gap: var(--syn-space-xs);
+  padding: 1px var(--syn-space-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.sbs__line--add {
+  background: var(--syn-color-success-subtle);
+}
+
+.sbs__line--del {
+  background: var(--syn-color-danger-subtle);
+}
+
+.sbs__sign {
+  flex-shrink: 0;
+  width: 1ch;
+  color: var(--syn-color-text-muted);
+}
+
+.sbs__linetext {
+  flex: 1;
+  min-width: 0;
+}
+
+.sbs__gap {
+  padding: 2px var(--syn-space-sm);
+  text-align: center;
+  color: var(--syn-color-text-muted);
+  background: var(--syn-color-bg-sunken);
+}
+
+/* ── 5. D4 搜索历史 / D5 存成监控 ───────────────────────── */
+
+.hist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-d-card-pad, 12px);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-xl);
+}
+
+.hist__now {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-xs) 0;
+}
+
+.hist__nowq {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hist__note {
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-normal);
+  color: var(--syn-color-success);
+}
+
+.hist__empty {
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-normal);
+  color: var(--syn-color-text-muted);
+}
+
+.hist__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+
+.hist__item {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+}
+
+.hist__go {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  flex: 1;
+  min-width: 0;
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  border-radius: var(--syn-radius-md);
+  text-align: left;
+}
+
+.hist__go:hover {
+  color: var(--syn-color-text);
+  background: var(--syn-color-bg-hover);
+}
+
+.hist__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hist__at {
+  flex-shrink: 0;
+  color: var(--syn-color-text-muted);
+}
+
+.hist__watch {
+  display: inline-flex;
+  padding: var(--syn-space-xs);
+  color: var(--syn-color-text-muted);
+  border-radius: var(--syn-radius-md);
+}
+
+.hist__watch:hover {
+  color: var(--syn-color-primary);
+  background: var(--syn-color-primary-subtle);
+}
+
+/* ── 6. D2 结构化筛选芯片 ───────────────────────────────── */
+/* 和查询语法芯片长得一样是刻意的——对用户来说这两类本来就是同一件事：
+   「有什么在限制我的结果」。只用底色区分"这条是从别处勾的"。 */
+
+.qchips__chip--struct {
+  color: var(--syn-color-primary);
+  background: var(--syn-color-primary-subtle);
+}
+
+.qchips__clearall {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.qchips__clearall:hover {
+  color: var(--syn-color-danger);
+}

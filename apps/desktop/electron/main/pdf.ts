@@ -145,3 +145,38 @@ function sanitize(name: string): string {
   const cleaned = name.replace(/[\\/:*?"<>|]/g, '_').trim();
   return cleaned.slice(0, 80) || 'synorive-研究简报';
 }
+
+/**
+ * A4 一键成稿：把一段纯文本另存为文件。
+ *
+ * 🔴 **`utf8` 而不是系统默认编码。** Windows 上默认写出来是 GBK，
+ *    那份 Markdown 拿到 Mac 或传到 GitHub 上就是一片乱码 ——
+ *    而写的那一刻在本机记事本里打开完全正常，所以这个错误极难被发现。
+ *
+ * 🔴 **用户取消保存对话框返回 `{ok:false}` 且不带 error。**
+ *    带 error 的话界面会弹一条红字告诉用户"失败了"，
+ *    而他只是按了一下取消 —— 把用户的正常选择报成错误是很讨厌的一件事。
+ */
+export async function saveText(
+  content: string,
+  defaultName: string,
+  ext: string,
+): Promise<PdfResult> {
+  if (!content || !content.trim()) {
+    return { ok: false, error: '没有可保存的内容' };
+  }
+  const safeExt = (ext || 'txt').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'txt';
+  const save = await dialog.showSaveDialog({
+    title: '保存',
+    defaultPath: `${sanitize(defaultName)}.${safeExt}`,
+    filters: [{ name: safeExt.toUpperCase(), extensions: [safeExt] }],
+  });
+  if (save.canceled || !save.filePath) return { ok: false };
+
+  try {
+    await writeFile(save.filePath, content, 'utf8');
+    return { ok: true, path: save.filePath };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}

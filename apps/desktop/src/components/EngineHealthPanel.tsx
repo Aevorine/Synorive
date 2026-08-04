@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, KeyRound, MonitorSmartphone, RefreshCw } from 'lucide-react';
+import { Activity, KeyRound, MonitorSmartphone, RefreshCw, RotateCcw } from 'lucide-react';
 import { webApi, type EngineHealthRow } from '../lib/webApi';
 
 /**
@@ -52,6 +52,29 @@ export function EngineHealthPanel({ onClose }: { onClose?: () => void }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  /**
+   * 清零重记。
+   *
+   * 之所以要先问一句：清掉之后**旧数据回不来**。代价其实很小
+   * （重新搜几轮就有分了），但"点一下就没了"和"点一下问一句"
+   * 对用户的心理成本差很多，而这个按钮平时几乎不会用到。
+   */
+  const resetAll = async () => {
+    if (!window.confirm('把所有引擎的记分和熔断清零，从下一次搜索重新学？\n旧的统计不会保留。')) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await webApi.resetHealth();
+      setErr(null);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+    await load();
   };
 
   useEffect(() => {
@@ -118,6 +141,18 @@ export function EngineHealthPanel({ onClose }: { onClose?: () => void }) {
         <h3>引擎健康</h3>
         <button className="eh__refresh" onClick={() => void load()} disabled={busy}>
           <RefreshCw size={14} className={busy ? 'spin' : ''} /> 刷新
+        </button>
+        {/* 🔴 这个按钮是必需的，不是顺手加的：记分是最近 30 次的滑动窗口，
+            一家引擎修好之后仍会被几十次旧失败压着显示成"用不了"。
+            没有它，用户唯一的办法是去数据目录里删 websearch-health.json。
+            `confirm` 挡一道是因为清完就回不去了 —— 虽然代价只是重新学几轮 */}
+        <button
+          className="eh__refresh"
+          disabled={busy}
+          title="把所有引擎的成功率、耗时和熔断状态清零，从下一次搜索开始重新记"
+          onClick={() => void resetAll()}
+        >
+          <RotateCcw size={14} /> 重新记分
         </button>
         {onClose && (
           <button className="eh__close" onClick={onClose}>

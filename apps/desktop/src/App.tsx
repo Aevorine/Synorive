@@ -13,8 +13,11 @@ import { ResearchPage } from './pages/ResearchPage';
 import { SearchPage } from './pages/SearchPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TimelinePage } from './pages/TimelinePage';
+import { TodayPage } from './pages/TodayPage';
 import { api, setEnginePort } from './lib/api';
+import { projectApi } from './lib/webApi';
 import { useApp, useResolvedTheme, type PageId } from './lib/store';
+import { initPerf, recordEngineState } from './lib/perf';
 import { applyAll } from './lib/theme';
 import './styles/global.css';
 import './styles/shell.css';
@@ -22,6 +25,13 @@ import './styles/search.css';
 import './styles/pages.css';
 import './styles/research.css';
 import './styles/lab.css';
+// ⚠️ 这两个必须排在最后。layout.css 里的密度规则和 stage.css 里的舞台样式
+//    是要**覆盖**前面各页面自己写的间距的，同优先级下靠先后顺序决定谁赢。
+//    往上挪一行，密度开关会重新变成"什么都不做"。
+import './styles/layout.css';
+import './styles/stage.css';
+import './styles/compose.css';
+import './styles/project.css';
 
 /**
  * N7：随手研究浮窗和主窗口共用同一个渲染包，靠 hash 区分。
@@ -54,6 +64,10 @@ function MainApp() {
   useEffect(() => {
     let alive = true;
 
+    // C6：长任务观测要**尽早**装上。装晚了的话，启动期间那几次最严重的
+    // 主线程阻塞（正是用户最能感知到的"点开半天没反应"）全都漏掉了
+    initPerf();
+
     void (async () => {
       const [s, sysTheme, eng] = await Promise.all([
         window.synorive.settings.get(),
@@ -62,8 +76,16 @@ function MainApp() {
       ]);
       if (!alive) return;
       setSettings(s);
+      // A2/A3：首次拿到设置时落地"启动落在哪一页"和"输入框默认什么意图"。
+      //
+      // 🔴 **只在这里做一次，绝不放进 settings 变化的订阅里。**
+      //    放进订阅的话，用户在设置页改一下密度，页面就会被弹回今日页 ——
+      //    那是最让人恼火的一类"自作主张"，而且完全看不出是谁干的。
+      if (s.startPage && s.startPage !== 'search') setPage(s.startPage);
+      if (s.defaultInputMode) useApp.getState().setInputMode(s.defaultInputMode);
       setSystemTheme(sysTheme);
       setEngine(eng);
+      recordEngineState(eng?.lifecycle);
       // 引擎端口是启动时动态分配的，不能写死
       setEnginePort(eng?.port ?? null);
       setReady(true);
@@ -73,6 +95,9 @@ function MainApp() {
     const offTheme = window.synorive.theme.onSystemChanged(setSystemTheme);
     const offEngine = window.synorive.engine.onStateChanged((s) => {
       setEngine(s);
+      // E3 冷启动 / E8 掉线次数都从这里出。放在 setEngine 之后是为了
+      // 让"界面已经知道它 ready 了"这一刻和记录的时刻对齐
+      recordEngineState(s.lifecycle);
       setEnginePort(s.lifecycle === 'ready' || s.lifecycle === 'degraded' ? s.port : null);
     });
 
@@ -96,6 +121,28 @@ function MainApp() {
   useEffect(() => {
     if (settings) applyAll(settings, theme);
   }, [settings, theme]);
+
+  // A5：把当前项目的**名字**拉回来。id 存在设置里，但成稿标题、监控标签、
+  // 今日页都要显示名字 —— 三处各拉一次是浪费，而且启动那一瞬间会先后闪。
+  //
+  // 🔴 拉失败时**清成 null 而不是保留上一个名字**：项目可能已经被删了，
+  //    继续显示一个不存在的项目名，会让用户以为东西还归在那儿。
+  const activeProjectId = settings?.activeProjectId ?? null;
+  const setActiveProjectName = useApp((s) => s.setActiveProjectName);
+  useEffect(() => {
+    if (!activeProjectId || engine?.lifecycle !== 'ready') {
+      setActiveProjectName(null);
+      return;
+    }
+    let alive = true;
+    void projectApi
+      .get(activeProjectId)
+      .then((p) => alive && setActiveProjectName(p.title || p.query || null))
+      .catch(() => alive && setActiveProjectName(null));
+    return () => {
+      alive = false;
+    };
+  }, [activeProjectId, engine?.lifecycle, setActiveProjectName]);
 
   // F5：库里有多少条内容。**问失败时保持 null 而不是当成 0** ——
   // 当成 0 会给一个已经用了半年的用户弹首次引导，那比不弹糟得多
@@ -159,6 +206,7 @@ function MainApp() {
  * 引一个库进来只会多一层要维护的东西。
  */
 const PAGES: Record<PageId, ComponentType> = {
+  today: TodayPage,
   search: SearchPage,
   library: LibraryPage,
   analyze: AnalyzePage,

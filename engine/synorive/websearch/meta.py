@@ -366,7 +366,9 @@ class MetaSearch:
         if self.lineup_size and engines is None and len(picked) > self.lineup_size:
             picked, benched = self.scheduler.lineup(picked, size=self.lineup_size)
             pre_skipped += [
-                EngineReply(engine=eid, outcome=ParseOutcome.EMPTY, error=why)
+                # 被排班挤下场的同样是"没派上场"，`attempted=False`
+                EngineReply(engine=eid, outcome=ParseOutcome.EMPTY,
+                            attempted=False, error=why)
                 for eid, why in benched
             ]
         ck = self._cache_key(query, picked, limit, lang, region, time_range)
@@ -534,6 +536,25 @@ class MetaSearch:
             "table": self.scheduler.table(all_engines()),
         }
 
+    def reset_health(self, engine_id: str | None = None) -> dict[str, Any]:
+        """
+        清掉记分与熔断，让引擎从零重新学（S1）。
+
+        **熔断状态必须一起清**，否则会出现一个自相矛盾的界面：
+        记分表显示"还没有数据"，而这家引擎照样因为熔断被跳过 15 分钟 ——
+        用户点了重置却发现什么都没变，只会以为按钮是坏的。
+        """
+        n = self.scheduler.reset(engine_id)
+        if engine_id is None:
+            self._breaker = _Breaker()
+        else:
+            self._breaker._fails.pop(engine_id, None)
+            self._breaker._open_until.pop(engine_id, None)
+        # 缓存也清：不清的话重置完立刻再搜一次，拿到的是重置前那一版结果，
+        # 看起来像"重置没生效"
+        self._cache.clear()
+        return {"ok": True, "cleared": n, "engine": engine_id or "all"}
+
     # ── 缓存（P9）───────────────────────────────────────────
     @staticmethod
     def _cache_key(
@@ -583,23 +604,26 @@ class MetaSearch:
             e = get_engine(eid)
             if e is None:
                 continue
+            # 🔴 下面三种全部 `attempted=False`：它们是"这一轮没派上场"，
+            # 不是"派出去了没搜到"。混为一谈会让健康档案自我实现地越记越差
+            # （详见 `EngineReply.attempted`）
             if self._breaker.is_open(eid):
                 st = self._breaker.state().get(eid, {})
                 wait_min = max(1, int(st.get("openFor", 0) // 60) + 1)
                 skipped.append(EngineReply(
-                    engine=eid, outcome=ParseOutcome.BROKEN,
+                    engine=eid, outcome=ParseOutcome.BROKEN, attempted=False,
                     error=f"熔断中，约 {wait_min} 分钟后自动恢复",
                 ))
                 continue
             if e.needs_key and not self.keys.get(eid):
                 skipped.append(EngineReply(
-                    engine=eid, outcome=ParseOutcome.BROKEN,
-                    error="没有配置 API Key，去设置里填一个才能用",
+                    engine=eid, outcome=ParseOutcome.BROKEN, attempted=False,
+                    error="没有配置 API Key —— 在设置页「联网搜索 · 引擎 API Key」里填一个就能用",
                 ))
                 continue
             if e.needs_browser and not (self.renderer and self.renderer.available):
                 skipped.append(EngineReply(
-                    engine=eid, outcome=ParseOutcome.BROKEN,
+                    engine=eid, outcome=ParseOutcome.BROKEN, attempted=False,
                     error="需要浏览器渲染，但没有连接到桌面端"
                           "（命令行/MCP 单独跑引擎时这条走不通，开着桌面端就行）",
                 ))
@@ -649,7 +673,9 @@ class MetaSearch:
         if self.lineup_size and engines is None and len(picked) > self.lineup_size:
             picked, benched = self.scheduler.lineup(picked, size=self.lineup_size)
             pre_skipped += [
-                EngineReply(engine=eid, outcome=ParseOutcome.EMPTY, error=why)
+                # 被排班挤下场的同样是"没派上场"，`attempted=False`
+                EngineReply(engine=eid, outcome=ParseOutcome.EMPTY,
+                            attempted=False, error=why)
                 for eid, why in benched
             ]
 
@@ -735,7 +761,11 @@ class MetaSearch:
                     await asyncio.gather(*pending, return_exceptions=True)
 
         for r in replies:
-            if r.engine:
+            # `attempted=False` 的一律不记：没派上场不是一次观测（见 `EngineReply.attempted`）。
+            # 🔴 这一路原来是漏的 —— `_fan_out` 那条路径的 `replies` 里
+            # 本来就不含被跳过的引擎，而流式这条把 `pre_skipped` 一起拼进来了，
+            # 于是**同一家引擎走不同路径搜，健康档案记的东西不一样**
+            if r.engine and r.attempted:
                 self.scheduler.observe(r.engine, r.outcome, r.elapsed_ms)
         self.scheduler.save()
 
@@ -912,7 +942,7 @@ class MetaSearch:
         # 根本不经过 `_one` —— 记在 `_one` 里的话，一家老是超时的引擎
         # 永远不会被记一次失败，排班就成了摆设
         for r in replies:
-            if r.engine in early:
+            if r.engine in early or not r.attempted:
                 continue
             self.scheduler.observe(r.engine, r.outcome, r.elapsed_ms)
         self.scheduler.save()

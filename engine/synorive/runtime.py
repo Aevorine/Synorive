@@ -433,16 +433,29 @@ class Runtime:
             return None
 
     def warmup_async(self) -> None:
-        """后台预热向量模型，不阻塞启动。"""
+        """
+        后台预热，不阻塞启动。
+
+        🔴 **两条独立的线程，不是一条。** 这里原来是一条线程顺序做三件事：
+           ① 探测本机 SearXNG（一次真实 HTTP 请求）
+           ② 加载并预热向量模型
+           ③ 加载 ANN 索引
+        问题在于 ① 排在最前面，而**绝大多数机器上根本没有自建 SearXNG** ——
+        那个请求要一直等到连接超时才返回。在它超时之前，②③ 一步都不会开始，
+        也就是说：**一个可有可无的网络探测，挡住了语义检索这个核心本地能力。**
+
+        症状极难往这个方向想：用户断网或没装 SearXNG 时，启动后头几秒
+        搜索"只出关键词结果，语义的过一会儿才来"，看起来像模型加载慢，
+        实际慢的是一个跟模型毫无关系的网络探测。**而且断网时更严重**——
+        断网正是「本地优先」最该发挥价值的时候。
+
+        拆成两条之后，模型预热的耗时只取决于模型本身。网络探测该多久多久，
+        它慢不影响任何本地功能。
+        """
         import threading
 
-        def run() -> None:
-            # S2：顺手探一下本机有没有自建的 SearXNG，有就自动启用。
-            # **放在这条后台线程里而不是 initialize()**：它要发一个真实的
-            # HTTP 请求，同步做会给冷启动加上一个网络往返，
-            # 直接顶在 A1「≤2.0s」的头上。探不到就安静跳过，绝不报错
-            self._autodetect_websearch()
-
+        def warm_models() -> None:
+            """核心路径：向量模型 + ANN 索引。**不碰网络。**"""
             emb = self._embedder
             if emb is None:
                 return
@@ -456,7 +469,20 @@ class Runtime:
                 return
             self._load_ann_index(emb.dim, emb.model_id)
 
-        threading.Thread(target=run, daemon=True, name="warmup").start()
+        def probe_network() -> None:
+            """
+            S2：顺手探一下本机有没有自建的 SearXNG，有就自动启用。
+
+            单独一条线程，**慢或超时都不影响任何本地功能**。
+            联网总闸关着时直接跳过——关了网还去发探测请求，
+            无论探测多"无害"，都是违背用户明确设置的行为。
+            """
+            if not getattr(self.config, "allow_network", True):
+                return
+            self._autodetect_websearch()
+
+        threading.Thread(target=warm_models, daemon=True, name="warmup-models").start()
+        threading.Thread(target=probe_network, daemon=True, name="warmup-net").start()
 
     def _autodetect_websearch(self) -> None:
         """

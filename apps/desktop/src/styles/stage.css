@@ -1,0 +1,420 @@
+/* ============================================================
+ * B1 主舞台（大输入区） + A3 答案区
+ * ============================================================
+ * 用户原话：「如果是主要使用的功能，而且输入的内容很多，
+ *             则显示的位置的界面要很大」「重要功能显示在核心位置」
+ *
+ * 尺寸全部来自 --syn-stage-*（design-tokens/src/tokens.ts 的 layout.stage），
+ * 这里一个数字都不写死 —— 写死的话下次调宽度要在两个地方改，
+ * 而漏改的那一处不会报错，只会让两态之间跳一下版。
+ * ============================================================ */
+
+/* ── 舞台态 ─────────────────────────────────────────────── */
+
+.stage {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  /* 距顶部 32%：比垂直居中略高。完全居中时下方大片留白会让人觉得
+     "页面还没加载完"，略高一点视觉重心才稳 */
+  padding-top: clamp(24px, calc(var(--syn-stage-vertical-anchor, 0.32) * 100vh - 160px), 180px);
+  padding-bottom: var(--syn-d-space-xl, 24px);
+}
+
+.stage__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--syn-d-space-lg, 16px);
+  width: 100%;
+  min-width: 0;
+  max-width: var(--syn-stage-max-width, 960px);
+}
+
+/* 引导语：小二思源宋体。它是整个界面上最大的一行字 ——
+   「重要功能放核心位置」不只是位置，也包括视觉重量 */
+.stage__lead {
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-page-title);
+  font-weight: var(--syn-fw-semibold);
+  line-height: var(--syn-lh-tight);
+  letter-spacing: var(--syn-ls-display);
+  color: var(--syn-color-text);
+  text-align: center;
+}
+
+.stage__modes {
+  display: flex;
+  justify-content: center;
+  gap: var(--syn-d-space-sm, 8px);
+}
+
+.stage__mode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  min-height: var(--syn-d-control, 32px);
+  padding: 0 var(--syn-space-md);
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text-secondary);
+  background: var(--syn-color-bg-sunken);
+  border: 1px solid transparent;
+  border-radius: var(--syn-radius-pill);
+  transition: background-color var(--syn-dur-instant) var(--syn-ease-standard),
+    color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.stage__mode:hover {
+  background: var(--syn-color-bg-hover);
+  color: var(--syn-color-text);
+}
+
+.stage__mode--on {
+  color: var(--syn-color-primary);
+  background: var(--syn-color-primary-subtle);
+  border-color: var(--syn-color-border-focus);
+}
+
+/* 输入框外壳：整块可见的"这里是主角"。
+   阴影用 md 不用 xl —— 大阴影配衬线字会显廉价（tokens.ts 的原则） */
+.stage__box {
+  display: flex;
+  flex-direction: column;
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border-strong);
+  border-radius: var(--syn-radius-xl);
+  box-shadow: var(--syn-shadow-md);
+  overflow: hidden;
+  transition: border-color var(--syn-dur-fast) var(--syn-ease-standard),
+    box-shadow var(--syn-dur-fast) var(--syn-ease-standard);
+}
+
+.stage__box:focus-within {
+  border-color: var(--syn-color-border-focus);
+  box-shadow: var(--syn-shadow-focus);
+}
+
+.stage--dropping .stage__box {
+  border-color: var(--syn-color-primary);
+  border-style: dashed;
+}
+
+/* 真正的大输入区。
+   resize: vertical 是刻意开的 —— 用户说"输入的内容很多"，
+   那就得让他能自己拉更大，而不是我猜一个高度 */
+.stage__input {
+  width: 100%;
+  min-height: var(--syn-stage-input-min-height, 132px);
+  max-height: var(--syn-stage-input-max-height, 420px);
+  padding: var(--syn-space-lg);
+  font-family: var(--syn-ff-body);
+  /* 四号 18.67px —— 用户原话把"搜索框"归在了要用四号的那一类 */
+  font-size: var(--syn-fs-emphasis);
+  line-height: var(--syn-lh-relaxed);
+  color: var(--syn-color-text);
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: vertical;
+  overflow-y: auto;
+}
+
+.stage__input::placeholder {
+  color: var(--syn-color-text-muted);
+  /* 占位符里有换行，必须让它显示出来，否则两行提示挤成一行看不清 */
+  white-space: pre-line;
+}
+
+.stage__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  background: var(--syn-color-bg-sunken);
+  border-top: 1px solid var(--syn-color-border);
+}
+
+.stage__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.stage__dot {
+  opacity: 0.5;
+  padding: 0 var(--syn-space-xxs);
+}
+
+.stage__spacer {
+  flex: 1;
+}
+
+.stage__count {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.stage__clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--syn-color-text-muted);
+  border-radius: var(--syn-radius-md);
+}
+
+.stage__clear:hover {
+  color: var(--syn-color-text);
+  background: var(--syn-color-bg-hover);
+}
+
+.stage__go {
+  flex-shrink: 0;
+}
+
+/* 窄窗口：舞台顶到最小宽度以下时收掉快捷键提示，别让它挤掉按钮 */
+@media (max-width: 860px) {
+  .stage {
+    padding-top: var(--syn-d-space-xl, 24px);
+  }
+  .stage__hint {
+    display: none;
+  }
+}
+
+/* ── 收窄态（顶栏那一条）───────────────────────────────── */
+
+.stagebar {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  width: 100%;
+  max-width: var(--syn-layout-search-max, 720px);
+  height: var(--syn-stage-compact-height, 40px);
+  padding: 0 var(--syn-space-md);
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text-muted);
+  background: var(--syn-color-bg-sunken);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-pill);
+  transition: border-color var(--syn-dur-instant) var(--syn-ease-standard),
+    background-color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.stagebar:hover {
+  background: var(--syn-color-bg-hover);
+  border-color: var(--syn-color-border-strong);
+}
+
+.stagebar--filled .stagebar__text {
+  color: var(--syn-color-text);
+}
+
+.stagebar__icon {
+  flex-shrink: 0;
+  color: var(--syn-color-text-muted);
+}
+
+.stagebar__text {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.stagebar__kbd {
+  display: inline-flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* ── A3 答案区 ─────────────────────────────────────────── */
+
+.ans {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-space-md, 12px);
+  padding: var(--syn-d-space-lg, 16px);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-left: 3px solid var(--syn-color-primary);
+  border-radius: var(--syn-radius-xl);
+  box-shadow: var(--syn-shadow-sm);
+}
+
+.ans--none {
+  border-left-color: var(--syn-color-warning);
+}
+
+.ans__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+}
+
+.ans__quote {
+  color: var(--syn-color-primary);
+}
+
+.ans__spacer {
+  flex: 1;
+}
+
+.ans__ms {
+  font-variant-numeric: tabular-nums;
+  color: var(--syn-color-text-muted);
+}
+
+.ans__nonehead {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  font-size: var(--syn-fs-emphasis);
+  color: var(--syn-color-text);
+}
+
+.ans__nonehead svg {
+  color: var(--syn-color-warning);
+  flex-shrink: 0;
+}
+
+.ans__partial {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-sm) var(--syn-space-md);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-warning);
+  background: var(--syn-color-warning-subtle);
+  border-radius: var(--syn-radius-lg);
+}
+
+.ans__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-space-md, 12px);
+}
+
+.ans__p {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+}
+
+/* 摘录正文：四号 + 宽松行高。这是用户真正要读的那段字，
+   给它最好的阅读条件 —— 「界面使用时眼睛感到舒服」 */
+.ans__text {
+  font-size: var(--syn-fs-emphasis);
+  line-height: var(--syn-lh-relaxed);
+  color: var(--syn-color-text);
+}
+
+.ans__cite {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 2px var(--syn-space-sm) 2px 2px;
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  border-radius: var(--syn-radius-pill);
+}
+
+.ans__cite:hover {
+  color: var(--syn-color-primary);
+  background: var(--syn-color-primary-subtle);
+}
+
+.ans__citenum {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  font-size: var(--syn-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--syn-color-text-inverse);
+  background: var(--syn-color-primary);
+  border-radius: var(--syn-radius-pill);
+}
+
+.ans__citetitle {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ans__citeloc {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.ans__sources {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--syn-space-xs);
+  padding-top: var(--syn-space-sm);
+  border-top: 1px solid var(--syn-color-border);
+  font-size: var(--syn-fs-caption);
+}
+
+.ans__sourceslabel {
+  color: var(--syn-color-text-muted);
+}
+
+.ans__source {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  max-width: 260px;
+  padding: 2px var(--syn-space-sm) 2px 2px;
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-pill);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ans__source:hover {
+  color: var(--syn-color-primary);
+  background: var(--syn-color-primary-subtle);
+}
+
+.ans__tips {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+  list-style: none;
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+}
+
+.ans__tips li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--syn-space-xs);
+  line-height: var(--syn-lh-normal);
+}
+
+.ans__tips svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--syn-color-warning);
+}

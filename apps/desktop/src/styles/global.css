@@ -51,10 +51,17 @@ body {
   user-select: none;
   cursor: default;
 
-  /* E16 护眼模式：整层滤镜，不改任何组件颜色 */
-  filter: var(--syn-eye-filter, none);
   transition: background-color var(--syn-dur-normal) var(--syn-ease-standard),
     color var(--syn-dur-normal) var(--syn-ease-standard);
+}
+
+/* E16 护眼色温：整层滤镜。
+   🔴 **只在 data-eye 存在时才写 filter 属性** —— 写 `filter: none` 一样会让浏览器
+      把 <body> 提成独立合成层，滚动时每帧重做合成，等于"关掉了还在付性能账"。
+      默认档（off）走这条选择器之外，body 上根本没有 filter 属性，零代价。
+      更暖的需求优先走 `data-theme="paper"`（静态色板，无渲染代价）。 */
+:root[data-eye] body {
+  filter: var(--syn-eye-filter, none);
 }
 
 /* 内容文字允许选中复制 */

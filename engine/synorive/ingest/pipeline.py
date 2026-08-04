@@ -425,26 +425,16 @@ class IngestPipeline:
                 return "done"
             self.repo.set_stage(item_id, "chunk", "done")
 
-            # ── embed ────────────────────────────────────
-            emb = self._embedder()
-            vectors = None
-            model_id = ""
-            if emb is not None:
-                self.repo.set_stage(item_id, "embed", "running")
-                try:
-                    vectors = emb.encode([c.text for c in chunks])
-                    model_id = emb.model_id
-                    self.repo.set_stage(item_id, "embed", "done", model_id=model_id)
-                except Exception as e:  # noqa: BLE001
-                    # 向量化失败不算整体失败：关键词索引照建，
-                    # 用户至少能用关键词搜到，之后补跑 embed 阶段即可
-                    log.warning("%s 向量化失败：%s", path.name, e)
-                    self.repo.set_stage(item_id, "embed", "failed", error=str(e))
-                    vectors = None
-            else:
-                self.repo.set_stage(item_id, "embed", "skipped", error="向量模型不可用")
-
-            # ── index ────────────────────────────────────
+            # ── index（A1：**先于 embed**）────────────────
+            #
+            # 🔴 顺序在这里被刻意改过。原来是 `embed → write_chunks`，
+            #    也就是说**一份文件在向量算完之前完全搜不到**，而向量是整条
+            #    链路里最慢的一步。表现是：用户选了文件夹、进度条在动、
+            #    可是搜什么都搜不到，看起来像"它没在干活"。
+            #
+            #    改成先写分块建关键词索引，用户几秒内就能搜到内容；
+            #    向量在后面补，补完自动升级成语义可搜。**同一份数据，
+            #    只是可用的时间从"全部跑完之后"提前到了"解析完之后"。**
             self.repo.set_stage(item_id, "index", "running")
             rows = [
                 ChunkRow(
@@ -457,9 +447,44 @@ class IngestPipeline:
                 )
                 for c in chunks
             ]
-            n = self.repo.write_chunks(item_id, rows, vectors, model_id=model_id)
+            self.repo.write_chunks(item_id, rows)
             self.repo.index_item_text(item_id)
             self.repo.set_stage(item_id, "index", "done")
+
+            # 先落一个"关键词可搜"的中间态。
+            # 🔴 **必须落这一下**：不落的话，向量阶段中途崩溃/被取消时，
+            #    这份内容会永远停在 analyzing —— 明明已经能搜到了，
+            #    界面上却显示"还在分析"，而且永远不会变。
+            self.repo.set_item_status(item_id, "partial", "关键词已可搜，语义索引进行中")
+
+            # ── embed（补向量，不阻塞可搜性）──────────────
+            emb = self._embedder()
+            vectors = None
+            model_id = ""
+            if emb is not None:
+                self.repo.set_stage(item_id, "embed", "running")
+                try:
+                    vectors = emb.encode([c.text for c in chunks])
+                    model_id = emb.model_id
+                    self.repo.set_stage(item_id, "embed", "done", model_id=model_id)
+                except Exception as e:  # noqa: BLE001
+                    # 向量化失败不算整体失败：关键词索引已经建好了，
+                    # 用户至少能用关键词搜到，之后补跑 embed 阶段即可
+                    log.warning("%s 向量化失败：%s", path.name, e)
+                    self.repo.set_stage(item_id, "embed", "failed", error=str(e))
+                    vectors = None
+            else:
+                self.repo.set_stage(item_id, "embed", "skipped", error="向量模型不可用")
+
+            if vectors is not None:
+                try:
+                    self.repo.backfill_vectors(item_id, vectors, model_id=model_id)
+                except Exception as e:  # noqa: BLE001
+                    # 回填失败同样不推翻已经建好的关键词索引 ——
+                    # 降级成"只能关键词搜"，比整份内容消失好得多
+                    log.warning("%s 向量回填失败：%s", path.name, e)
+                    self.repo.set_stage(item_id, "embed", "failed", error=str(e))
+                    vectors = None
 
             status = "ready" if vectors is not None else "partial"
             note = None if vectors is not None else "只建了关键词索引，语义检索需要向量模型"

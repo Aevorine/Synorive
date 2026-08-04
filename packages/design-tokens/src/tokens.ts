@@ -262,6 +262,63 @@ export const palette = {
 
     scrim: 'rgb(0 0 0 / 52%)',
   },
+
+  /**
+   * 纸感（B4 第三档）—— 长时间阅读专用
+   * ============================================================
+   * 🔴 **它存在的技术理由，不是"多一个好看的皮肤"**：
+   *
+   * 原来的护眼是给 <body> 挂一层 `filter: sepia(...)`。整层 filter 会
+   * 把整个页面提升成一个独立合成层，并且**每一帧都要重新做一遍像素级
+   * 滤镜**——滚动长列表时这条是实打实的掉帧来源，而且它和"卡顿"的
+   * 关联完全不直观（用户只会觉得"这软件滚起来涩"，绝不会怀疑到护眼开关上）。
+   *
+   * 换成一套独立色板之后：颜色是静态变量，合成层该怎么走怎么走，
+   * **护眼和流畅第一次不再互相打架**。滤镜路径保留但默认 off，
+   * 想要更暖的人还能在纸感基础上再叠一档。
+   *
+   * 配色取向：纸黄底 + 棕墨字，对比度仍然按 WCAG AA 卡（正文 ≥4.5:1）。
+   * 实测最紧的一对是 textMuted(#6B6157) 压在 bgSunken(#EBE6D9) 上 = 4.84:1。
+   */
+  paper: {
+    bg: '#F5F1E8',
+    bgElevated: '#FBF8F1',
+    bgSunken: '#EBE6D9',
+    bgHover: '#E5DFD0',
+    bgSelected: '#E2E8ED',
+
+    text: '#2B2620',
+    textSecondary: '#5A5147',
+    textMuted: '#6B6157',
+    textInverse: '#FBF8F1',
+
+    border: '#DDD5C4',
+    borderStrong: '#C4B9A2',
+    borderFocus: '#2F5169',
+
+    primary: '#2F5169',
+    primaryHover: '#264257',
+    primaryActive: '#1D3344',
+    primarySubtle: '#E2E8ED',
+
+    success: '#3D6B4E',
+    successSubtle: '#E4EDE4',
+
+    warning: '#8A6218',
+    warningSubtle: '#F4EAD3',
+
+    danger: '#9C3327',
+    dangerHover: '#82291F',
+    dangerSubtle: '#F2E2DE',
+
+    info: '#2A6B80',
+    infoSubtle: '#DEEAEE',
+
+    highlight: '#F2E4B8',
+    highlightSemantic: '#E4EDE4',
+
+    scrim: 'rgb(43 38 32 / 34%)',
+  },
 } as const;
 
 export type ThemeName = keyof typeof palette;
@@ -404,9 +461,87 @@ export const layout = {
   resultRowHeight: { compact: 68, standard: 114, comfortable: 142 },
   /** 详情面板宽度 */
   detailPanelWidth: 380,
+
+  /**
+   * B1 主舞台（大输入区）—— 用户原话：
+   * 「如果是主要使用的功能，而且输入的内容很多，则显示的位置的界面要很大」
+   *
+   * 🔴 **在此之前，全应用唯一的输入口是顶栏里一个高 32px 的单行 input。**
+   *    它连换行都做不到，更别说"输入的内容很多"。搜索页自己还得写一句
+   *    「在上面的搜索框里敲字就能搜」来告诉用户主功能在哪 ——
+   *    **一个软件需要用文案指路，就说明那个功能不在它该在的位置上。**
+   *
+   * 两态设计（同一个组件，不是两个）：
+   *   舞台态 = 没有结果时，居中、大、多行、可拖高、可粘图、可拖文件
+   *   收窄态 = 有结果后收进顶部一条，点一下 / 按 Ctrl+K 重新展开
+   * 两态之间只做高度和位置过渡，**输入内容永不丢失**。
+   */
+  stage: {
+    /** 舞台态最小宽度：低于这个值多行输入就没有意义了 */
+    minWidth: 720,
+    /** 舞台态最大宽度：再宽横向扫视距离过长，读起来反而累 */
+    maxWidth: 960,
+    /** 舞台态输入框默认可视高度（约 6 行小四字） */
+    inputMinHeight: 132,
+    /** 手动拖高上限（约 16 行）；超过就该去研究工作台写长文了 */
+    inputMaxHeight: 420,
+    /** 默认行数 */
+    inputRows: 6,
+    /** 收窄态高度：和原来顶栏搜索框一致，切换时不跳版 */
+    compactHeight: 40,
+    /** 舞台垂直位置：距顶部的比例（0.32 比居中略高，视觉重心更稳） */
+    verticalAnchor: 0.32,
+  },
 } as const;
 
 export type Density = keyof typeof layout.resultRowHeight;
+
+// ──────────────────────────────────────────────────────────────
+// 九·b、密度标尺（B5）
+//    「宽松 / 标准 / 紧凑」三档要真的改变界面，而不只是改一个属性。
+//
+//    🔴 **修的是一个静默失败**：`data-density` 属性一直在往 <html> 上写，
+//       但全仓 8227 行 CSS 里只有 search.css 响应了它 3 次。
+//       也就是说：设置页有这个开关、点了有反馈、属性也确实变了，
+//       **而界面上除了搜索结果摘要的行数以外什么都不会变**。
+//       开关不报错、不崩溃、看起来完全正常 —— 它只是什么都不做。
+//
+//    做法：把密度做成一组**变量倍率**，组件一律用 var(--syn-d-*)，
+//    于是新写的组件自动就是响应密度的，不需要每个都记得加一条规则。
+// ──────────────────────────────────────────────────────────────
+
+export const densityScale = {
+  compact: {
+    /** 间距总倍率：所有 --syn-d-space-* 由它乘出来 */
+    scale: 0.75,
+    /** 列表项之间的缝 */
+    gap: 4,
+    /** 按钮 / 输入框 / 芯片的标准高度 */
+    control: 26,
+    /** 卡片内边距 */
+    cardPad: 8,
+    /** 正文行高：紧凑档也不能低于 1.45，中文低于这个就糊成一片 */
+    lineHeight: 1.45,
+    /** 页面内容区左右留白 */
+    contentPad: 16,
+  },
+  standard: {
+    scale: 1,
+    gap: 8,
+    control: 32,
+    cardPad: 12,
+    lineHeight: 1.6,
+    contentPad: 24,
+  },
+  comfortable: {
+    scale: 1.25,
+    gap: 12,
+    control: 38,
+    cardPad: 16,
+    lineHeight: 1.75,
+    contentPad: 32,
+  },
+} as const;
 
 // ──────────────────────────────────────────────────────────────
 // 十、护眼模式（E16）色温调节
@@ -425,8 +560,45 @@ export const eyeComfort = {
   reminderMinutes: [0, 20, 30, 45, 60],
 } as const;
 
+// ──────────────────────────────────────────────────────────────
+// 十一、打印样式表（A4 一键成稿 / PDF 导出）
+//
+// 🔴 **为什么它必须住在这个包里，而不是在用它的那个组件旁边。**
+//    导出的 PDF 走 `webContents.printToPDF`，在一个**独立的、自包含的**
+//    渲染窗口里加载 —— 那个窗口不加载 `tokens.css`，
+//    写 `var(--syn-color-text)` 会解析成空值，打出来是一份没有颜色和
+//    字号的 PDF。所以这份样式表的色值和字号**只能写死**。
+//
+//    而"允许写死字面量的地方"在这个仓库里只有一个，就是这个包
+//    （`scripts/check-hardcoded-style.mjs` 的 ALLOW_PATHS 就是这么定的）。
+//    把它放到别处 = 要么被守卫拦下，要么得去改守卫的范围 ——
+//    **改守卫来迁就代码，是把"界面要统一"这条规则一点点掏空的开始。**
+//
+// 🔴 尺寸用 **pt 不用 px**：这是给纸张排版的。px 在不同 DPI 的
+//    打印后端上会得到不同的实际字号，而 pt 是印刷单位，到哪都一样大。
+//
+// 色值取自上面 palette.light 的同一批墨色，保持"打出来的和屏幕上像一家"。
+// ──────────────────────────────────────────────────────────────
+
+export const printCss = `
+  body { font-family: "Times New Roman", "SimSun", serif; font-size: 12pt; line-height: 1.7; color: #1F2933; margin: 2.2cm 2cm; }
+  h1 { font-size: 20pt; margin: 0 0 0.4em; }
+  h2 { font-size: 15pt; margin: 1.4em 0 0.5em; border-bottom: 1px solid #E1DDD4; padding-bottom: 0.2em; }
+  h3 { font-size: 12.5pt; margin: 1em 0 0.3em; }
+  .meta { color: #636E7A; font-size: 10.5pt; margin-bottom: 1.2em; }
+  .loc { color: #636E7A; font-size: 10.5pt; margin: 0 0 0.3em; }
+  blockquote { margin: 0.3em 0 0.4em; padding: 0.4em 0.9em; border-left: 3px solid #0F4C8C; background: #F2F0EB; }
+  .cite { font-size: 10.5pt; margin: 0 0 1em; }
+  a { color: #0F4C8C; text-decoration: none; }
+  ol.refs { padding-left: 1.4em; }
+  ol.refs li { margin-bottom: 0.4em; font-size: 11pt; }
+  /* 一段摘录被分页切成两半读起来很难受，能不切就不切 */
+  section { break-inside: avoid; }
+`;
+
 export const tokens = {
   fontSize,
+  printCss,
   fontFamily,
   fontWeight,
   lineHeight,
@@ -440,6 +612,7 @@ export const tokens = {
   motion,
   zIndex,
   layout,
+  densityScale,
   eyeComfort,
   SERIF_SWITCH_PX,
   CN_POINT,
