@@ -58,6 +58,11 @@ Tema oscuro: [captura](../screenshots/research-dark.png)
 | 📋 | **Informes solo por extracción** — cada línea es una cita literal con su fuente. Las afirmaciones contradictorias se muestran **una al lado de la otra, sin decidir** |
 | 🔌 | **24 herramientas MCP para Claude Code** — deja que tu agente busque en tu biblioteca y verifique afirmaciones por ti |
 | 🔒 | **Valla de privacidad** — la búsqueda web y la inferencia en la nube son **dos interruptores separados**, porque una filtra *lo que preguntas* y la otra *lo que tienes* |
+| ❓ | **Haz una pregunta, obtén respuestas citadas** — la respuesta se compone *solo* con frases que ya existen en tus archivos, cada una con su fuente. Nada se genera, nada se reformula |
+| 📝 | **Borrador en un clic** — elige los resultados que quieras y obtén un borrador en Markdown / texto plano / PDF con citas numeradas y anclas en las que se puede hacer clic |
+| ⚡ | **Buscable en segundos** — un archivo nuevo se puede buscar por palabra clave en cuanto se trocea; la indexación semántica se completa en segundo plano en vez de hacerte esperar |
+| 🎚 | **Un orden que tú controlas** — ocho deslizadores (semántico, palabra clave, novedad, confianza de la fuente, popularidad, aciertos en el título, diversidad de resultados, penalización de fragmentos cortos), cinco ajustes predefinidos, y puedes guardar los tuyos |
+| 📖 | **Comodidad de lectura** — un tema papel, tres escalas de densidad y un área de entrada principal lo bastante grande para una pregunta larga |
 
 **Palabras clave:** búsqueda semántica local · motor de búsqueda con IA sin conexión · RAG multimodal ·
 base de conocimiento personal · búsqueda documental · búsqueda vectorial · búsqueda híbrida ·

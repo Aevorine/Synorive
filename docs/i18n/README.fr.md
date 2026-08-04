@@ -59,6 +59,11 @@ Thème sombre : [capture d'écran](../screenshots/research-dark.png)
 | 📋 | **Synthèses par extraction uniquement** — chaque ligne est une citation littérale avec sa source. Les affirmations contradictoires sont présentées **côte à côte, sans trancher** |
 | 🔌 | **24 outils MCP pour Claude Code** — laissez votre agent fouiller votre bibliothèque et vérifier des affirmations à votre place |
 | 🔒 | **Barrière de confidentialité** — la recherche web et l'inférence dans le cloud sont **deux interrupteurs séparés**, car l'une révèle *ce que vous demandez* et l'autre *ce que vous possédez* |
+| ❓ | **Posez une question, obtenez des réponses citées** — la réponse est assemblée *uniquement* à partir de phrases qui existent déjà dans vos fichiers, chacune avec sa source. Rien n'est généré, rien n'est reformulé |
+| 📝 | **Brouillon en un clic** — choisissez les résultats voulus, obtenez un brouillon Markdown / texte brut / PDF avec des citations numérotées et des ancres cliquables |
+| ⚡ | **Trouvable en quelques secondes** — un nouveau fichier est cherchable par mot-clé dès qu'il est découpé ; l'indexation sémantique se complète en arrière-plan au lieu de vous faire attendre |
+| 🎚 | **Un classement que vous contrôlez** — huit curseurs (sémantique, mot-clé, fraîcheur, confiance de la source, popularité, titre, diversité des résultats, pénalité des fragments courts), cinq préréglages, et vous pouvez enregistrer les vôtres |
+| 📖 | **Confort de lecture** — un thème papier, trois échelles de densité, et une zone de saisie principale assez grande pour une longue question |
 
 **Mots-clés :** recherche sémantique locale · moteur de recherche IA hors ligne · RAG multimodal ·
 base de connaissances personnelle · recherche documentaire · recherche vectorielle · recherche hybride ·

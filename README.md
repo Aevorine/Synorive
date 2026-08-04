@@ -57,11 +57,18 @@ Dark theme: [screenshot](docs/screenshots/research-dark.png)
 | 📋 | **Extract-only briefings** — every line is a verbatim quote with its source. Conflicting claims are shown **side by side, undecided** |
 | 🔌 | **24 MCP tools for Claude Code** — let your agent search your own library and verify claims for you |
 | 🔒 | **Privacy fence** — web search and cloud inference are two *separate* switches, because one leaks *what you ask* and the other leaks *what you have* |
+| ❓ | **Ask a question, get quoted answers** — the answer is assembled *only* from sentences that already exist in your files, each with its source. Nothing is generated, nothing is reworded |
+| 📝 | **One-click draft** — pick the results you want, get a Markdown / plain-text / PDF draft with numbered citations and clickable anchors |
+| ⚡ | **Searchable in seconds** — a new file is keyword-searchable the moment it is chunked; semantic indexing backfills in the background instead of making you wait |
+| 🎚 | **Ranking you control** — eight sliders (semantic, keyword, recency, source trust, popularity, title hits, result diversity, short-fragment penalty), five presets, and you can save your own |
+| 📖 | **Reading comfort** — a paper theme, three density scales, and a main input area big enough for a long question |
 
 **Keywords:** local semantic search · offline AI search engine · multimodal RAG · personal knowledge base ·
 document search · vector search · hybrid search · fact checking · misinformation detection ·
 MCP server · Claude Code · SQLite FTS5 · sqlite-vec · HNSW · OCR · video search · Chinese NLP ·
-Electron desktop app · privacy-first · self-hosted
+Electron desktop app · privacy-first · self-hosted · offline RAG · desktop search ·
+question answering with citations · extract-only · no hallucination · reranking · embeddings ·
+local LLM alternative · no API key · air-gapped search
 
 ---
 
