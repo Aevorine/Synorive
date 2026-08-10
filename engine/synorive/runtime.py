@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -229,6 +231,7 @@ class Runtime:
         ):
             d.mkdir(parents=True, exist_ok=True)
         self.db.initialize()
+        self._reconcile_stale_jobs()
 
         # 延迟导入：这几个模块拉起 numpy / onnxruntime，
         # 写在文件顶部会让每次 import synorive.runtime 都慢几百毫秒
@@ -625,6 +628,9 @@ class Runtime:
         while True:
             try:
                 await asyncio.sleep(2.0)
+                # 任务落盘跟订阅者数量无关——没人盯着界面时也不能让进度
+                # 只活在内存里，这条不能放进下面那个"没人订阅就跳过"里
+                self._flush_active_jobs()
                 if self.events.subscriber_count == 0:
                     continue
                 self.events.publish("engine.status", self.status_snapshot())
@@ -727,6 +733,125 @@ class Runtime:
         except OSError:
             pass
 
+    # ── 摄取任务：状态持久化 ──────────────────────────────────
+    #
+    # 🔴 之前任务状态只在 `self._jobs` 这个内存字典里，引擎一重启就没了——
+    # `job_detail()`/`control_job()` 只能回一句「没有这个任务（可能引擎
+    # 重启过）」。`jobs` 表在 schema.sql 里早就定义好了，但从没有代码真的
+    # 往里写过东西，是张没人用的死表。这里把它接上。
+    #
+    # 不是每次进度变化都写库：`note_item()` 是单文件级别的回调，一次十万
+    # 文件的摄取就是十万次调用，逐条 UPDATE 正是 A1 那类「写锁竞争」的
+    # 来源。真正落盘的时机只有三个：①任务创建 ②终态（done/failed/
+    # cancelled，一次性事件）③`status_loop()` 里每 2 秒一次的节流 flush。
+    # 摊下来一次摄取无论多少文件，写库次数只跟"运行了多少秒"成正比，
+    # 跟"有多少文件"无关。
+
+    def _persist_job(self, job_id: str, job: dict[str, Any]) -> None:
+        conn = self.db.connect()
+        detail = {
+            "current": job.get("current"),
+            "error": job.get("error"),
+            "items": list(job.get("items", []))[:500],
+            "itemsTruncated": bool(job.get("itemsTruncated", False)),
+        }
+        started_iso = datetime.fromtimestamp(job.get("startedAt", time.time()), UTC).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
+        conn.execute(
+            """
+            INSERT INTO jobs (id, created_at, updated_at, status, source, total_items,
+                               done_items, failed_items, skipped_items, targets_json,
+                               allow_cloud, detail_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                status = excluded.status,
+                total_items = excluded.total_items,
+                done_items = excluded.done_items,
+                failed_items = excluded.failed_items,
+                skipped_items = excluded.skipped_items,
+                detail_json = excluded.detail_json
+            """,
+            (
+                job_id,
+                started_iso,
+                now_iso,
+                job.get("status", "running"),
+                job.get("source", "file"),
+                int(job.get("total", 0)),
+                int(job.get("done", 0)),
+                int(job.get("failed", 0)),
+                int(job.get("skipped", 0)),
+                job.get("targetsJson", "[]"),
+                int(self.config.allow_cloud),
+                json.dumps(detail, ensure_ascii=False),
+            ),
+        )
+
+    def _flush_active_jobs(self) -> None:
+        """`status_loop()` 每 2 秒调一次——只落盘还在跑/暂停的任务。"""
+        for job_id, job in list(self._jobs.items()):
+            if job.get("status") not in ("running", "paused"):
+                continue
+            try:
+                self._persist_job(job_id, job)
+            except Exception as e:  # noqa: BLE001
+                log.debug("任务状态落盘失败（不影响任务本身继续跑）：%s", e)
+
+    def _load_persisted_job(self, job_id: str) -> dict[str, Any] | None:
+        """`self._jobs` 里没有时的兜底——查 `jobs` 表，覆盖"引擎重启过"这个场景。"""
+        conn = self.db.connect()
+        row = conn.execute(
+            "SELECT status, total_items, done_items, failed_items, skipped_items, "
+            "created_at, detail_json FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        detail = json.loads(row["detail_json"] or "{}")
+        try:
+            started = datetime.fromisoformat(row["created_at"]).timestamp()
+        except ValueError:
+            started = 0.0
+        return {
+            "jobId": job_id,
+            "status": row["status"],
+            "total": row["total_items"],
+            "done": row["done_items"],
+            "failed": row["failed_items"],
+            "skipped": row["skipped_items"],
+            "current": detail.get("current"),
+            "startedAt": started,
+            "paused": row["status"] == "paused",
+            "items": detail.get("items", []),
+            "itemsTruncated": bool(detail.get("itemsTruncated", False)),
+            "error": detail.get("error"),
+        }
+
+    def _reconcile_stale_jobs(self) -> None:
+        """
+        引擎启动时跑一次：上次运行时还标着 running/paused 的任务，
+        只可能是没正常关闭（强杀/崩溃/断电）——线程和 `JobControl` 早就
+        没了，没法「继续」，只能如实标成失败，而不是让它永远停在
+        「运行中」骗界面显示一个再也不会前进的进度条。
+        """
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT id, total_items, done_items, detail_json FROM jobs "
+            "WHERE status IN ('queued', 'running', 'paused')"
+        ).fetchall()
+        if not rows:
+            return
+        now_iso = datetime.now(UTC).isoformat()
+        for row in rows:
+            detail = json.loads(row["detail_json"] or "{}")
+            detail["error"] = f"引擎重启，任务被中断（当时进度 {row['done_items']}/{row['total_items']}）"
+            conn.execute(
+                "UPDATE jobs SET status = 'failed', updated_at = ?, detail_json = ? WHERE id = ?",
+                (now_iso, json.dumps(detail, ensure_ascii=False), row["id"]),
+            )
+        log.warning("发现 %d 个任务在上次引擎运行时被中断，已标记为失败", len(rows))
+
     # ── 摄取任务 ────────────────────────────────────────────
 
     def start_ingest(
@@ -763,7 +888,13 @@ class Runtime:
             "control": control,
             "items": [],
             "startedAt": time.time(),
+            "source": source,
+            "targetsJson": json.dumps([str(p) for p in paths], ensure_ascii=False),
         }
+        try:
+            self._persist_job(job_id, self._jobs[job_id])
+        except Exception as e:  # noqa: BLE001
+            log.debug("任务创建时落盘失败（不影响任务本身跑）：%s", e)
 
         # 🔴 `note_item` 会被线程池里的多个 worker 同时调用。
         # `job["done"] += 1` 是「读-改-写」三步，两个线程撞上就会丢计数 ——
@@ -837,6 +968,10 @@ class Runtime:
                         "elapsedSec": round(stats.elapsed, 1),
                     },
                 )
+                try:
+                    self._persist_job(job_id, self._jobs[job_id])
+                except Exception as e:  # noqa: BLE001
+                    log.debug("任务终态落盘失败：%s", e)
             except Exception as e:  # noqa: BLE001
                 # 🔴 **这里以前整个字典替换成 `{"status": "failed", "error": ...}`** ——
                 # 把 `items`（失败清单）、`total/done`、`startedAt`、`control` 全丢了。
@@ -846,6 +981,10 @@ class Runtime:
                 job = self._jobs.get(job_id, {})
                 self._jobs[job_id] = {**job, "status": "failed", "error": str(e), "current": None}
                 self.events.publish("toast", {"level": "error", "message": f"摄取失败：{e}"})
+                try:
+                    self._persist_job(job_id, self._jobs[job_id])
+                except Exception as persist_err:  # noqa: BLE001
+                    log.debug("任务失败态落盘失败：%s", persist_err)
 
         threading.Thread(target=run, daemon=True, name=f"ingest-{job_id}").start()
         return job_id
@@ -862,7 +1001,9 @@ class Runtime:
         """
         job = self._jobs.get(job_id)
         if job is None:
-            return None
+            # 内存里没有——不代表任务不存在，可能是引擎重启过、
+            # 或者这本来就是上一次运行时跑完的任务。查持久化的 jobs 表。
+            return self._load_persisted_job(job_id)
         control = job.get("control")
         return {
             "jobId": job_id,
@@ -888,7 +1029,14 @@ class Runtime:
         """
         job = self._jobs.get(job_id)
         if job is None:
-            return {"ok": False, "note": "没有这个任务（可能引擎重启过——任务表只在内存里）"}
+            persisted = self._load_persisted_job(job_id)
+            if persisted is None:
+                return {"ok": False, "note": "没有这个任务"}
+            return {
+                "ok": False,
+                "note": f"这个任务不在运行中了（状态：{persisted['status']}），控制不了",
+                "status": persisted["status"],
+            }
         control = job.get("control")
         if control is None:
             return {"ok": False, "note": "这个任务不支持暂停（它是旧版本起的）"}

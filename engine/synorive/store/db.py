@@ -41,6 +41,9 @@ _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 #: 已经存在的列会被 `_migrate_columns` 自动跳过，天然幂等。
 _COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("chunks", "section", "TEXT"),
+    # 摄取任务状态持久化——之前只在内存字典里，引擎重启就没了，
+    # `current`/`error`/失败明细列表这些没有专门的列，塞进一个 JSON 列。
+    ("jobs", "detail_json", "TEXT"),
 )
 
 

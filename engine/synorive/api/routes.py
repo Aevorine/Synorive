@@ -199,13 +199,14 @@ async def ingest_job(job_id: str, request: Request) -> dict[str, Any]:
     """
     F2 驾驶舱轮询这条。
 
-    🔴 **任务表只在内存里**，引擎重启就没了 —— 所以这里 404 是**正常情况**
-    而不是异常，界面收到 404 要说"引擎重启过，这个任务的进度查不到了"，
-    不能显示成一个卡在 0% 的任务让人一直等。
+    任务状态现在落在 `jobs` 表里（runtime.py 的 `_persist_job`），引擎
+    重启后还查得到——上次运行时正在跑的任务会被标成 failed（见
+    `_reconcile_stale_jobs`），而不是查不到。这里的 404 现在只代表
+    `job_id` 本身就没存在过（拼错了，或者压根不是这个引擎发的）。
     """
     d = _rt(request).job_detail(job_id)
     if d is None:
-        raise HTTPException(404, "没有这个任务（引擎重启后任务表会清空）")
+        raise HTTPException(404, "没有这个任务")
     return d
 
 
