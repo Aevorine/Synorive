@@ -9,7 +9,7 @@ import {
   MessageSquare,
   Music,
 } from 'lucide-react';
-import type { Modality, SearchHit } from '@synorive/shared-types';
+import type { Modality, MatchExplain, SearchHit } from '@synorive/shared-types';
 import { layout } from '@synorive/design-tokens';
 import { useApp } from '../lib/store';
 import { useKeyNav } from '../lib/keynav';
@@ -24,6 +24,60 @@ const MODALITY_ICON: Record<Modality, typeof FileText> = {
   link: Link2,
   message: MessageSquare,
 };
+
+/**
+ * D6 可解释性详情。**只能走 title 原生 tooltip，不能做成展开面板** ——
+ * 这个列表是虚拟滚动，行高必须固定（见文件顶部说明），任何会撑高单行的
+ * UI 都会让滚动重新变卡。tooltip 不占文档流的位置，是唯一不违反这条
+ * 约束的展示方式。
+ */
+function buildExplainTooltip(explain: MatchExplain): string {
+  const lines: string[] = [explain.reason];
+
+  if (explain.matchedTerms.length > 0) {
+    lines.push(`命中词：${explain.matchedTerms.join('、')}`);
+  }
+
+  const scoreLabels: [keyof MatchExplain['scores'], string][] = [
+    ['semantic', '语义相似'],
+    ['keyword', '关键词(BM25)'],
+    ['recency', '时间新鲜度'],
+    ['popularity', '打开热度'],
+    ['sourceTrust', '来源权重'],
+    ['titleBoost', '标题命中'],
+    ['lengthPenalty', '短片段扣分'],
+    ['diversity', '多样性系数'],
+  ];
+  const scoreBits = scoreLabels
+    .filter(([k]) => explain.scores[k] != null)
+    .map(([k, label]) => `${label} ${explain.scores[k]!.toFixed(2)}`);
+  if (scoreBits.length > 0) lines.push(scoreBits.join(' · '));
+
+  if (explain.routes.length > 0) {
+    const routeLabel: Record<string, string> = {
+      keyword: '关键词精确匹配', vector: '语义理解', trigram: '文件名子串',
+    };
+    lines.push(`召回方式：${explain.routes.map((r) => routeLabel[r] ?? r).join('、')}`);
+  }
+
+  return lines.join('\n');
+}
+
+/** 内容通道 → 小徽标文案。body（正文）是最常见情况，不值得占一个徽标的视觉重量，不显示 */
+const CHANNEL_BADGE: Record<string, string> = {
+  ocr: '图片文字',
+  transcript: '字幕',
+  description: '图片描述',
+  filename: '文件名',
+};
+
+function explainChannelBadge(explain: MatchExplain | undefined): string | null {
+  if (!explain) return null;
+  for (const via of explain.matchedVia) {
+    if (CHANNEL_BADGE[via]) return CHANNEL_BADGE[via];
+  }
+  return null;
+}
 
 /**
  * 结果列表 —— 虚拟滚动（F6）
@@ -214,7 +268,16 @@ function ResultCard({
           </button>
           {item.sizeBytes != null && <span>{formatSize(item.sizeBytes)}</span>}
           {item.contentTime && <span>{formatDate(item.contentTime)}</span>}
-          {explain && <span className="card__why">{explain.reason}</span>}
+          {explainChannelBadge(explain) && (
+            <span className="card__channel" title="这条命中的内容来自哪里">
+              {explainChannelBadge(explain)}
+            </span>
+          )}
+          {explain && (
+            <span className="card__why" title={buildExplainTooltip(explain)}>
+              {explain.reason}
+            </span>
+          )}
           {/* N6：只对文档类给这个入口 —— 一张图片"能回答哪些问题"没有意义，
               给了只会让用户点开发现是空的 */}
           {/* N3：只对视频给这个入口。带上命中的秒数——从搜索结果点进来时

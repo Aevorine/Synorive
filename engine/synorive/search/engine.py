@@ -182,6 +182,53 @@ PRESETS: dict[str, Weights] = {
     "deep": Weights(semantic=1.2, keyword=1.0, diversity=0.0, length_penalty=0.2),
 }
 
+#: D-adaptive 自适应权重专用，不进 PRESETS/前端预设下拉——用户不会手动选
+#: "事实核查"这种档，只有 classify_intent() 会用到。跟 PRESETS 分开放
+#: 是为了不让 RankingPreset 那个面向用户的枚举被内部实现细节污染。
+_ADAPTIVE_ONLY: dict[str, Weights] = {
+    # 求证/核查：来源可信度拉高，多样性也拉高——核查一件事真假，
+    # 单一来源不够，得看到不同信息源怎么说
+    "factcheck": Weights(semantic=1.0, keyword=1.1, source_trust=1.2, diversity=0.7),
+    # 对比分析：多样性拉满，不让同一份资料/同一个目录挤占前排——
+    # 对比 A 和 B，结果里只有 A 相关的东西毫无意义
+    "compare": Weights(semantic=1.2, keyword=0.9, diversity=1.0, length_penalty=0.2),
+}
+
+#: 对比类查询的信号词
+_COMPARE_RE = re.compile(r"(哪个更|哪个好|对比|比较|区别|优劣|\bvs\.?\b)", re.IGNORECASE)
+#: 求证类查询的信号词
+_FACTCHECK_RE = re.compile(r"(是不是真的|真的假的|求证|核实|是否属实|真伪|有没有证据)")
+#: 精确查找：带引号的短语，或者长得像文件名/路径/代码符号
+_PRECISE_RE = re.compile(r'["“”]|[/\\]|\.[A-Za-z0-9]{1,5}\b|[a-z]+_[a-z]|[a-z][A-Z]')
+#: 模糊探索：以"关于/有什么/有没有/推荐"开头，通常是在探索一个话题而不是找具体东西
+_EXPLORE_RE = re.compile(r"^(关于|有什么|有没有|推荐|了解一下)")
+
+
+def classify_intent(query: str) -> tuple[str, Weights]:
+    """
+    D-adaptive 查询意图分类——纯规则正则，判不出来就退回 balanced，不硬猜。
+
+    跟 websearch/intent.py 是同一种架构范式（规则表、<1ms、拿不准就退默认），
+    但分类轴完全不同：那边按**内容领域**分（论文/教程/新闻……）决定联网搜索
+    派哪几个引擎；这里按**检索行为**分（精确查找/模糊探索/求证/对比）决定
+    本地检索的排序权重怎么配，两者不能共用同一张规则表。
+
+    只在用户选"自动"档时才会被调用——手动选了具体预设或拖过滑块的话，
+    这个函数根本不会被调用，规则判得好不好完全不影响手动路径。
+    """
+    q = query.strip()
+    if not q:
+        return "balanced", Weights()
+    if _COMPARE_RE.search(q):
+        return "compare", _ADAPTIVE_ONLY["compare"]
+    if _FACTCHECK_RE.search(q):
+        return "factcheck", _ADAPTIVE_ONLY["factcheck"]
+    if _PRECISE_RE.search(q):
+        return "precise", PRESETS["precise"]
+    if _EXPLORE_RE.match(q) or len(q) <= 6:
+        return "explore", PRESETS["semantic"]
+    return "balanced", Weights()
+
 
 @dataclass
 class Filters:
@@ -590,7 +637,12 @@ class SearchEngine:
                 start_sec=r["start_sec"],
                 section=r["section"],
             )
-            c.matched_via.add("vector")
+            # 🔴 这里以前直接 add("vector")，把 SQL 已经查出来的 channel
+            # （正文/OCR/字幕/标题……）扔掉了——纯语义命中的结果，用户
+            # 永远不知道这条到底是从图片文字还是视频字幕里找到的。
+            # 跟关键词召回（上面 recall_keyword）保持同一种做法：
+            # matched_via 记的是"内容通道"，不是"走了哪条召回路"。
+            c.matched_via.add(str(r["channel"]) or "body")
             out.append(c)
             if len(out) >= limit:
                 break
@@ -789,7 +841,18 @@ class SearchEngine:
         text_query = parsed.text
         f = Filters.from_dict(parsed.filters).merged_with(filters)
 
-        w = PRESETS.get(preset or "", Weights()) if preset else Weights()
+        # D-adaptive：preset="auto" 是个哨兵值，不在 PRESETS 表里——
+        # 用 .get(preset, Weights()) 的话它会静默查不到、退回 balanced，
+        # 表面上"能用"，实际上自动档形同虚设，必须在查表之前单独拦一道。
+        auto_intent: str | None = None
+        if preset == "auto":
+            auto_intent, w = classify_intent(text_query)
+        elif preset:
+            w = PRESETS.get(preset, Weights())
+        else:
+            w = Weights()
+        # 手动调过滑块（weights 非空）的优先级永远最高——用户显式做过的
+        # 选择不能被自动分类覆盖，这是"用户可以覆盖自动选择"这条要求的底线
         if weights:
             w = Weights.from_dict(weights)
 
@@ -852,6 +915,12 @@ class SearchEngine:
                 hit["location"] = loc
 
             if explain:
+                # 🔴 以前这里不管哪条命中都塞 `terms[:12]`——整条查询词表，
+                # 不是"这一条结果里真出现了哪几个词"。同一页 30 条结果，
+                # 这个字段会一模一样，等于没告诉用户任何东西。
+                # 现在改成真的在这条命中的原文里查一遍。
+                hit_text = c.best_text or ""
+                matched_terms = [t for t in terms if t in hit_text]
                 hit["explain"] = {
                     "scores": {
                         "keyword": round(-(c.bm25 or 0), 4) if c.bm25 is not None else None,
@@ -861,9 +930,27 @@ class SearchEngine:
                         "recency": round(parts.get("recency", 0), 4),
                         "popularity": round(parts.get("popularity", 0), 4),
                         "sourceTrust": round(parts.get("sourceTrust", 0), 4),
+                        # 以前这三项 apply_signals() 里明明算出来了，却从没进过
+                        # 返回值——用户调多样性/长度惩罚滑块时，界面上完全看不出
+                        # 这两个权重到底对这条结果起没起作用
+                        "titleBoost": round(parts.get("titleBoost", 0), 4),
+                        "lengthPenalty": round(parts.get("lengthPenalty", 0), 4),
+                        "diversity": round(parts.get("diversity", 1), 4) if "diversity" in parts else None,
                     },
-                    "matchedTerms": terms[:12],
+                    "matchedTerms": matched_terms,
                     "matchedVia": sorted(c.matched_via),
+                    # 命中的是哪几条召回路（关键词/语义/文件名子串），
+                    # 跟 matchedVia（命中的是正文/OCR/字幕哪个内容通道）是两个轴，
+                    # 以前只在 reason 那句话里含糊带过，没有结构化字段
+                    "routes": [
+                        r
+                        for r, present in (
+                            ("keyword", c.rank_keyword is not None),
+                            ("vector", c.rank_vector is not None),
+                            ("trigram", c.rank_trigram is not None),
+                        )
+                        if present
+                    ],
                     "reason": _reason(c, parts),
                 }
             hits.append(hit)
@@ -875,6 +962,10 @@ class SearchEngine:
             "totalEstimate": len(scored),
             "elapsedMs": round((time.perf_counter() - t0) * 1000, 1),
         }
+        # 只有真的走了自动档才带这个字段——用户手动选了具体预设时，
+        # 前端不该显示"自动识别为……"这种和用户操作对不上的提示
+        if auto_intent is not None:
+            out["autoIntent"] = auto_intent
 
         # 这一轮有没有"真的匹配上"的东西。全是弱匹配时要如实告诉用户，
         # 否则他分不清眼前这几条是真结果还是向量凑数凑出来的。
@@ -1187,6 +1278,16 @@ def _highlight(text: str, terms: list[str], window: int = 160) -> str:
     return prefix + "".join(parts) + suffix
 
 
+#: 内容通道 → 人话。跟 recall_vector/recall_keyword 里写进 matched_via 的值一一对应。
+#: 不含 "title"——那个由下面的 titleBoost 分支单独覆盖，两条都放会说成
+#: "在标题里命中；标题命中"这种重复话
+_CHANNEL_LABEL = {
+    "ocr": "图片文字里",
+    "transcript": "语音字幕里",
+    "description": "图片描述里",
+}
+
+
 def _reason(c: Candidate, parts: dict[str, float]) -> str:
     """一句人话解释为什么这条能排上来。"""
     bits: list[str] = []
@@ -1197,6 +1298,12 @@ def _reason(c: Candidate, parts: dict[str, float]) -> str:
         bits.append(f"语义相似 {sim:.2f}")
     if c.rank_trigram:
         bits.append("文件名含查询串")
+    # 🔴 这条只有在 recall_vector 的 channel bug 修好之后才有意义——
+    # 之前 matched_via 里纯语义命中永远是字面量 "vector"，映射不到任何人话
+    for ch, label in _CHANNEL_LABEL.items():
+        if ch in c.matched_via:
+            bits.append(f"在{label}命中")
+            break
     if parts.get("titleBoost", 0) > 0:
         bits.append("标题命中")
     if parts.get("recency", 0) > 0.6:

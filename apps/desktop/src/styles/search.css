@@ -191,6 +191,17 @@
   color: var(--syn-color-text-muted);
   font-style: italic;
   white-space: nowrap;
+  cursor: help;
+}
+
+.card__channel {
+  flex: none;
+  padding: 1px var(--syn-space-xs);
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-bg-sunken);
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-micro);
+  white-space: nowrap;
 }
 
 .card__score {
@@ -269,6 +280,19 @@
   background: var(--syn-color-primary-subtle);
   border-color: var(--syn-color-primary);
   color: var(--syn-color-primary);
+}
+
+.ranking__autohint {
+  margin: 0;
+  padding: var(--syn-space-xxs) var(--syn-space-sm);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-sunken);
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-micro);
+}
+
+.ranking__autohint-sub {
+  color: var(--syn-color-text-muted);
 }
 
 .ranking__list {

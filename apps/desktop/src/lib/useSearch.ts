@@ -24,8 +24,13 @@ const waterfall = createWaterfallSearch();
 /** 敲字防抖。太短会白发很多请求，太长会有卡顿感。 */
 const DEBOUNCE_MS = 140;
 
-/** 'deep' = 深读一份（关掉多样性，允许同一份资料铺满整屏） */
-export type Preset = 'balanced' | 'precise' | 'semantic' | 'recent' | 'deep' | 'custom';
+/**
+ * 'deep' = 深读一份（关掉多样性，允许同一份资料铺满整屏）。
+ * 'auto' = 自适应：引擎按查询内容自己判断该用哪套权重，不用你去猜
+ * "这次该选求准还是求全"。默认档就是它——手动预设/滑块永远是可以
+ * 随时切回去的后备，不是必须先学会才能用的门槛。
+ */
+export type Preset = 'auto' | 'balanced' | 'precise' | 'semantic' | 'recent' | 'deep' | 'custom';
 
 interface SearchState {
   query: string;
@@ -50,6 +55,12 @@ interface SearchState {
    * 把理解结果显示出来，才谈得上"可以点掉它"。
    */
   parsed: { text: string; filters: string[]; unknown: string[] } | null;
+  /**
+   * D-adaptive：preset 是 'auto' 时，引擎这次实际判定成了哪一类
+   * （precise/explore/factcheck/compare/balanced），给界面显示一句
+   * "自动识别为：xxx"用。preset 不是 'auto' 时始终是 null。
+   */
+  autoIntent: string | null;
 
   weights: RankingWeights;
   preset: Preset;
@@ -93,7 +104,14 @@ export const useSearch = create<SearchState>((set, get) => {
     void waterfall.run(
       {
         query,
-        weights,
+        // 🔴 之前这里不管 preset 是什么都把 weights 塞进请求——引擎侧
+        // "weights 非空就整体覆盖 preset 查出来的值"（这条逻辑本身没错，
+        // 显式权重理应优先于预设），后果是点 精确/求全/最近/深读 这些
+        // 预设 chip 时，实际生效的还是上一次滑块停留的数值，除非那组数值
+        // 刚好和预设一致。只有 preset==='custom'（用户真的拖过滑块）时
+        // 才该把 weights 带上；选中命名预设（含 'auto'）时只传 preset，
+        // 让引擎自己用预设表/自动分类的值，不被这里的陈旧滑块状态覆盖
+        weights: preset === 'custom' ? weights : undefined,
         preset: preset === 'custom' ? undefined : preset,
         filters,
         explain,
@@ -122,6 +140,9 @@ export const useSearch = create<SearchState>((set, get) => {
           parsed:
             (r as { parsedQuery?: { text: string; filters: string[]; unknown: string[] } })
               .parsedQuery ?? null,
+          // 只有这次请求真的带了 preset:'auto' 才会有值，其它情况引擎
+          // 不返回这个字段，这里显式置 null 免得上一次自动档的结果残留
+          autoIntent: (r as { autoIntent?: string }).autoIntent ?? null,
         });
       },
       (e) => set({ loading: false, error: e.message, searched: true }),
@@ -145,8 +166,9 @@ export const useSearch = create<SearchState>((set, get) => {
     recovery: null,
     weakMatch: false,
     parsed: null,
+    autoIntent: null,
     weights: { ...DEFAULT_WEIGHTS },
-    preset: 'balanced',
+    preset: 'auto',
     filters: {},
     explain: true,
 

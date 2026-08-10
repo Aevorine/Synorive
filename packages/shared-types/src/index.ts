@@ -184,8 +184,14 @@ export const DEFAULT_WEIGHTS: RankingWeights = {
   lengthPenalty: 0.3,
 };
 
-/** 排序预设：一键切换整套权重。'deep' = 深读一份（关掉多样性） */
+/**
+ * 排序预设：一键切换整套权重。'deep' = 深读一份（关掉多样性）。
+ * 'auto' = 自适应——引擎按查询内容自己判断该用哪套权重（D-adaptive），
+ * 不传 weights 时才会真的生效；用户手动拖了任意一个滑块，前端会自动
+ * 把 preset 切回 'custom'，'auto' 就让位了（跟其它预设的行为一致）。
+ */
 export type RankingPreset =
+  | 'auto'
   | 'balanced'
   | 'precise'
   | 'semantic'
@@ -274,11 +280,25 @@ export interface MatchExplain {
     sourceTrust?: number;
     popularity?: number;
     rerank?: number;
+    /** 标题命中加权（0~1，命中越多越接近 1） */
+    titleBoost?: number;
+    /** 短片段降权（0~1，越短越接近 1，即扣分越多） */
+    lengthPenalty?: number;
+    /** D1 多样性降权系数（同目录/域名第 2、3 条才会有，1 = 未降权） */
+    diversity?: number;
   };
-  /** 命中的关键词，用于高亮 */
+  /**
+   * 这一条结果里**真的**出现了哪些查询词——不是整条查询的词表，
+   * 每条结果可能不一样（比如靠语义命中但一个字面词都没有的会是空数组）。
+   */
   matchedTerms: string[];
-  /** 命中来自哪个模态通道 */
-  matchedVia: ('title' | 'body' | 'ocr' | 'transcript' | 'vector' | 'tag' | 'filename')[];
+  /**
+   * 命中来自哪个内容通道（正文/标题/OCR文字/语音字幕/图片描述/文件名子串）。
+   * 'vector' 已经不会再出现——纯语义命中现在也会如实报出具体通道。
+   */
+  matchedVia: ('title' | 'body' | 'ocr' | 'transcript' | 'description' | 'filename')[];
+  /** 命中的是哪几条召回路（关键词精确匹配 / 语义向量 / 文件名子串），和 matchedVia 是两个轴 */
+  routes: ('keyword' | 'vector' | 'trigram')[];
   /** 一句话人话解释 */
   reason: string;
 }
@@ -308,6 +328,13 @@ export interface SearchResponse {
   totalEstimate: number;
   /** 本 stage 服务端耗时（毫秒） */
   elapsedMs: number;
+  /**
+   * D-adaptive：preset 传 'auto' 时，引擎实际判定这次查询属于哪一类
+   * （precise/explore/factcheck/compare/balanced），界面据此给用户一句
+   * "自动识别为：精确查找"这样的提示，同时让用户知道可以手动改。
+   * preset 不是 'auto' 时不返回这个字段。
+   */
+  autoIntent?: string;
   /** D8 秒答卡 */
   answer?: InstantAnswer;
   /** D9 零结果补救建议 */

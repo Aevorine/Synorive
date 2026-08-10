@@ -51,6 +51,12 @@ const METRICS: { key: keyof RankingWeights; label: string; hint: string; max?: n
 ];
 
 const PRESETS: { id: Preset; label: string; hint: string }[] = [
+  {
+    id: 'auto',
+    label: '自动',
+    hint: '按这次搜的内容自己判断该用哪套权重——精确查找/模糊探索/求证/对比各不一样，'
+      + '不用你先猜该调哪个预设。判得不合适随时点别的预设或拖滑块覆盖，默认档。',
+  },
   { id: 'balanced', label: '均衡', hint: '语义和关键词并重，日常用这个' },
   { id: 'precise', label: '求准', hint: '关键词为主，短片段重罚，适合找确切的东西' },
   { id: 'semantic', label: '求全', hint: '语义为主，多样性拉高（更多来源露头），只记得大概意思时用' },
@@ -58,9 +64,19 @@ const PRESETS: { id: Preset; label: string; hint: string }[] = [
   { id: 'deep', label: '深读一处', hint: '关掉多样性，把同一个文件夹里所有相关的一次看全' },
 ];
 
+/** autoIntent 是引擎判完之后返回的英文标识，这里换成用户看得懂的话 */
+const INTENT_LABEL: Record<string, string> = {
+  precise: '精确查找',
+  explore: '模糊探索',
+  factcheck: '求证核实',
+  compare: '对比分析',
+  balanced: '均衡',
+};
+
 export function RankingPanel() {
   const weights = useSearch((s) => s.weights);
   const preset = useSearch((s) => s.preset);
+  const autoIntent = useSearch((s) => s.autoIntent);
   const setWeights = useSearch((s) => s.setWeights);
   const setPreset = useSearch((s) => s.setPreset);
   const explain = useSearch((s) => s.explain);
@@ -100,8 +116,9 @@ export function RankingPanel() {
           onClick={() => {
             setWeights({ ...DEFAULT_WEIGHTS });
             // setWeights 会把 preset 置成 'custom'，所以恢复默认要在它之后
-            // 再设一次 balanced —— 顺序反了的话面板上会显示"自定"而值其实是默认值
-            setPreset('balanced');
+            // 再设一次 —— 顺序反了的话面板上会显示"自定"而值其实是默认值。
+            // 恢复到 'auto' 而不是 'balanced'：那才是这个面板真正的默认档
+            setPreset('auto');
           }}
         >
           <RotateCcw size={13} strokeWidth={1.7} />
@@ -121,6 +138,15 @@ export function RankingPanel() {
         ))}
         {preset === 'custom' && <span className="chip chip--on">自定</span>}
       </div>
+
+      {/* 自动档判完了，告诉用户判成了什么——不然"自动"就是个黑箱，
+          判错了用户也不知道该往哪个方向手动纠正 */}
+      {preset === 'auto' && autoIntent && (
+        <p className="ranking__autohint">
+          自动识别为：{INTENT_LABEL[autoIntent] ?? autoIntent}
+          <span className="ranking__autohint-sub">（不合适就点别的预设或拖滑块）</span>
+        </p>
+      )}
 
       {/* 自存的预设。**和内置的分开一行** —— 混在一起的话用户分不清
           哪些是能删的、哪些是删不掉的，而删按钮只挂在能删的那些上 */}
