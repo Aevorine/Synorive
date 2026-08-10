@@ -14,7 +14,7 @@ Fournit **24 outils MCP** pour Claude Code.
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · **Français** · [Español](README.es.md) · [Русский](README.ru.md) · [العربية](README.ar.md)
 
-[![Télécharger](https://img.shields.io/badge/download-v0.1.3-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![Télécharger](https://img.shields.io/badge/download-v0.1.4-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![Licence](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](../../LICENSE)
 [![Plateforme](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![Moteur](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](../../engine)
@@ -26,8 +26,8 @@ Fournit **24 outils MCP** pour Claude Code.
 
 | | |
 |---|---|
-| **Installateur Windows** | [`Synorive-Setup-0.1.3.exe`](https://github.com/Aevorine/Synorive/releases/latest) — runtime Python inclus, **mise à jour automatique dans l'application** |
-| **Windows portable** | [`Synorive-0.1.3-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — sans installation ; la mise à jour automatique n'est pas disponible dans cette forme |
+| **Installateur Windows** | [`Synorive-Setup-0.1.4.exe`](https://github.com/Aevorine/Synorive/releases/latest) — runtime Python inclus, **mise à jour automatique dans l'application** |
+| **Windows portable** | [`Synorive-0.1.4-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — sans installation ; la mise à jour automatique n'est pas disponible dans cette forme |
 | **Android** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) — client léger, dialogue avec le moteur de votre PC via le réseau local |
 
 **Aucune installation de Python requise.** L'interpréteur et toutes les dépendances du moteur
@@ -213,7 +213,7 @@ Le bureau et Android vérifient tous deux les mises à jour via les **GitHub Rel
 
 ```bash
 npm run version:check      # les quatre numéros de version sont-ils cohérents ?
-npm run version:set 0.1.3  # change les quatre d'un coup — ne les modifiez jamais à la main
+npm run version:set 0.1.4  # change les quatre d'un coup — ne les modifiez jamais à la main
 npm run android:keystore   # première fois : générer le keystore Android (conservé hors du dépôt)
 npm run release            # construire les deux artefacts, SANS envoi
 npm run release:publish    # construire et créer une GitHub Release (gh doit être connecté)
