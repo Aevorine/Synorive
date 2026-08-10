@@ -42,8 +42,10 @@ jobs:
           scope: '@aevorine'
 
       # monorepo：mcp 依赖根 workspace 装出来的 node_modules
+      # 只用 npm ci（不 fallback 到 npm install）——
+      # lockfile 对不上就是该红的信号，静默重新解析等于把这个信号吃掉。
       - name: 装依赖
-        run: npm ci || npm install
+        run: npm ci
 
       - name: 编译
         run: npm run build --workspace=@aevorine/synorive-mcp
@@ -57,7 +59,7 @@ jobs:
           bytes=$(wc -c < mcp/dist/index.js)
           echo "mcp/dist/index.js = $bytes 字节"
           test "$bytes" -gt 2000
-          node -e "import('./mcp/dist/index.js').then(()=>console.log('入口可被 import')).catch(e=>{console.error(e);process.exit(1)})" || true
+          node -e "import('./mcp/dist/index.js').then(()=>console.log('入口可被 import')).catch(e=>{console.error(e);process.exit(1)})"
 
       - name: 演练（不真发）
         if: inputs.dry_run
