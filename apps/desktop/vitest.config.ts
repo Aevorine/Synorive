@@ -18,7 +18,11 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/__tests__/**/*.test.ts'],
+    // electron/main/**：只收不碰 `electron` 模块的纯函数测试（比如
+    // settings-schema.ts 只依赖 zod），跟上面 electron.vite.config.ts
+    // 那条注释是同一个理由——一旦哪个文件 import 了 `electron`，
+    // 这条 include 就不该覆盖它，得走真正的集成测试。
+    include: ['src/**/__tests__/**/*.test.ts', 'electron/**/__tests__/**/*.test.ts'],
     // 纯函数测得极快，报告开到 verbose 才看得见每条断言测的是什么
     reporters: ['verbose'],
   },

@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { AppSettings } from '@synorive/shared-types';
+import { sanitizeSettings } from './settings-schema.js';
 
 const isDev = !app.isPackaged;
 
@@ -134,9 +135,15 @@ export function loadSettings(): AppSettings {
   }
 
   try {
-    const raw = JSON.parse(readFileSync(p, 'utf8')) as Partial<AppSettings>;
-    // 逐字段合并：新版本加的字段老配置里没有，要能自动补上默认值
-    cache = { ...base, ...raw, cloud: { ...base.cloud, ...(raw.cloud ?? {}) } };
+    const raw: unknown = JSON.parse(readFileSync(p, 'utf8'));
+    // 逐字段校验 + 合并：新版本加的字段老配置里没有，自动补默认值；
+    // 字段类型/范围不对（比如 concurrency 被手改成 999、dataDir 被清空）
+    // 只丢那一个字段，不因为一处损坏就把整份配置打回默认值
+    const { settings, dropped } = sanitizeSettings(raw, base);
+    if (dropped.length > 0) {
+      console.warn('[settings] 配置文件里这些字段不合法，已各自回退默认值：', dropped);
+    }
+    cache = settings;
   } catch (err) {
     console.error('[settings] 配置文件损坏，回退默认值：', err);
     cache = base;
@@ -157,12 +164,19 @@ export function patchSettings(patch: Partial<AppSettings>): AppSettings {
     }
   }
 
-  const merged: AppSettings = {
-    ...defaultSettings(),
+  // patch 是 IPC 传进来的（渲染层调 `settings.patch()`）——同样可能带非法值，
+  // IPC 边界就是外部输入边界，不能因为"是自己代码调的"就默认可信。
+  // 先按原来的优先级（默认 < 磁盘 < 本次 patch）拼成一份原始对象，
+  // 再统一过一遍 sanitizeSettings，语义和以前的三层展开等价，只是加了校验。
+  const rawMerged = {
     ...onDisk,
     ...patch,
-    cloud: { ...defaultSettings().cloud, ...(onDisk.cloud ?? {}), ...(patch.cloud ?? {}) },
+    cloud: { ...(onDisk.cloud ?? {}), ...(patch.cloud ?? {}) },
   };
+  const { settings: merged, dropped } = sanitizeSettings(rawMerged, defaultSettings());
+  if (dropped.length > 0) {
+    console.warn('[settings] 本次改动里这些字段不合法，已各自回退默认值：', dropped);
+  }
 
   mkdirSync(dirname(p), { recursive: true });
   // 原子写：先 .tmp 再 rename，避免写一半断电留半截 JSON

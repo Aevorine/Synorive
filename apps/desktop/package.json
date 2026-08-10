@@ -24,7 +24,8 @@
   "dependencies": {
     "@synorive/design-tokens": "*",
     "@synorive/shared-types": "*",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@fontsource/noto-serif-sc": "^5.2.8",
