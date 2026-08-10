@@ -19,6 +19,20 @@ export const IPC = {
   settingsPatch: 'settings:patch',
   settingsChanged: 'settings:changed',
 
+  // ── 多库支持 ─────────────────────────────────────────────
+  // 引擎是"一个进程绑死一个数据目录"的架构，没法同时管理多个库——
+  // 这几个 IPC 全是在操作 `AppSettings.libraries` 这份注册表，
+  // 真正的"切库"落地成"把 dataDir 换掉，让已有的重启逻辑触发一次"。
+  /** 列出所有库 */
+  libraryList: 'library:list',
+  /** 新建一条库记录。不传目录就在 userData 下自动生成一个。**不会自动切换过去** */
+  libraryCreate: 'library:create',
+  /** 切到另一个库——会重启引擎，调用方之前要先告诉用户这一点 */
+  librarySwitch: 'library:switch',
+  libraryRename: 'library:rename',
+  /** 只从注册表移除，不删硬盘上的数据目录。移除当前激活的库会被拒绝 */
+  libraryRemove: 'library:remove',
+
   // ── 引擎进程 ─────────────────────────────────────────────
   engineGetState: 'engine:get-state',
   engineRestart: 'engine:restart',

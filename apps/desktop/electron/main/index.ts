@@ -3,7 +3,10 @@
  */
 
 import { BrowserWindow, app, dialog, globalShortcut, ipcMain, nativeTheme, shell } from 'electron';
-import type { AppSettings } from '@synorive/shared-types';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import type { AppSettings, LibraryEntry } from '@synorive/shared-types';
 import { IPC, type ClipEntry, type EngineProcessState } from '../shared/ipc-contract.js';
 import { ClipboardWatcher } from './clipboard.js';
 import {
@@ -307,7 +310,57 @@ function registerIpc(): void {
 
   // 设置
   ipcMain.handle(IPC.settingsGet, () => settings);
-  ipcMain.handle(IPC.settingsPatch, (_e, patch: Partial<AppSettings>) => {
+  ipcMain.handle(IPC.settingsPatch, (_e, patch: Partial<AppSettings>) => applyPatch(patch));
+
+  // ── 多库支持 ─────────────────────────────────────────────
+  // 全是在操作 settings.libraries 这份注册表，"切库"复用 applyPatch——
+  // 传的 patch 里带 dataDir，会自然触发下面那段"dataDir 变了就重启引擎"的逻辑。
+  ipcMain.handle(IPC.libraryList, () => settings.libraries);
+
+  ipcMain.handle(IPC.libraryCreate, (_e, name: string, dataDir?: string) => {
+    const trimmedName = String(name ?? '').trim() || '未命名库';
+    const id = randomUUID();
+    // 没传目录：在 userData 下自动生成一个专属目录，不和任何已有库共用
+    const dir = dataDir && String(dataDir).trim() ? String(dataDir).trim() : join(app.getPath('userData'), 'libraries', id);
+    mkdirSync(dir, { recursive: true });
+    const entry: LibraryEntry = { id, name: trimmedName, dataDir: dir, createdAt: new Date().toISOString() };
+    // 只登记，不切换——用户自己决定要不要马上切过去
+    applyPatch({ libraries: [...settings.libraries, entry] });
+    return entry;
+  });
+
+  ipcMain.handle(IPC.librarySwitch, (_e, id: string) => {
+    const target = settings.libraries.find((l) => l.id === id);
+    if (!target) return { ok: false, error: '找不到这个库' };
+    if (target.id === settings.activeLibraryId) return { ok: true, settings };
+    // dataDir 一起改掉，触发下面的"dataDir 变了就重启引擎"逻辑——
+    // 这就是"切库"的全部实现：不是引擎同时管理多个库，是换一个库重启一次
+    const next = applyPatch({ activeLibraryId: id, dataDir: target.dataDir });
+    return { ok: true, settings: next };
+  });
+
+  ipcMain.handle(IPC.libraryRename, (_e, id: string, name: string) => {
+    const trimmed = String(name ?? '').trim();
+    if (!trimmed) return settings;
+    const libraries = settings.libraries.map((l) => (l.id === id ? { ...l, name: trimmed } : l));
+    return applyPatch({ libraries });
+  });
+
+  ipcMain.handle(IPC.libraryRemove, (_e, id: string) => {
+    // 只从注册表移除，不碰硬盘上的数据——跟这个项目"删除只删索引记录不碰
+    // 原文件"的一贯原则一致。数据还在，用户改主意了随时能把目录重新加回来。
+    if (id === settings.activeLibraryId) {
+      return { ok: false, error: '不能移除当前激活的库，请先切换到别的库再移除' };
+    }
+    if (settings.libraries.length <= 1) {
+      return { ok: false, error: '至少要保留一个库' };
+    }
+    const libraries = settings.libraries.filter((l) => l.id !== id);
+    applyPatch({ libraries });
+    return { ok: true };
+  });
+
+  function applyPatch(patch: Partial<AppSettings>): AppSettings {
     const before = settings;
     settings = patchSettings(patch);
     ensureDataDirs(settings);
@@ -365,7 +418,7 @@ function registerIpc(): void {
 
     broadcast(IPC.settingsChanged, settings);
     return settings;
-  });
+  }
 
   // 引擎
   ipcMain.handle(IPC.engineGetState, () => engine?.getState() ?? null);

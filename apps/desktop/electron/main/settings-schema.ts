@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import type { AppSettings, CloudConfig } from '@synorive/shared-types';
+import type { AppSettings, CloudConfig, LibraryEntry } from '@synorive/shared-types';
 
 const RankingWeightsSchema = z.object({
   semantic: z.number(),
@@ -42,6 +42,13 @@ const TrustProfileConfigSchema = z.object({
   blocklist: z.array(z.string()).optional(),
 });
 
+const LibraryEntrySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  dataDir: z.string().min(1),
+  createdAt: z.string(),
+});
+
 export const CloudConfigSchema = z.object({
   enabled: z.boolean(),
   provider: z.enum(['none', 'openai-compatible', 'anthropic']),
@@ -53,6 +60,8 @@ export const CloudConfigSchema = z.object({
 });
 
 export const AppSettingsSchema = z.object({
+  libraries: z.array(LibraryEntrySchema),
+  activeLibraryId: z.string(),
   theme: z.enum(['light', 'dark', 'paper', 'system']),
   fontScheme: z.enum(['a', 'b', 'c']),
   eyeComfort: z.enum(['off', 'low', 'medium', 'high']),
@@ -166,4 +175,106 @@ export function sanitizeSettings(
     settings: { ...(top.value as unknown as AppSettings), cloud: cloud.value as unknown as CloudConfig },
     dropped: [...top.dropped, ...cloud.dropped.map((k) => `cloud.${k}`)],
   };
+}
+
+/**
+ * 多库支持 —— 分流逻辑
+ * ============================================================
+ * 审查报告要求"每个库独立配置隐私策略和排序权重"。这些字段的值不再
+ * 由主 settings.json 一份说了算，而是跟着"当前激活的库"走，存在
+ * `<该库 dataDir>/library-settings.json` 里。
+ *
+ * 这一段全部是纯函数（不碰文件系统、不碰 electron 的 `app` 模块）——
+ * 和上面 `sanitizeSettings` 同一个理由：这个仓库的 vitest 配置刻意把
+ * `electron/main/**` 的测试收纳范围限定成"不 import electron 模块的纯函数"
+ * （见 `vitest.config.ts` 注释），真正的文件读写留在 `settings.ts` 里，
+ * 那边会调用这里的纯函数、自己负责 fs 那一半。
+ */
+export const LIBRARY_SCOPED_KEYS = [
+  'watchedFolders',
+  'savedPresets',
+  'allowNetwork',
+  'webLineupSize',
+  'verifyLevel',
+  'webEndpoints',
+  'webEngines',
+  'trustProfile',
+  'enableFaceClustering',
+  'enableAuthenticatedFetch',
+  'enableImageDescription',
+  'clipboardAutoArchiveLinks',
+  'sensitiveGuardEnabled',
+  'activeProjectId',
+] as const satisfies readonly (keyof AppSettings)[];
+
+export type LibraryScopedKey = (typeof LIBRARY_SCOPED_KEYS)[number];
+
+const LIBRARY_SCOPED_KEY_SET = new Set<string>(LIBRARY_SCOPED_KEYS);
+
+export function isLibraryScopedKey(key: string): key is LibraryScopedKey {
+  return LIBRARY_SCOPED_KEY_SET.has(key);
+}
+
+/**
+ * 把一份 patch 拆成"库级字段"和"全局字段"两份，`settings.ts` 拿这两份
+ * 分别去合并、校验、写回各自的文件。**这是唯一的分流入口** —— 全仓
+ * 只有这一处判断"这个字段该进哪个文件"，不许散落 if 判断（否则新增一个
+ * 库级字段时很容易漏改其中一处）。
+ */
+export function splitSettingsPatch(
+  patch: Partial<AppSettings>,
+): { libraryPatch: Partial<AppSettings>; globalPatch: Partial<AppSettings> } {
+  const libraryPatch: Record<string, unknown> = {};
+  const globalPatch: Record<string, unknown> = {};
+  for (const key of Object.keys(patch)) {
+    const target = isLibraryScopedKey(key) ? libraryPatch : globalPatch;
+    target[key] = (patch as Record<string, unknown>)[key];
+  }
+  return {
+    libraryPatch: libraryPatch as Partial<AppSettings>,
+    globalPatch: globalPatch as Partial<AppSettings>,
+  };
+}
+
+/** 从一份完整 `AppSettings` 里只挑出"库级字段"，用于写进某个库自己的 library-settings.json */
+export function pickLibraryScopedFields(settings: AppSettings): Partial<Record<LibraryScopedKey, unknown>> {
+  const out: Partial<Record<LibraryScopedKey, unknown>> = {};
+  for (const key of LIBRARY_SCOPED_KEYS) {
+    out[key] = settings[key];
+  }
+  return out;
+}
+
+/**
+ * 用某个库自己的原始配置（磁盘上的 library-settings.json 内容，可能损坏/越界/
+ * 是老版本升级上来时随手塞进去的旧值）覆盖 `base` 上的库级字段，其余字段
+ * （全局字段、`dataDir`、`libraries`/`activeLibraryId` 本身）原样保留 `base` 的值。
+ *
+ * 逐字段校验、单个字段损坏各自回退默认值——和 `sanitizeSettings` 同一套哲学，
+ * 不因为一个字段坏了就把整个库的配置打回默认值。
+ *
+ * `defaults` 是字段级校验失败时的回退基准，调用方传 `defaultSettings()` 的结果——
+ * 这里不直接调用它，是因为 `defaultSettings()` 要读 `app.getPath()`，
+ * 这个文件必须保持零 electron 依赖。
+ */
+export function overlayLibraryScopedSettings(
+  base: AppSettings,
+  rawLibraryConfig: unknown,
+  defaults: AppSettings,
+): { settings: AppSettings; dropped: string[] } {
+  const { settings: sanitized, dropped } = sanitizeSettings(rawLibraryConfig, defaults);
+  const merged: AppSettings = { ...base };
+  for (const key of LIBRARY_SCOPED_KEYS) {
+    (merged as unknown as Record<string, unknown>)[key] = sanitized[key];
+  }
+  return { settings: merged, dropped };
+}
+
+/**
+ * 首次迁移用：老用户升级上来 `libraries` 是空数组时，拿当前的 `dataDir`
+ * 建一条「默认库」。`createdAt` 从外面传进来（而不是内部 `new Date()`）——
+ * 保持这个文件里所有导出函数都是给定输入必然给定输出的纯函数，方便测试。
+ */
+export function buildDefaultLibraryEntry(dataDir: string, createdAt: string): LibraryEntry {
+  return { id: 'default', name: '默认库', dataDir, createdAt };
 }

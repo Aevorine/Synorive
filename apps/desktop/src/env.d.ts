@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AppSettings } from '@synorive/shared-types';
+import type { AppSettings, LibraryEntry } from '@synorive/shared-types';
 import type {
   ClipEntry,
   EngineProcessState,
@@ -22,6 +22,19 @@ export interface SynoriveApi {
     get: () => Promise<AppSettings>;
     patch: (patch: Partial<AppSettings>) => Promise<AppSettings>;
     onChanged: (cb: (s: AppSettings) => void) => Unsubscribe;
+  };
+  /**
+   * 多库支持。`switchTo` 会重启引擎子进程——界面必须在调用前明确提示用户
+   * "切换后当前搜索状态会清空"，这不是一次点击就瞬间完成的操作。
+   */
+  library: {
+    list: () => Promise<LibraryEntry[]>;
+    /** 不传 dataDir 就在 userData 下自动生成一个专属目录。创建后不会自动切换过去 */
+    create: (name: string, dataDir?: string) => Promise<LibraryEntry>;
+    switchTo: (id: string) => Promise<{ ok: boolean; error?: string; settings?: AppSettings }>;
+    rename: (id: string, name: string) => Promise<AppSettings>;
+    /** 只从注册表移除，不删硬盘上的数据。移除当前激活的库会被拒绝 */
+    remove: (id: string) => Promise<{ ok: boolean; error?: string }>;
   };
   engine: {
     getState: () => Promise<EngineProcessState | null>;

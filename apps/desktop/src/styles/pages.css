@@ -536,6 +536,65 @@
   color: var(--syn-color-danger);
 }
 
+/* ── 库（多库支持）───────────────────────────────────────── */
+
+.libpanel__item {
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: var(--syn-space-xs);
+}
+
+.libpanel__main {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  flex: none;
+}
+
+.libpanel__name {
+  font-size: var(--syn-fs-caption);
+  font-weight: var(--syn-fw-medium);
+  color: var(--syn-color-text-primary);
+  white-space: nowrap;
+}
+
+.libpanel__renamerow {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+}
+
+.libpanel__nameinput {
+  height: 26px;
+  font-size: var(--syn-fs-micro);
+  width: 160px;
+}
+
+.libpanel__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  flex: none;
+  margin-left: auto;
+}
+
+.libpanel__error {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-danger);
+  margin-bottom: var(--syn-space-sm);
+}
+
+.libpanel__create {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+  margin-bottom: var(--syn-space-sm);
+}
+
+.libpanel__create .textinput {
+  max-width: 320px;
+}
+
 /* ── 安卓配对（A16） ─────────────────────────────────────── */
 
 .pairing-info {

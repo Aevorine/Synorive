@@ -6,6 +6,7 @@
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import type { AppSettings, LibraryEntry } from '@synorive/shared-types';
 import { IPC, type ClipEntry, type UpdateState } from '../shared/ipc-contract.js';
 
 type Unsubscribe = () => void;
@@ -30,6 +31,24 @@ const api = {
     get: () => ipcRenderer.invoke(IPC.settingsGet),
     patch: (patch: unknown) => ipcRenderer.invoke(IPC.settingsPatch, patch),
     onChanged: (cb: (s: unknown) => void) => on(IPC.settingsChanged, cb),
+  },
+
+  /**
+   * 多库支持。切库落地成"换个 dataDir 重启引擎"——`switchTo` 会重启引擎，
+   * 界面调用前要先告诉用户"切换后当前搜索状态会清空"这件不符合直觉的事。
+   */
+  library: {
+    list: (): Promise<LibraryEntry[]> => ipcRenderer.invoke(IPC.libraryList),
+    /** 不传 dataDir 就在 userData 下自动生成一个专属目录。创建后不会自动切换过去 */
+    create: (name: string, dataDir?: string): Promise<LibraryEntry> =>
+      ipcRenderer.invoke(IPC.libraryCreate, name, dataDir),
+    switchTo: (id: string): Promise<{ ok: boolean; error?: string; settings?: AppSettings }> =>
+      ipcRenderer.invoke(IPC.librarySwitch, id),
+    rename: (id: string, name: string): Promise<AppSettings> =>
+      ipcRenderer.invoke(IPC.libraryRename, id, name),
+    /** 只从注册表移除，不删硬盘上的数据。移除当前激活的库会被拒绝 */
+    remove: (id: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC.libraryRemove, id),
   },
 
   engine: {

@@ -16,6 +16,8 @@ import { sanitizeSettings } from '../settings-schema.js';
 
 function makeBase(): AppSettings {
   return {
+    libraries: [{ id: 'default', name: '默认库', dataDir: 'D:/data', createdAt: '2026-01-01T00:00:00.000Z' }],
+    activeLibraryId: 'default',
     theme: 'system',
     fontScheme: 'b',
     eyeComfort: 'off',

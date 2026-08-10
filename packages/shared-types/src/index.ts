@@ -625,6 +625,26 @@ export type InputMode = 'ask' | 'find';
 /** A2 启动落地页 */
 export type StartPage = 'today' | 'search';
 
+/**
+ * 多库支持：一个独立的索引库 —— 自己的 `.db`（items/chunks/FTS/向量索引都在里面）、
+ * 自己的监听目录、自己的隐私策略、自己的排序预设。库之间数据完全隔离。
+ *
+ * **模型文件不属于这里** —— `modelDir` 全局共享一份（体积以 GB 计，
+ * 没有谁会想每个库各拷贝一份），只有 `dataDir` 按库区分。
+ *
+ * 引擎进程是"一个进程绑死一个 dataDir"的架构（`Runtime` 构造时一次性绑定，
+ * 生命周期内不可更换），所以"切库"的实现是：把 `AppSettings.dataDir` 换成
+ * 这条记录的 `dataDir`，触发已有的"dataDir 变了就重启引擎"逻辑——
+ * 不是引擎同时管理多个库，是**换一个库就重启一次引擎**。
+ */
+export interface LibraryEntry {
+  id: string;
+  name: string;
+  /** 这个库的 items/chunks/FTS/向量索引所在目录，即引擎的 `dataDir` */
+  dataDir: string;
+  createdAt: string;
+}
+
 export interface AppSettings {
   /**
    * paper = 纸感（B4 第三档，长时间阅读）。
@@ -699,10 +719,31 @@ export interface AppSettings {
    * "我在查什么"发出去。和隐私围栏里那条分开原则一致。
    */
   clipboardPeekWeb: boolean;
+  /**
+   * 多库支持：库注册表 + 当前激活的库。
+   *
+   * 这两个字段是"全局"的——它们描述的是库本身这份名单，不随切库变化
+   * （切库变的是 `dataDir` 指向哪一条）。空数组只会出现在老用户刚升级上来
+   * 那一刻，桌面端 `loadSettings()` 会立刻补一条「默认库」，界面不会看到
+   * 空列表的状态。
+   *
+   * 下面这些字段**每个库各自一份**（存在 `<该库 dataDir>/library-settings.json`，
+   * 不在这份主设置文件里），随 `activeLibraryId` 切换自动换成对应库的值：
+   * `watchedFolders` `savedPresets` `allowNetwork` `webLineupSize` `verifyLevel`
+   * `webEndpoints` `webEngines` `trustProfile` `enableFaceClustering`
+   * `enableAuthenticatedFetch` `enableImageDescription` `clipboardAutoArchiveLinks`
+   * `sensitiveGuardEnabled` `activeProjectId`——它们在类型定义上仍然是
+   * `AppSettings` 的平铺字段（不拆嵌套对象），只是**运行时的值来源**变成了
+   * "当前激活的库"，桌面端 `settings.ts` 负责这层合并，其余读 `settings.xxx`
+   * 的代码不用感知这个变化。
+   */
+  libraries: LibraryEntry[];
+  activeLibraryId: string;
   /** 监听索引的目录 */
   watchedFolders: string[];
-  /** 数据与模型位置 */
+  /** 数据与模型位置。`dataDir` 就是当前激活库的 `LibraryEntry.dataDir` */
   dataDir: string;
+  /** 模型目录全局共享，不随库切换——体积以 GB 计，没有谁想每个库拷一份 */
   modelDir: string;
   /** 云端配置 */
   cloud: CloudConfig;

@@ -6,6 +6,7 @@ import type {
   Density,
   EyeComfortLevel,
   FontScheme,
+  LibraryEntry,
 } from '@synorive/shared-types';
 import { PrivacyFence } from '../components/PrivacyFence';
 import { HotkeyReport } from '../components/HotkeyReport';
@@ -334,6 +335,16 @@ export function SettingsPage() {
           />
         </section>
 
+        {/* ── 多库支持 ─────────────────────────────────
+            每个库有自己独立的索引数据 + 隐私策略 + 排序预设，互不影响。
+            引擎是"一个进程绑一个数据目录"的架构，没法同时管理多个库——
+            "切库"实际是换一次 dataDir、重启一次引擎子进程，不是瞬间切换，
+            所以切换按钮点下去之前必须先把这件事说清楚。 */}
+        <section className="panel">
+          <h2 className="panel__title">库</h2>
+          <LibraryPanel settings={settings} />
+        </section>
+
         {/* ── 索引目录 ────────────────────────────────── */}
         <section className="panel">
           <h2 className="panel__title">监听的目录</h2>
@@ -518,6 +529,213 @@ export function SettingsPage() {
         </section>
       </div>
     </div>
+  );
+}
+
+/**
+ * 库：多个互相隔离的索引库，各自的监听目录/隐私策略/排序预设都不共享，
+ * 只共享模型文件（体积以 GB 计，没有谁想每个库拷一份）。
+ *
+ * 🔴 「切换」不是一次点击就瞬间完成的操作——引擎是"一个进程绑一个数据目录"
+ * 的架构，切库落地成"换个 dataDir、重启一次引擎子进程"，实测要几秒钟，
+ * 期间当前搜索状态会清空。这不符合直觉，必须在点下去之前说清楚，
+ * 而不是让用户自己发现"怎么点一下东西全没了"。
+ */
+function LibraryPanel({ settings }: { settings: AppSettings }) {
+  // 不维护一份本地库列表快照——`settings` 这个 prop 本身就是响应式的
+  // （主进程每次改完 libraries/activeLibraryId 都会广播 settings:changed，
+  // App.tsx 订阅后整棵树重渲染），自己再存一份容易和它对不上
+  const libraries = settings.libraries;
+
+  const [busyId, setBusyId] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [error, setError] = useState('');
+
+  const switchTo = async (lib: LibraryEntry) => {
+    if (
+      !window.confirm(
+        `切换到「${lib.name}」？\n\n` +
+          '引擎子进程要重启才能换到这个库的数据，大约几秒钟，' +
+          '期间当前的搜索结果和输入框内容会清空。',
+      )
+    ) {
+      return;
+    }
+    setBusyId(lib.id);
+    setError('');
+    const r = await window.synorive.library.switchTo(lib.id);
+    if (!r.ok) setError(r.error ?? '切换失败');
+    setBusyId('');
+  };
+
+  const startRename = (lib: LibraryEntry) => {
+    setRenamingId(lib.id);
+    setRenameDraft(lib.name);
+    setError('');
+  };
+
+  const commitRename = async (id: string) => {
+    const name = renameDraft.trim();
+    if (!name) {
+      setRenamingId(null);
+      return;
+    }
+    setBusyId(id);
+    await window.synorive.library.rename(id, name);
+    setRenamingId(null);
+    setBusyId('');
+  };
+
+  const remove = async (lib: LibraryEntry) => {
+    if (
+      !window.confirm(
+        `移除「${lib.name}」？\n\n只是不再管理这个库——硬盘上 ${lib.dataDir} 里的数据不会被删除，以后仍能手动找到。`,
+      )
+    ) {
+      return;
+    }
+    setBusyId(lib.id);
+    setError('');
+    const r = await window.synorive.library.remove(lib.id);
+    if (!r.ok) setError(r.error ?? '移除失败');
+    setBusyId('');
+  };
+
+  const createWithFolder = async () => {
+    const name = nameDraft.trim();
+    if (!name) {
+      setError('先填个库名');
+      return;
+    }
+    const dirs = await window.synorive.sys.pickFolders();
+    if (!dirs.length) return;
+    setBusyId('__create__');
+    setError('');
+    await window.synorive.library.create(name, dirs[0]);
+    setNameDraft('');
+    setCreating(false);
+    setBusyId('');
+  };
+
+  const createAuto = async () => {
+    const name = nameDraft.trim();
+    if (!name) {
+      setError('先填个库名');
+      return;
+    }
+    setBusyId('__create__');
+    setError('');
+    await window.synorive.library.create(name);
+    setNameDraft('');
+    setCreating(false);
+    setBusyId('');
+  };
+
+  return (
+    <>
+      <p className="panel__hint">
+        每个库有自己独立的监听目录、隐私开关（联网/图片描述/人脸聚类等）和排序预设，
+        互不影响；模型文件是全部库共享的一份，不会每个库拷贝一份。
+        新建库默认不会自动切换过去，确认要用了再手动切。
+      </p>
+
+      <ul className="pathlist libpanel__list">
+        {libraries.map((lib) => {
+          const active = lib.id === settings.activeLibraryId;
+          const busy = busyId === lib.id;
+          return (
+            <li key={lib.id} className="pathlist__item libpanel__item">
+              <div className="libpanel__main">
+                {renamingId === lib.id ? (
+                  <div className="libpanel__renamerow">
+                    <input
+                      className="textinput libpanel__nameinput"
+                      value={renameDraft}
+                      autoFocus
+                      onChange={(e) => setRenameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void commitRename(lib.id);
+                        if (e.key === 'Escape') setRenamingId(null);
+                      }}
+                    />
+                    <button className="btn btn--sm" disabled={busy} onClick={() => void commitRename(lib.id)}>
+                      确定
+                    </button>
+                    <button className="btn btn--sm" onClick={() => setRenamingId(null)}>
+                      取消
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <span className="libpanel__name">{lib.name}</span>
+                    {active && <span className="badge badge--time">当前使用</span>}
+                  </>
+                )}
+              </div>
+              <span className="pathlist__path">{lib.dataDir}</span>
+              {renamingId !== lib.id && (
+                <div className="libpanel__actions">
+                  {!active && (
+                    <button className="btn btn--sm" disabled={busy} onClick={() => void switchTo(lib)}>
+                      {busy ? <Loader2 size={13} className="spin" strokeWidth={2} /> : '切换'}
+                    </button>
+                  )}
+                  <button className="btn btn--sm" disabled={busy} onClick={() => startRename(lib)}>
+                    重命名
+                  </button>
+                  <button
+                    className="btn btn--sm"
+                    disabled={busy || active}
+                    title={active ? '不能移除当前激活的库，先切到别的库再移除' : '只从列表移除，不删硬盘上的数据'}
+                    onClick={() => void remove(lib)}
+                  >
+                    移除
+                  </button>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      {error && <p className="libpanel__error">{error}</p>}
+
+      {creating ? (
+        <div className="libpanel__create">
+          <input
+            className="textinput"
+            placeholder="库名，比如「工作」"
+            value={nameDraft}
+            autoFocus
+            onChange={(e) => setNameDraft(e.target.value)}
+          />
+          <div className="panel__row">
+            <button className="btn btn--sm" disabled={busyId === '__create__'} onClick={() => void createWithFolder()}>
+              选择目录并新建
+            </button>
+            <button className="btn btn--sm" disabled={busyId === '__create__'} onClick={() => void createAuto()}>
+              自动生成目录并新建
+            </button>
+            <button
+              className="btn btn--sm"
+              onClick={() => {
+                setCreating(false);
+                setError('');
+              }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button className="btn" onClick={() => setCreating(true)}>
+          <FolderPlus size={15} strokeWidth={1.7} /> 新建库
+        </button>
+      )}
+    </>
   );
 }
 
