@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -596,6 +597,19 @@ async def ingest_job_control(job_id: str, action: str, request: Request) -> dict
 #: 能一直写到把磁盘塞满
 _MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
+#: inbox 里"已落盘但还没被 /ingest 消费掉"的文件总量上限——只有单文件上限时，
+#: 攻击者/失控客户端换成"传很多个刚好 512MB 以内的文件"一样能把磁盘写满，
+#: 而且没人 /ingest 就一直在那堆着（安卓端断线、或者干脆没打算 ingest）。
+_MAX_INBOX_BYTES = 10 * 1024 * 1024 * 1024
+
+#: 磁盘剩余空间低于这个数就直接拒绝新上传——留够操作系统和其它程序的余量，
+#: 不能真等到写满了才发现。
+_MIN_FREE_DISK_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def _inbox_usage_bytes(inbox: Path) -> int:
+    return sum(f.stat().st_size for f in inbox.glob("*") if f.is_file())
+
 
 @router.post("/upload")
 async def upload_file(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
@@ -611,6 +625,18 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict[st
     inbox = rt.config.data_dir / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
 
+    free = shutil.disk_usage(inbox).free
+    if free < _MIN_FREE_DISK_BYTES:
+        raise HTTPException(507, f"磁盘剩余空间不够了（{free / 1024 / 1024:.0f}MB），先清一清再传")
+
+    inbox_used = _inbox_usage_bytes(inbox)
+    if inbox_used > _MAX_INBOX_BYTES:
+        raise HTTPException(
+            507,
+            f"待处理文件已经堆了 {inbox_used / 1024 / 1024 / 1024:.1f}GB——"
+            "先把它们 /ingest 掉或清理，暂时不接受新上传",
+        )
+
     suffix = Path(file.filename or "upload").suffix
     dest = inbox / f"{uuid.uuid4().hex}{suffix}"
 
@@ -621,6 +647,10 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict[st
                 size += len(chunk)
                 if size > _MAX_UPLOAD_BYTES:
                     raise HTTPException(413, "文件太大（上限 512MB）")
+                # 大文件流式写入期间，磁盘也可能被别的进程写满——
+                # 只在开头查一次不够，每 8MB 复查一次剩余空间。
+                if size % (8 * 1024 * 1024) < len(chunk) and shutil.disk_usage(inbox).free < _MIN_FREE_DISK_BYTES:
+                    raise HTTPException(507, "磁盘剩余空间在上传过程中跌破安全线，已中止")
                 f.write(chunk)
     except HTTPException:
         dest.unlink(missing_ok=True)
