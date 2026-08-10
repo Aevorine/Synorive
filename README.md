@@ -13,7 +13,7 @@ Ships **24 MCP tools** for Claude Code.
 
 **English** · [简体中文](docs/i18n/README.zh-CN.md) · [Français](docs/i18n/README.fr.md) · [Español](docs/i18n/README.es.md) · [Русский](docs/i18n/README.ru.md) · [العربية](docs/i18n/README.ar.md)
 
-[![Download](https://img.shields.io/badge/download-v0.1.4-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![Download](https://img.shields.io/badge/download-v0.1.5-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![Engine](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](engine)
@@ -25,8 +25,8 @@ Ships **24 MCP tools** for Claude Code.
 
 | | |
 |---|---|
-| **Windows installer** | [`Synorive-Setup-0.1.4.exe`](https://github.com/Aevorine/Synorive/releases/latest) — Python runtime bundled, **in-app auto-update** |
-| **Windows portable** | [`Synorive-0.1.4-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — no install; auto-update not available for this form |
+| **Windows installer** | [`Synorive-Setup-0.1.5.exe`](https://github.com/Aevorine/Synorive/releases/latest) — Python runtime bundled, **in-app auto-update** |
+| **Windows portable** | [`Synorive-0.1.5-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — no install; auto-update not available for this form |
 | **Android** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) — thin client, talks to the engine on your PC over LAN |
 
 **No Python installation required.** The interpreter and every engine dependency ship inside the
@@ -52,7 +52,7 @@ Dark theme: [screenshot](docs/screenshots/research-dark.png)
 |---|---|
 | 🔍 | **Semantic search over your own files** — documents, source code, PDFs (indexed section by section), images (OCR), video (down to the second), saved web pages |
 | 🖼 | **Cross-modal search** — find an image by describing it, or find *which video a frame came from and at what second* |
-| 🌐 | **Multi-engine web search** — Bing / Baidu / 360 / Mojeek / Wikipedia, plus Google and DuckDuckGo through a self-hosted SearXNG |
+| 🌐 | **Multi-engine web search** — Bing / Baidu / 360 / Mojeek / Wikipedia / Reddit, plus Google and DuckDuckGo through a self-hosted SearXNG |
 | 🛡 | **Actively hunts for counter-evidence** — searches for debunkings, traces a claim back to its earliest source, flags retracted papers |
 | 📋 | **Extract-only briefings** — every line is a verbatim quote with its source. Conflicting claims are shown **side by side, undecided** |
 | 🔌 | **24 MCP tools for Claude Code** — let your agent search your own library and verify claims for you |
@@ -204,7 +204,7 @@ Desktop and Android both check for updates against this repository's **GitHub Re
 
 ```bash
 npm run version:check      # are all four version numbers in sync?
-npm run version:set 0.1.4  # change all four at once — never edit them by hand
+npm run version:set 0.1.5  # change all four at once — never edit them by hand
 npm run android:keystore   # first time only: generate the Android release keystore (kept outside the repo)
 npm run release            # build both artifacts, do NOT upload
 npm run release:publish    # build and create a GitHub Release (requires gh to be logged in)

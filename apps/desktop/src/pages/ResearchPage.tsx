@@ -785,7 +785,11 @@ function QuickResults({ data }: { data: WebSearchResponse }) {
       {data.results.map((r) => (
         <WebResultCard key={r.url} item={r} />
       ))}
-      {data.excluded.length > 0 && (
+      {/* 🔴 这里必须用可选链：流式（快搜关掉"跨语言"时走这条）的 final 事件
+          以前不带 excluded 字段，`.length` 直接读 undefined 会让整个
+          研究工作台白屏（没有 ErrorBoundary 兜底）。后端已经补上这个字段
+          （见 routes.py web_search_stream），这里的 ?? 只是双保险 */}
+      {(data.excluded?.length ?? 0) > 0 && (
         <div className="excludedbox">
           <button className="btn btn--sm" onClick={() => setShowExcluded((v) => !v)}>
             {showExcluded ? '收起' : `查看已排除的 ${data.excluded.length} 条`}

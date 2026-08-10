@@ -2350,6 +2350,7 @@ async def web_search_stream(req: WebSearchRequest, request: Request) -> Any:
 
     from ..websearch.presets import apply_preset
 
+    rt = _rt(request)
     web = _web(request)
     q, preset = apply_preset(req.query, req.preset)
 
@@ -2363,6 +2364,27 @@ async def web_search_stream(req: WebSearchRequest, request: Request) -> Any:
                 if preset and ev.get("kind") == "engines":
                     ev["appliedPreset"] = preset.to_dict()
                     ev["effectiveQuery"] = q
+                if ev.get("kind") == "final" and req.trust:
+                    # 🔴 这条流式路径原来完全没做可信度标注：`web.search_stream()`
+                    # 内部不认 `req.trust` 这个字段（那是路由层的事，`MetaSearch`
+                    # 拿不到 `rt.config` 里的信任档案），于是 `final` 事件里的
+                    # `result` 缺了 `excluded`/`trustSummary` 这两个非流式路径
+                    # 一直都有的字段。前端把它当完整的 `WebSearchResponse` 用，
+                    # 一读 `data.excluded.length` 就是在 undefined 上取 length，
+                    # React 没有 ErrorBoundary，直接崩掉整棵渲染树 ——
+                    # 症状是结果流着流着突然整页变空白。这里补齐成
+                    # 和非流式路径完全一样的处理（见 `web_search`），
+                    # 两条路径返回的形状才不会岔开
+                    from ..websearch.trust import TrustProfile, rank_with_trust, summarize_trust
+
+                    result = ev["result"]
+                    shown, dropped = rank_with_trust(
+                        result.get("results") or [],
+                        profile=TrustProfile.from_dict(getattr(rt.config, "trust_profile", None)),
+                    )
+                    result["results"] = shown
+                    result["excluded"] = dropped
+                    result["trustSummary"] = summarize_trust(shown, dropped)
                 yield f"data: {_json.dumps(ev, ensure_ascii=False)}\n\n"
         except Exception as exc:  # noqa: BLE001
             # 流里出错必须**发一个事件出去**再结束。直接断流的话前端只会看到

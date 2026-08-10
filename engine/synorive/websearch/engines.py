@@ -1443,12 +1443,105 @@ def _accept_lang(lang: str) -> str:
 
 
 # ────────────────────────────────────────────────────────────────
+# Reddit（API 类，免 Key）—— 社交媒体，你点名要的那一类
+#
+# 🔴 **不是 X/推特**：调研过（2026-08-10）——X 的搜索 2023 年起收紧成
+# 只对官方付费 API 开放（最低约 200 美元/月才有搜索权限），免费的第三方
+# 中转站（Nitter 系）这半年基本挂光，剩下的实例说没就没，装完可能没几天
+# 就 404。这条路是真的走不通，不是懒得接。
+# Reddit 的公开搜索 JSON 端点不用登录、不用 Key，多年来一直是各类工具
+# 抓取的常用免费路子，能搜到普通用户的真实讨论、评价、踩坑贴——这正是
+# "社交媒体"这个诉求里，主流搜索引擎覆盖最差的一类内容。
+# ⚠️ 这台机器上没有实测连通性（跑测试是用户自己的事，见项目台账），
+# 所以默认关：先让它出现在引擎清单里，你自己点开试一次，
+# 上面的"健康"仪表盘会如实告诉你它今天通不通。
+# ────────────────────────────────────────────────────────────────
+class Reddit(BaseEngine):
+    id = "reddit"
+    label = "Reddit"
+    kind = "api"
+    default_on = False
+    note = (
+        "社交媒体类，不是 X/推特——X 的搜索 2023 年起收紧成只对约 200 美元/月起的付费 API 开放，"
+        "免费的中转站（Nitter）这半年基本挂光，没有能长期稳定用的免费路子。"
+        "Reddit 的公开搜索接口免 Key，能搜到真实的用户讨论和评价。默认关：还没在这台机器上实测过，"
+        "自己点开试一次，「健康」面板会告诉你通不通"
+    )
+
+    _TIME = {"day": "day", "week": "week", "month": "month", "year": "year"}
+
+    def build(self, query, *, limit, lang, region, time_range, key):
+        url = (
+            f"https://www.reddit.com/search.json?q={quote_plus(query)}"
+            f"&limit={min(50, max(10, limit))}&sort=relevance&raw_json=1"
+        )
+        if time_range in self._TIME:
+            url += f"&t={self._TIME[time_range]}"
+        return httpx.Request(
+            "GET", url,
+            headers={
+                # 同 Wikipedia 那一条教训：没有可识别 UA 的请求更容易被当成
+                # 爬虫挡下，伪装成浏览器反而不如老实报自己是谁稳
+                "User-Agent": "Synorive/1.0 (local research tool; https://github.com/Aevorine/Synorive)",
+                "Accept": "application/json",
+            },
+        )
+
+    def parse(self, resp):
+        try:
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            return ParseOutcome.BROKEN, [], f"返回的不是 JSON（HTTP {resp.status_code}）（{_page_hint(resp)}）"
+        children = ((data.get("data") or {}).get("children")) or []
+        if not children:
+            return ParseOutcome.EMPTY, []
+
+        out: list[WebResult] = []
+        for i, c in enumerate(children, 1):
+            p = c.get("data") or {}
+            title = p.get("title", "")
+            permalink = p.get("permalink", "")
+            # 链接帖（转发外部网址）用外部地址；纯文字讨论帖没有外部地址，
+            # 用 Reddit 自己的帖子页——这两种帖子在 Reddit 上一样常见
+            is_self = bool(p.get("is_self"))
+            url = (
+                f"https://www.reddit.com{permalink}" if is_self or not p.get("url") else p["url"]
+            )
+            sub = p.get("subreddit_name_prefixed") or (
+                f"r/{p['subreddit']}" if p.get("subreddit") else ""
+            )
+            score = p.get("score")
+            comments = p.get("num_comments")
+            bits = [b for b in (
+                sub,
+                f"{score} 赞" if score is not None else "",
+                f"{comments} 评论" if comments is not None else "",
+            ) if b]
+            snippet = "　".join(bits)
+            body = (p.get("selftext") or "").strip()
+            if body:
+                snippet = f"{snippet}　{body[:120]}" if snippet else body[:120]
+
+            r = self._mk(title, url, snippet, i)
+            if r:
+                created = p.get("created_utc")
+                if created:
+                    from datetime import UTC, datetime
+
+                    r.published = datetime.fromtimestamp(float(created), tz=UTC).isoformat()
+                out.append(r)
+        if not out:
+            return ParseOutcome.BROKEN, [], f"找到 {len(children)} 条结果，但一条都没能构造出有效链接"
+        return ParseOutcome.OK, out
+
+
+# ────────────────────────────────────────────────────────────────
 # 注册表
 # ────────────────────────────────────────────────────────────────
 _REGISTRY: dict[str, BaseEngine] = {
     e.id: e
     for e in (
-        Bing(), Baidu(), So360(), Mojeek(), SearXNG(), Wikipedia(),
+        Bing(), Baidu(), So360(), Mojeek(), SearXNG(), Wikipedia(), Reddit(),
         Google(), Yandex(), DuckDuckGo(),
         BraveAPI(), SerperAPI(), TavilyAPI(), ExaAPI(),
     )

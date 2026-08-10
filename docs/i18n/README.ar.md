@@ -13,7 +13,7 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [Français](README.fr.md) · [Español](README.es.md) · [Русский](README.ru.md) · **العربية**
 
-[![تنزيل](https://img.shields.io/badge/download-v0.1.4-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![تنزيل](https://img.shields.io/badge/download-v0.1.5-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![الرخصة](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](../../LICENSE)
 [![المنصة](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![المحرك](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](../../engine)
@@ -29,8 +29,8 @@
 
 | | |
 |---|---|
-| **مثبِّت Windows** | [`Synorive-Setup-0.1.4.exe`](https://github.com/Aevorine/Synorive/releases/latest) — بيئة تشغيل Python مضمَّنة، **تحديث تلقائي داخل التطبيق** |
-| **Windows محمول** | [`Synorive-0.1.4-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — بلا تثبيت؛ التحديث التلقائي غير متاح في هذه الصيغة |
+| **مثبِّت Windows** | [`Synorive-Setup-0.1.5.exe`](https://github.com/Aevorine/Synorive/releases/latest) — بيئة تشغيل Python مضمَّنة، **تحديث تلقائي داخل التطبيق** |
+| **Windows محمول** | [`Synorive-0.1.5-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — بلا تثبيت؛ التحديث التلقائي غير متاح في هذه الصيغة |
 | **أندرويد** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) — عميل خفيف، يتصل بالمحرك على حاسوبك عبر الشبكة المحلية |
 
 **لا حاجة إلى تثبيت Python.** المفسِّر وكل اعتماديات المحرك مشحونة داخل المثبِّت، لذا يعمل التطبيق
@@ -216,7 +216,7 @@ npm run pack:win         # مثبِّت Windows + النسخة المحمولة
 
 ```bash
 npm run version:check      # هل أرقام الإصدار الأربعة متطابقة؟
-npm run version:set 0.1.4  # يغيّر الأربعة دفعة واحدة — لا تعدّلها يدويًا أبدًا
+npm run version:set 0.1.5  # يغيّر الأربعة دفعة واحدة — لا تعدّلها يدويًا أبدًا
 npm run android:keystore   # أول مرة فقط: توليد مخزن مفاتيح إصدار أندرويد (يُحفظ خارج المستودع)
 npm run release            # بناء المنتجَين دون رفع
 npm run release:publish    # البناء وإنشاء GitHub Release (يتطلب تسجيل دخول gh)

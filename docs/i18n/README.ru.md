@@ -13,7 +13,7 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [Français](README.fr.md) · [Español](README.es.md) · **Русский** · [العربية](README.ar.md)
 
-[![Скачать](https://img.shields.io/badge/download-v0.1.4-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![Скачать](https://img.shields.io/badge/download-v0.1.5-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![Лицензия](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](../../LICENSE)
 [![Платформа](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![Движок](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](../../engine)
@@ -25,8 +25,8 @@
 
 | | |
 |---|---|
-| **Установщик Windows** | [`Synorive-Setup-0.1.4.exe`](https://github.com/Aevorine/Synorive/releases/latest) — среда Python в комплекте, **автообновление внутри приложения** |
-| **Windows portable** | [`Synorive-0.1.4-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — без установки; автообновление в этой форме недоступно |
+| **Установщик Windows** | [`Synorive-Setup-0.1.5.exe`](https://github.com/Aevorine/Synorive/releases/latest) — среда Python в комплекте, **автообновление внутри приложения** |
+| **Windows portable** | [`Synorive-0.1.5-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — без установки; автообновление в этой форме недоступно |
 | **Android** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) — тонкий клиент, связывается с движком на вашем ПК по локальной сети |
 
 **Устанавливать Python не нужно.** Интерпретатор и все зависимости движка входят в установщик,
@@ -208,7 +208,7 @@ npm run pack:win         # установщик Windows + portable
 
 ```bash
 npm run version:check      # согласованы ли все четыре номера версии?
-npm run version:set 0.1.4  # меняет все четыре разом — руками их править нельзя
+npm run version:set 0.1.5  # меняет все четыре разом — руками их править нельзя
 npm run android:keystore   # первый раз: создать релизное хранилище ключей Android (вне репозитория)
 npm run release            # собрать оба артефакта, БЕЗ загрузки
 npm run release:publish    # собрать и создать GitHub Release (требуется вход в gh)

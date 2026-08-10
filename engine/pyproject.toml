@@ -1,6 +1,6 @@
 [project]
 name = "synorive-engine"
-version = "0.1.4"
+version = "0.1.5"
 description = "Synorive 引擎 —— 多模态并发分析与极速内容检索"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }

@@ -12,7 +12,7 @@
 
 [English](../../README.md) · **简体中文** · [Français](README.fr.md) · [Español](README.es.md) · [Русский](README.ru.md) · [العربية](README.ar.md)
 
-[![下载](https://img.shields.io/badge/download-v0.1.4-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![下载](https://img.shields.io/badge/download-v0.1.5-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![许可证](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](../../LICENSE)
 [![平台](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![引擎](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](../../engine)
@@ -24,8 +24,8 @@
 
 | | |
 |---|---|
-| **Windows 安装包** | [`Synorive-Setup-0.1.4.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 自带 Python 运行时，**应用内自动更新** |
-| **Windows 便携版** | [`Synorive-0.1.4-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 免安装；这种形式不支持自动更新 |
+| **Windows 安装包** | [`Synorive-Setup-0.1.5.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 自带 Python 运行时，**应用内自动更新** |
+| **Windows 便携版** | [`Synorive-0.1.5-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 免安装；这种形式不支持自动更新 |
 | **安卓** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) —— 瘦客户端，通过局域网连你电脑上的引擎 |
 
 **不需要你装 Python。** 解释器和引擎的全部依赖都在安装包里，
@@ -50,7 +50,7 @@
 |---|---|
 | 🔍 | **搜自己的东西** —— 文档、源代码、PDF（按章节索引）、图片（OCR）、视频（定位到秒）、网页存档 |
 | 🖼 | **跨模态互搜** —— 描述一张图就能找到它，或者**找出某一帧出自哪个视频的第几秒** |
-| 🌐 | **多引擎联网搜索** —— cn.bing / 百度 / 360 / Mojeek / 维基百科；自建 SearXNG 后 Google 与 DuckDuckGo 也能用 |
+| 🌐 | **多引擎联网搜索** —— cn.bing / 百度 / 360 / Mojeek / 维基百科 / Reddit；自建 SearXNG 后 Google 与 DuckDuckGo 也能用 |
 | 🛡 | **主动找打脸证据** —— 反向搜辟谣材料、把一条说法溯源到最早出处、标出已撤稿的论文 |
 | 📋 | **只摘录不改写的简报** —— 每一行都是逐字原文并挂着出处。有分歧的说法**并排放着，不替你选** |
 | 🔌 | **24 个 MCP 工具给 Claude Code** —— 让你的 agent 直接检索你的库、替你核查一个说法 |
@@ -188,7 +188,7 @@ npm run pack:win         # 打 Windows 安装包 + 便携版
 
 ```bash
 npm run version:check      # 四处版本号是不是一致
-npm run version:set 0.1.4  # 一条命令改完四处，别手动改
+npm run version:set 0.1.5  # 一条命令改完四处，别手动改
 npm run android:keystore   # 首次：生成安卓 release 签名密钥库（放仓库外）
 npm run release            # 出两端产物，**不上传**
 npm run release:publish    # 出产物并创建 GitHub Release（要 gh 已登录）

@@ -90,11 +90,14 @@ apps/desktop/src/styles/fonts.css
 .claude/.pv-*.json
 .claude/settings.local.json
 
-# 🔴 我和你之间的工作记录，不是产品文档 —— 仓库是公开的，这两份里
+# 🔴 我和你之间的工作记录，不是产品文档 —— 仓库是公开的，这几份里
 #    有你的需求原话、口令习惯、以及"哪些地方我做错过"。对外人零价值，
 #    对你是隐私。**本地保留、继续用，只是不跟着仓库走。**
+#    PROJECT-AI-STATE.md 是同一类东西，只是当初漏收了——2026-08-10
+#    发版前扫描时发现它一直没被忽略，补上
 /task-progress.md
 .claude/PROJECT-BRIEF.md
+.claude/PROJECT-AI-STATE.md
 
 # 随包分发的 Python 运行时（scripts/bundle-python.mjs 生成，几百 MB，构建时重建）
 apps/desktop/resources/pyruntime/
