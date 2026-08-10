@@ -21,6 +21,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -46,6 +47,12 @@ const ENGINE_INIT = join(ROOT, 'engine', 'synorive', '__init__.py');
 // 「版本号散在几处就一定会漏」这条判据，当初只查了会被打进产物的地方，
 // 漏掉了会被 CI 拿去用的地方。
 const MCP_PKG = join(ROOT, 'mcp', 'package.json');
+// 🔴 **CLI 包一直没在这份名单里** —— 之前一直卡在 0.1.0，
+// 跟其它四处（那时候是 0.1.2/0.1.3）脱节。判据同上：
+// 全仓 grep 到的每一处版本号都必须在这个脚本的名单里，
+// 少一个就一定会漂移，只是快慢的问题。
+const CLI_PKG = join(ROOT, 'cli', 'package.json');
+const PACKAGE_LOCK = join(ROOT, 'package-lock.json');
 
 /**
  * versionName → versionCode。
@@ -68,6 +75,8 @@ function currentVersions() {
     root: readJson(ROOT_PKG).version,
     desktop: readJson(DESKTOP_PKG).version,
     mcp: readJson(MCP_PKG).version,
+    cli: readJson(CLI_PKG).version,
+    lockfile: readJson(PACKAGE_LOCK).version,
     androidName: gradle.match(/versionName\s*=\s*"([^"]+)"/)?.[1] ?? '(没找到)',
     androidCode: gradle.match(/versionCode\s*=\s*(\d+)/)?.[1] ?? '(没找到)',
     enginePyproject:
@@ -87,6 +96,11 @@ function check() {
     problems.push(`mcp/package.json = ${v.mcp}，应为 ${want}`
       + '（打 v* 标签会自动 npm publish，版本重复会被 registry 拒绝，Actions 直接红）');
   }
+  if (v.cli !== want) problems.push(`cli/package.json = ${v.cli}，应为 ${want}`);
+  if (v.lockfile !== want) {
+    problems.push(`package-lock.json = ${v.lockfile}，应为 ${want}`
+      + '（跑 npm install --package-lock-only 或直接用 set-version.mjs 改）');
+  }
   if (v.androidName !== want) problems.push(`安卓 versionName = ${v.androidName}，应为 ${want}`);
   if (v.androidCode !== wantCode) {
     problems.push(`安卓 versionCode = ${v.androidCode}，应为 ${wantCode}`);
@@ -103,6 +117,8 @@ function check() {
   console.log(`  根 package.json      ${v.root}`);
   console.log(`  桌面 package.json    ${v.desktop}`);
   console.log(`  MCP package.json     ${v.mcp}  ← 打标签时 Actions 拿它去 npm publish`);
+  console.log(`  CLI package.json     ${v.cli}`);
+  console.log(`  package-lock.json    ${v.lockfile}`);
   console.log(`  安卓 versionName     ${v.androidName}`);
   console.log(`  安卓 versionCode     ${v.androidCode}（由 versionName 推导，应为 ${wantCode}）`);
   console.log(`  引擎 pyproject       ${v.enginePyproject}`);
@@ -124,7 +140,7 @@ function setVersion(next) {
   }
   const code = versionCode(next);
 
-  for (const p of [ROOT_PKG, DESKTOP_PKG, MCP_PKG]) {
+  for (const p of [ROOT_PKG, DESKTOP_PKG, MCP_PKG, CLI_PKG]) {
     const pkg = readJson(p);
     pkg.version = next;
     // 保留结尾换行，避免每次改版本都在 diff 里多出一行噪声
@@ -165,8 +181,27 @@ function setVersion(next) {
     writeFileSync(path, before.replace(re, make()), 'utf8');
   }
 
+  // package-lock.json 里三个 workspace 包的 version 字段混在几百个第三方依赖
+  // 的 version 字段里，正则替换风险太大（容易改错行）。交给 npm 自己按刚写好
+  // 的 package.json 重新算 lockfile——不装东西，只是 --package-lock-only。
+  try {
+    // Windows 上直接 execFileSync('npm.cmd', ...) 会报 EINVAL（Node 在 Windows 下
+    // spawn .cmd 文件的已知坑），只有 shell:true 能稳定跑通。这里的参数是写死的
+    // 常量（不是拼接用户输入），shell:true 常见的注入风险在这里不成立。
+    execFileSync('npm', ['install', '--package-lock-only'], {
+      cwd: ROOT,
+      stdio: 'inherit',
+      shell: true,
+    });
+  } catch (err) {
+    console.error('✗ package-lock.json 同步失败，手动补跑：npm install --package-lock-only');
+    console.error(String(err?.message ?? err));
+    process.exit(1);
+  }
+
   console.log(`✓ 版本号已同步为 ${next}（安卓 versionCode = ${code}）`);
   console.log('  改到了：package.json / apps/desktop/package.json / mcp/package.json /');
+  console.log('          cli/package.json / package-lock.json /');
   console.log('          apps/mobile/app/build.gradle.kts /');
   console.log('          engine/pyproject.toml / engine/synorive/__init__.py');
   console.log(`\n下一步：git commit 后打 tag —— git tag v${next}`);
