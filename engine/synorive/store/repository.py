@@ -15,7 +15,7 @@ import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -1013,8 +1013,25 @@ class Repository:
         )
 
     def delete_item(self, item_id: str) -> None:
-        """删一条内容，连带清掉它的全部索引 —— 少清一处就会留下幽灵结果。"""
+        """
+        删一条内容，连带清掉它的全部索引 —— 少清一处就会留下幽灵结果。
+
+        🔴 **这里发现并修了一个真实存在的 bug**：`vec_chunks`/`vec_items`
+        是延迟建表（见 db.py 的 `ensure_vector_table`/`ensure_image_vector_table`）
+        —— `vec_items` 专管图像向量，一个从没索引过图片的库压根不会建这张表。
+        之前这里无条件 `DELETE FROM vec_items`，任何这样的库只要删一条内容
+        就会 `sqlite3.OperationalError: no such table: vec_items`，整个请求
+        500——不是"删除功能有点小问题"，是"删除功能在很常见的一类库里
+        直接不能用"。现在删之前先确认表存在。
+        """
         conn = self.db.connect()
+        existing_tables = {
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') "
+                "AND name IN ('vec_chunks', 'vec_items')"
+            ).fetchall()
+        }
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute("SELECT rowid FROM items WHERE id = ?", (item_id,)).fetchone()
@@ -1025,16 +1042,82 @@ class Repository:
                 "SELECT rowid FROM chunks WHERE item_id = ?", (item_id,)
             ).fetchall():
                 conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (r["rowid"],))
-                conn.execute("DELETE FROM vec_chunks WHERE chunk_rowid = ?", (r["rowid"],))
+                if "vec_chunks" in existing_tables:
+                    conn.execute("DELETE FROM vec_chunks WHERE chunk_rowid = ?", (r["rowid"],))
             conn.execute("DELETE FROM items_fts WHERE rowid = ?", (row["rowid"],))
             conn.execute("DELETE FROM items_tri WHERE rowid = ?", (row["rowid"],))
-            conn.execute("DELETE FROM vec_items WHERE item_rowid = ?", (row["rowid"],))
+            if "vec_items" in existing_tables:
+                conn.execute("DELETE FROM vec_items WHERE item_rowid = ?", (row["rowid"],))
             # items 上有外键级联，chunks / item_tags / stages 会自动清
             conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
             raise
+
+    #: 回收站保留期。到期前用户随时能按 locator 重新投喂一次找回来
+    TRASH_RETENTION_DAYS = 30
+
+    def soft_delete_item(self, item_id: str) -> str | None:
+        """
+        先把这条内容的关键信息记进回收站，再照常执行 `delete_item()`
+        （索引照常立刻清干净，搜不到、不留幽灵结果）。
+
+        🔴 **不保留 chunks/向量**——恢复不是"瞬间撤销"，是"把这个 locator
+        重新投喂一次"（re-ingest）。权衡过的取舍：保留向量能让恢复更快，
+        但代价是要么让已删除内容继续占着索引表、要么给全库每一条搜索
+        查询都加一层"跳过回收站里的"过滤——后者几处查询路径漏掉一处
+        就会让"删了"的内容又搜得到，风险比"恢复慢一点"大得多。
+
+        返回新建的回收站条目 id；item 本来就不存在则返回 None，不记录。
+        """
+        conn = self.db.connect()
+        row = conn.execute(
+            "SELECT title, locator, modality, source, size_bytes FROM items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        trash_id = uuid.uuid4().hex
+        now = datetime.now(UTC)
+        deleted_at = now.isoformat()
+        purge_at = (now + timedelta(days=self.TRASH_RETENTION_DAYS)).isoformat()
+
+        conn.execute(
+            """
+            INSERT INTO trash (id, item_id, title, locator, modality, source,
+                                size_bytes, deleted_at, purge_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trash_id, item_id, row["title"] or "", row["locator"],
+                row["modality"], row["source"], row["size_bytes"],
+                deleted_at, purge_at,
+            ),
+        )
+        self.delete_item(item_id)
+        return trash_id
+
+    def list_trash(self) -> list[sqlite3.Row]:
+        conn = self.db.connect()
+        return conn.execute("SELECT * FROM trash ORDER BY deleted_at DESC").fetchall()
+
+    def get_trash_entry(self, trash_id: str) -> sqlite3.Row | None:
+        conn = self.db.connect()
+        return conn.execute("SELECT * FROM trash WHERE id = ?", (trash_id,)).fetchone()
+
+    def remove_trash_entry(self, trash_id: str) -> None:
+        """从回收站表里拿掉一条——不管是恢复完了还是用户手动"彻底删除"。"""
+        conn = self.db.connect()
+        conn.execute("DELETE FROM trash WHERE id = ?", (trash_id,))
+
+    def purge_expired_trash(self) -> int:
+        """清掉过期的回收站记录（不碰硬盘原文件——那从来不是这个功能的范围）。"""
+        conn = self.db.connect()
+        now_iso = datetime.now(UTC).isoformat()
+        cur = conn.execute("DELETE FROM trash WHERE purge_at <= ?", (now_iso,))
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
     # ── 读取 ────────────────────────────────────────────────
 

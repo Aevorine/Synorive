@@ -6,6 +6,7 @@ import { QuestionsPanel } from '../components/QuestionsPanel';
 import { SceneStrip } from '../components/SceneStrip';
 import { ChapterList } from '../components/ChapterList';
 import { DupCleanup } from '../components/DupCleanup';
+import { TrashPanel } from '../components/TrashPanel';
 import { SearchResults } from '../components/SearchResults';
 import { api } from '../lib/api';
 import { useEngineData } from '../lib/useEngineData';
@@ -181,6 +182,12 @@ export function LibraryPage() {
         <section className="panel">
           <h2 className="panel__title">清理重复图</h2>
           <DupCleanup />
+        </section>
+
+        {/* 回收站跟清理重复图放一块——都是"整理这个库"的动作 */}
+        <section className="panel">
+          <h2 className="panel__title">回收站</h2>
+          <TrashPanel />
         </section>
       </div>
 

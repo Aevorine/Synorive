@@ -1893,3 +1893,51 @@
   color: var(--syn-color-danger);
   font-size: var(--syn-fs-caption);
 }
+
+/* ── 回收站 ─────────────────────────────────────────────── */
+.trash {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+}
+.trash__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--syn-space-md);
+  padding: var(--syn-space-sm);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-bg-sunken);
+}
+.trash__info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+  min-width: 0;
+}
+.trash__title {
+  font-size: var(--syn-fs-caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trash__meta {
+  color: var(--syn-color-text-muted);
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-micro);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trash__error {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-micro);
+}
+.trash__actions {
+  display: flex;
+  flex: none;
+  gap: var(--syn-space-xs);
+}

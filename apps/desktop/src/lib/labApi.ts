@@ -123,6 +123,25 @@ export interface DeleteResult {
 }
 
 /**
+ * 回收站条目。
+ *
+ * 🔴 恢复不是瞬间撤销——删除时向量/关键词索引就已经清干净了，恢复是
+ * "把 locator 重新投喂一次"，跟第一次投喂这个文件耗时差不多。界面上
+ * 点"恢复"之后应该给一个进行中的反馈，不能假装是个瞬时操作。
+ */
+export interface TrashEntry {
+  id: string;
+  itemId: string;
+  title: string;
+  locator: string;
+  modality: string;
+  source: string;
+  sizeBytes: number | null;
+  deletedAt: string;
+  purgeAt: string;
+}
+
+/**
  * B2 —— 三家反查并发的结果。
  *
  * 🔴 **每家的 `error` 必须原样显示。** 里面区分了「解析不出条目」
@@ -683,6 +702,16 @@ export const labApi = {
   dupSweep: (limit = 200) => call<DupSweep>(`/api/duplicates/sweep?limit=${limit}`),
   deleteItems: (ids: string[], confirm: boolean) =>
     post<DeleteResult>('/api/items/delete', { ids, confirm }),
+
+  // 回收站：30 天内可按原路径恢复
+  trashList: () => call<{ entries: TrashEntry[] }>('/api/trash'),
+  trashRestore: (trashId: string) =>
+    post<{ ok: boolean; locator: string; result: string }>(
+      `/api/trash/${encodeURIComponent(trashId)}/restore`,
+      {},
+    ),
+  trashPurge: (trashId: string) =>
+    call<{ ok: boolean }>(`/api/trash/${encodeURIComponent(trashId)}`, { method: 'DELETE' }),
 
   // B2 三家反查并发
   reverseMulti: (path: string, providers: string[] = ['bing', 'yandex', 'lens'], limit = 20) =>

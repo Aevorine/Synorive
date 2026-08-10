@@ -10,9 +10,10 @@ import { labApi, type DupSweep } from '../lib/labApi';
  * **"我库里到底有多少重复，能不能一次清掉"**。
  * 要靠旧那条清库，得先知道该点开哪一张，而那正是他不知道的事。
  *
- * 🔴 **删除没有回收站。** 所以这里是两步：先干跑（`confirm:false`，
- * 一条都不动，只告诉你将要删什么），确认后才真删。
- * 一步到位的"清理"按钮在这种不可逆操作上是纯粹的危险。
+ * 🔴 **删除会进回收站，但不是瞬间撤销。** 索引照常立刻清干净（这里
+ * 是两步：先干跑 `confirm:false`，一条都不动，只告诉你将要删什么，
+ * 确认后才真删），恢复要重新投喂一次原路径，跟撤销键的感觉不一样。
+ * 一步到位的"清理"按钮在这种代价不对称的操作上依然是危险的。
  *
  * 🔴 **只删库里的记录，不碰硬盘上的原文件。** 界面上必须把这句
  * 明写出来 —— 用户点"删除"时脑子里想的很可能是"把照片删了"，
@@ -144,7 +145,8 @@ export function DupCleanup() {
             <div className="syn-dup-confirm">
               <p>
                 <AlertTriangle size={14} aria-hidden /> 将要从库里删掉 <b>{pending.count}</b> 条。
-                <b>硬盘上的原文件不动</b>，删的只是检索库里的记录 —— 但<b>删了撤不回来</b>。
+                <b>硬盘上的原文件不动</b>，删的只是检索库里的记录 ——
+                会进回收站，30 天内能恢复，但<b>恢复要重新投喂一次，不是瞬间撤销</b>。
               </p>
               <p className="syn-dup-titles">{pending.titles.join('、')}{pending.count > 20 && ' …'}</p>
               <button type="button" className="syn-dup-danger" onClick={() => void commit()} disabled={busy}>

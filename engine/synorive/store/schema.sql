@@ -330,6 +330,27 @@ CREATE TABLE IF NOT EXISTS meta_kv (
     value TEXT NOT NULL
 );
 
+-- ── 回收站 ──────────────────────────────────────────────────
+-- 删除时索引记录（items/chunks/FTS/向量）照常立刻清掉——不留半个
+-- "搜不到但还在库里"的幽灵状态。这张表存的只是"删过这么一条，
+-- 原来在哪、叫什么"，30 天内可以按 locator 重新投喂一次（= 恢复），
+-- 过期自动从这张表清掉（并不会去动硬盘上的原文件，那从来不是这个
+-- 软件删除操作的范围）。
+
+CREATE TABLE IF NOT EXISTS trash (
+    id          TEXT PRIMARY KEY,
+    item_id     TEXT NOT NULL,   -- 原 item 的 id，仅供追溯，item 本身已经被删了
+    title       TEXT NOT NULL DEFAULT '',
+    locator     TEXT NOT NULL,
+    modality    TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    size_bytes  INTEGER,
+    deleted_at  TEXT NOT NULL,
+    purge_at    TEXT NOT NULL     -- deleted_at + 30 天，后台到点自动清
+);
+
+CREATE INDEX IF NOT EXISTS idx_trash_purge_at ON trash (purge_at);
+
 -- ── P4 研究项目持久化 ───────────────────────────────────────
 -- 深挖一次要十几秒、要发几十个请求、抓十几篇正文。关掉窗口就全没了，
 -- 等于每次想接着挖都得从头付一遍这个成本。

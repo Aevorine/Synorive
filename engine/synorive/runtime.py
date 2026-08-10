@@ -225,6 +225,8 @@ class Runtime:
         self._reranker: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._jobs: dict[str, dict[str, Any]] = {}
+        #: 回收站过期清理上次跑的时间，见 deferred_jobs_loop() 里的节流判断
+        self._last_trash_purge = 0.0
         #: 后台补跑循环的轮询间隔。有活干就勤快（3s），没活干就歇着（15s）——
         #: 见 deferred_jobs_loop()
         self._deferred_interval = 3.0
@@ -248,6 +250,14 @@ class Runtime:
         from .store.repository import Repository
 
         self.repo = Repository(self.db)
+        # 引擎关着的这段时间里可能已经有回收站条目过期了，起来先清一次，
+        # 不用等到下一次 deferred_jobs_loop 的 6 小时节流窗口
+        try:
+            n = self.repo.purge_expired_trash()
+            if n:
+                log.info("回收站清掉了 %d 条过期记录", n)
+        except Exception as e:  # noqa: BLE001
+            log.debug("启动时清理回收站失败（不影响引擎启动）：%s", e)
         self.doctor = Doctor(
             self.config.model_dir,
             on_status=lambda ev: self.events.publish("dependency.status", ev),
@@ -691,6 +701,15 @@ class Runtime:
                 if self.config.enable_face_clustering:
                     n = await asyncio.to_thread(pipeline.run_deferred_faces, 20)
                     did_any = did_any or n > 0
+
+                # 回收站过期清理不需要跟着这条循环的 3~15 秒节奏跑——
+                # 30 天保留期，6 小时检查一次绰绰有余，没必要每次循环都查一遍表
+                now = time.time()
+                if now - self._last_trash_purge > 6 * 3600:
+                    self._last_trash_purge = now
+                    n = await asyncio.to_thread(self.repo.purge_expired_trash)
+                    if n:
+                        log.info("回收站清掉了 %d 条过期记录", n)
 
                 self._deferred_interval = 3.0 if did_any else 15.0
             except asyncio.CancelledError:

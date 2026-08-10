@@ -702,8 +702,9 @@ async def record_open(item_id: str, request: Request) -> dict[str, Any]:
 
 @router.delete("/items/{item_id}")
 async def delete_item(item_id: str, request: Request) -> dict[str, Any]:
-    _rt(request).repo.delete_item(item_id)
-    return {"ok": True}
+    """索引照常立刻清掉（搜不到）；原路径/标题记进回收站，30 天内能恢复。"""
+    trash_id = _rt(request).repo.soft_delete_item(item_id)
+    return {"ok": True, "trashId": trash_id}
 
 
 @router.get("/stats")
@@ -876,8 +877,10 @@ async def duplicates_sweep(request: Request, limit: int = 200) -> dict[str, Any]
     要靠它清库，得先知道该点开哪一张 —— 而那正是他不知道的事。
 
     🔴 **只扫、不删。** 删除是另一条显式接口，而且一次只删被点名的那几个 id。
-    "扫描顺便清理"是这类功能最容易出事的地方：判据错一点就静默删掉真东西，
-    而删掉的东西**没有回收站**（`delete_item` 是直接删索引和记录的）。
+    "扫描顺便清理"是这类功能最容易出事的地方：判据错一点就静默删掉真东西——
+    删除现在会进回收站（30 天内可恢复），但恢复是重新投喂一次原路径，
+    不是瞬间撤销，原文件挪了/改名了还会直接恢复不了，所以自动批量删除
+    这个口子依然不能开，"扫描顺便清理"的风险并没有因为有了回收站而消失。
 
     🔴 **每组里"留哪一张"由用户定，这里不替他选。** 常见做法是留最大/最早的那张，
     但真实情况是他可能要留有 EXIF 的那张、或者路径在正式目录里的那张。
@@ -957,8 +960,9 @@ async def delete_items(req: DeleteItemsRequest, request: Request) -> dict[str, A
     """
     E9 清理 —— 按 id 删内容。
 
-    🔴 **`confirm` 默认 false = 干跑。** 删除**没有回收站**
-    （`delete_item` 直接清索引和记录，撤不回来），所以默认行为必须是
+    🔴 **`confirm` 默认 false = 干跑。** 索引记录删掉之后立刻搜不到，
+    这一步本身没有"再点一下就原样恢复"的撤销——回收站给的是 30 天内
+    "把原路径重新投喂一次"，不是瞬间撤销，所以默认行为仍然必须是
     "告诉你将要删什么"而不是"删给你看"。界面拿干跑结果做二次确认。
 
     🔴 **只删库里的记录，不碰硬盘上的原文件。** 这是刻意的：
@@ -989,7 +993,7 @@ async def delete_items(req: DeleteItemsRequest, request: Request) -> dict[str, A
     deleted, failed = 0, []
     for i in found:
         try:
-            rt.repo.delete_item(i)
+            rt.repo.soft_delete_item(i)
             deleted += 1
         except Exception as e:  # noqa: BLE001
             # 逐条报因：一条删不掉不该让另外 99 条也白删一遍
@@ -1000,9 +1004,80 @@ async def delete_items(req: DeleteItemsRequest, request: Request) -> dict[str, A
         "deleted": deleted,
         "missing": missing,
         "failed": failed,
-        "note": f"删掉了 {deleted} 条库记录。**硬盘上的原文件没动** —— "
-        "要连文件一起删，请自己去文件管理器里删",
+        "note": f"删掉了 {deleted} 条库记录（30 天内可在回收站按原路径恢复）。"
+        "**硬盘上的原文件没动** —— 要连文件一起删，请自己去文件管理器里删",
     }
+
+
+def _trash_entry_to_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "itemId": row["item_id"],
+        "title": row["title"],
+        "locator": row["locator"],
+        "modality": row["modality"],
+        "source": row["source"],
+        "sizeBytes": row["size_bytes"],
+        "deletedAt": row["deleted_at"],
+        "purgeAt": row["purge_at"],
+    }
+
+
+@router.get("/trash")
+async def list_trash(request: Request) -> dict[str, Any]:
+    rows = _rt(request).repo.list_trash()
+    return {"entries": [_trash_entry_to_dict(r) for r in rows]}
+
+
+@router.post("/trash/{trash_id}/restore")
+async def restore_trash(trash_id: str, request: Request) -> dict[str, Any]:
+    """
+    恢复 = 把回收站记的那个 locator **重新投喂一次**，不是瞬间撤销。
+
+    🔴 **删除时向量/FTS 索引就已经清干净了**（`soft_delete_item`），回收站
+    只留了"这条内容原来在哪、叫什么"。所以恢复要重新解析+切块+向量化，
+    跟第一次投喂这个文件耗时基本一样——绝大多数单个文件是秒级的，
+    只有巨大的视频/PDF 会明显有感。
+    """
+    rt = _rt(request)
+    entry = rt.repo.get_trash_entry(trash_id)
+    if entry is None:
+        raise HTTPException(404, "回收站里没有这一条（可能已经恢复过，或者已经超过 30 天被自动清掉了）")
+    if rt.pipeline is None:
+        raise HTTPException(503, "摄取流水线还没就绪")
+
+    from ..ingest.web import is_url
+
+    locator = str(entry["locator"])
+    source = str(entry["source"])
+
+    if is_url(locator):
+        result = await asyncio.to_thread(rt.pipeline.ingest_url, locator)
+    else:
+        p = Path(locator)
+        if not p.exists():
+            raise HTTPException(
+                404,
+                f"恢复不了：原文件已经不在这个位置了——{locator}"
+                "（这条回收站记录还留着，文件找回来后可以再试一次恢复，或者手动彻底删除这一条）",
+            )
+        result = await asyncio.to_thread(rt.pipeline.ingest_file, p, source=source)
+
+    if result not in ("done", "skipped"):
+        raise HTTPException(500, f"恢复失败：{result}")
+
+    rt.repo.remove_trash_entry(trash_id)
+    return {"ok": True, "locator": locator, "result": result}
+
+
+@router.delete("/trash/{trash_id}")
+async def purge_trash_entry(trash_id: str, request: Request) -> dict[str, Any]:
+    """彻底清掉一条回收站记录（不影响硬盘原文件，也不用等 30 天）——纯粹是"不想再看到这条了"。"""
+    rt = _rt(request)
+    if rt.repo.get_trash_entry(trash_id) is None:
+        raise HTTPException(404, "回收站里没有这一条")
+    rt.repo.remove_trash_entry(trash_id)
+    return {"ok": True}
 
 
 @router.get("/items/{item_id}/duplicates")
