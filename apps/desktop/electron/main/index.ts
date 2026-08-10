@@ -219,7 +219,12 @@ function startEngine(): void {
     tray?.setEngineState(s);
     // 引擎每次就绪（含重启）都要重新推一遍云端配置 —— 引擎侧密钥只存内存，
     // 重启就没了，不重推的话用户会以为"设置好了怎么又失效了"
-    if (s.lifecycle === 'ready') void pushCloudConfig();
+    if (s.lifecycle === 'ready') {
+      void pushCloudConfig();
+      // 监听的目录同理：引擎侧的 watcher 也是纯内存状态，重启就空了，
+      // 每次就绪都要把当前设置里的列表重新推一遍
+      void pushWatchedFolders();
+    }
   });
 
   engine.onEngineEvent((ev) => {
@@ -248,6 +253,25 @@ async function pushCloudConfig(): Promise<void> {
     });
   } catch (err) {
     console.warn('[cloud] 推送配置到引擎失败：', err);
+  }
+}
+
+/**
+ * 把"监听的目录"整份列表推给引擎——全量替换，不是增量。引擎自己 diff
+ * 出该新开哪些监听、该撤销哪些（见 watcher.py），这边不用关心上次
+ * 推的是什么。引擎没就绪时静默跳过，下次就绪（含首次启动）会自动补推。
+ */
+async function pushWatchedFolders(): Promise<void> {
+  const port = engine?.getState().port;
+  if (!port) return;
+  try {
+    await fetch(`http://127.0.0.1:${port}/api/watch/folders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folders: settings.watchedFolders }),
+    });
+  } catch (err) {
+    console.warn('[watch] 推送监听目录到引擎失败：', err);
   }
 }
 
@@ -307,6 +331,9 @@ function registerIpc(): void {
     }
     if (JSON.stringify(before.cloud) !== JSON.stringify(settings.cloud)) {
       void pushCloudConfig();
+    }
+    if (JSON.stringify(before.watchedFolders) !== JSON.stringify(settings.watchedFolders)) {
+      void pushWatchedFolders();
     }
     // 数据目录 / 并发度 / 隐私围栏开关变了要重启引擎才生效——
     // allowCloud / enableImageDescription / enableFaceClustering 都是启动时

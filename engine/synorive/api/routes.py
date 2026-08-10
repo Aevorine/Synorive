@@ -84,6 +84,10 @@ class IngestRequest(BaseModel):
     allowCloud: bool = False
 
 
+class WatchFoldersRequest(BaseModel):
+    folders: list[str] = Field(default_factory=list)
+
+
 # ── 路由 ────────────────────────────────────────────────────
 
 
@@ -592,6 +596,27 @@ async def ingest_job_control(job_id: str, action: str, request: Request) -> dict
     if action not in ("pause", "resume", "cancel"):
         raise HTTPException(400, f"只支持 pause/resume/cancel，收到的是 {action}")
     return _rt(request).control_job(job_id, action)
+
+
+@router.get("/watch/folders")
+async def get_watch_folders(request: Request) -> dict[str, Any]:
+    rt = _rt(request)
+    return {"watching": rt.watcher.watched_folders() if rt.watcher is not None else []}
+
+
+@router.post("/watch/folders")
+async def set_watch_folders(req: WatchFoldersRequest, request: Request) -> dict[str, Any]:
+    """
+    桌面端"监听的目录"整份列表变化时调这个——**是全量替换，不是增量**。
+    引擎自己 diff 出该新开哪些监听、该撤销哪些（见 watcher.py 的
+    `FolderWatcher.set_folders`），调用方不用关心"上次同步的是什么"，
+    每次都传完整列表就行，跟 React 的受控组件一个思路。
+    """
+    rt = _rt(request)
+    if rt.watcher is None:
+        raise HTTPException(503, "引擎还没就绪")
+    rt.set_watch_folders(req.folders)
+    return {"ok": True, "watching": rt.watcher.watched_folders()}
 
 
 #: 单次上传上限（512MB，够放视频）——没有这道闸，一个恶意/失控的客户端

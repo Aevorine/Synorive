@@ -63,6 +63,11 @@ class Repository:
         conn = self.db.connect()
         return conn.execute("SELECT * FROM items WHERE fingerprint = ?", (fingerprint,)).fetchone()
 
+    def find_by_locator(self, locator: str) -> sqlite3.Row | None:
+        """目录监控用：文件被删了，得先按路径找到是哪条 item 才能把它挪进回收站。"""
+        conn = self.db.connect()
+        return conn.execute("SELECT * FROM items WHERE locator = ?", (locator,)).fetchone()
+
     def upsert_item(
         self,
         *,

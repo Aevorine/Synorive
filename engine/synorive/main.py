@@ -123,6 +123,8 @@ def build_app(runtime: Runtime) -> FastAPI:
 
         status_task.cancel()
         deferred_task.cancel()
+        if runtime.watcher is not None:
+            runtime.watcher.stop()
         runtime.clear_endpoint()
         # A17：干净关闭时把 ANN 索引落盘——这样重启就能直接从磁盘加载，
         # 不用触发那条"发现落差就后台重建"的兜底路径（见 runtime.py

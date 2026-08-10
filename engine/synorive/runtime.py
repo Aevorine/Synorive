@@ -209,6 +209,7 @@ class Runtime:
         self.search: Any = None
         self.pipeline: Any = None
         self.doctor: Any = None
+        self.watcher: Any = None
         #: 联网元搜索（W/R/L）。**独立于本地检索** ——
         #: 它是唯一会出网的部件，隐私围栏要关的就是它，所以单独挂一个字段，
         #: 关掉时置 None，接口层据此返回明确的 503 而不是半死不活地跑着
@@ -268,6 +269,11 @@ class Runtime:
             concurrency=self.config.concurrency,
             on_progress=lambda p: self.events.publish("ingest.job", p),
             sensitive_guard_enabled=self.config.sensitive_guard_enabled,
+        )
+        from .ingest.watcher import FolderWatcher
+
+        self.watcher = FolderWatcher(
+            on_changed=self._on_watch_changed, on_removed=self._on_watch_removed
         )
         self.search = SearchEngine(
             self.db, self.repo, self._get_query_embedder(), self._get_reranker()
@@ -878,6 +884,41 @@ class Runtime:
                 (now_iso, json.dumps(detail, ensure_ascii=False), row["id"]),
             )
         log.warning("发现 %d 个任务在上次引擎运行时被中断，已标记为失败", len(rows))
+
+    # ── 目录监控 ────────────────────────────────────────────
+
+    def set_watch_folders(self, folders: list[str]) -> None:
+        """桌面端每次"监听的目录"列表变化都会调这个（引擎就绪时也会调一次全量同步）。"""
+        if self.watcher is not None:
+            self.watcher.set_folders(folders)
+
+    def _on_watch_changed(self, paths: list[Path]) -> None:
+        """
+        监控到的变化去抖之后批量走这里——复用 `start_ingest`，跟手动投喂
+        是同一条路径：F2 驾驶舱能看到进度，敏感文件闸照常生效，
+        已经索引过的内容（fingerprint 没变）照常被 `ingest_file` 跳过。
+        """
+        if not paths or self.pipeline is None:
+            return
+        log.info("目录监控：%d 个文件变化，开始投喂", len(paths))
+        self.start_ingest(paths, recursive=False, source="file")
+
+    def _on_watch_removed(self, paths: list[Path]) -> None:
+        """文件被删了——找到对应的库记录，走回收站（跟手动删除同一条路径）。"""
+        if self.repo is None:
+            return
+        removed = 0
+        for p in paths:
+            row = self.repo.find_by_locator(str(p))
+            if row is not None:
+                self.repo.soft_delete_item(str(row["id"]))
+                removed += 1
+        if removed:
+            log.info("目录监控：%d 个文件被删除，已从库里移除（进回收站）", removed)
+            self.events.publish(
+                "toast",
+                {"level": "info", "message": f"监控到 {removed} 个文件被删除，已从库里移除（回收站里能找回）"},
+            )
 
     # ── 摄取任务 ────────────────────────────────────────────
 

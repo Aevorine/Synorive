@@ -511,6 +511,16 @@ def parse_html_string(html: str, *, fallback_title: str = "", url: str | None = 
     )
 
 
+#: 目录扫描（手动投喂 + watcher.py 目录监控）共用的垃圾目录名单。
+#: 两处都要跳过这些——手动投喂已经在用，监控目录如果不跳过，
+#: 一个带 node_modules 的项目文件夹会被 watchdog 每个文件都盯上，
+#: 白白注册几万个监听、库里也会混进一堆没意义的第三方代码。
+SKIP_DIR_NAMES = frozenset({
+    "node_modules", ".git", ".venv", "venv", "__pycache__", ".idea", ".vscode",
+    "dist", "build", "out", ".gradle", ".next", "target", ".cache",
+})
+
+
 def iter_supported(root: Path, recursive: bool = True) -> Iterator[Path]:
     """
     遍历目录里所有能处理的文件（文档 + 图片 + 视频 + 音频）。
@@ -525,10 +535,7 @@ def iter_supported(root: Path, recursive: bool = True) -> Iterator[Path]:
 
     media_ext = SUPPORTED_IMAGE_EXT | SUPPORTED_VIDEO_EXT | SUPPORTED_AUDIO_EXT
 
-    skip_dirs = {
-        "node_modules", ".git", ".venv", "venv", "__pycache__", ".idea", ".vscode",
-        "dist", "build", "out", ".gradle", ".next", "target", ".cache",
-    }
+    skip_dirs = SKIP_DIR_NAMES
     stack = [root]
     while stack:
         d = stack.pop()
