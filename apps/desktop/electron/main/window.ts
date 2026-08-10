@@ -98,7 +98,9 @@ export function createMainWindow(opts: CreateWindowOptions): BrowserWindow {
       preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // preload 只用 contextBridge/ipcRenderer/webUtils（electron 内置模块），
+      // 沙箱模式完全够用——渲染进程被攻破时少一层能直接碰 Node 的可能性。
+      sandbox: true,
       spellcheck: false,
       // 窗口被挡住或最小化时不要节流渲染进程。
       //

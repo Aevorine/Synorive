@@ -166,7 +166,8 @@ export class PeekWindow {
         preload: join(__dirname, '../preload/index.cjs'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        // 同 window.ts：这份 preload 不碰 Node 内置模块，沙箱模式够用
+        sandbox: true,
         spellcheck: false,
         backgroundThrottling: false,
       },
