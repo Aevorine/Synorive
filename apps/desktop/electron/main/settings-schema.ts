@@ -81,6 +81,7 @@ export const AppSettingsSchema = z.object({
   enableAuthenticatedFetch: z.boolean(),
   enableImageDescription: z.boolean(),
   enableGpuAcceleration: z.boolean(),
+  sensitiveGuardEnabled: z.boolean(),
   lanPairingEnabled: z.boolean(),
   pairingToken: z.string().min(1),
   allowNetwork: z.boolean(),

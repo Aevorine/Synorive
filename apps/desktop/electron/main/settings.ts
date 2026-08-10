@@ -81,6 +81,9 @@ export function defaultSettings(): AppSettings {
     enableImageDescription: false,
     // 默认走 CPU；依赖医生里有"启用核显加速"按钮
     enableGpuAcceleration: false,
+    // 默认开：投喂目录时自动跳过 .env/私钥/credentials.json 这类文件，
+    // 不让它们悄悄进搜索库。关掉这道闸是有意的例外操作，不该是默认状态
+    sensitiveGuardEnabled: true,
     // A16 安卓配对：默认关，开了才会让引擎监听局域网
     lanPairingEnabled: false,
     // 令牌一开机就生成好（哪怕配对功能没开），开配对时不用现等一次生成

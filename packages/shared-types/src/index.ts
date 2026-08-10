@@ -715,6 +715,13 @@ export interface AppSettings {
   /** 是否启用核显加速（DirectML） */
   enableGpuAcceleration: boolean;
   /**
+   * 投喂目录时自动跳过看起来像密钥/凭据的文件（.env、id_rsa、
+   * credentials.json……），不索引进搜索库。默认开——这类文件本身就是
+   * 纯文本/JSON，能被正常解析写进索引甚至发去云端，用户投喂一个项目
+   * 目录时几百个文件混在一起，肉眼很难逐个排查。
+   */
+  sensitiveGuardEnabled: boolean;
+  /**
    * A16 安卓配对：打开后引擎从只听 127.0.0.1 改成监听 0.0.0.0，
    * 局域网里的手机才连得上。默认关——这会让同一局域网内的其他设备
    * 看得到这台机器在跑这个服务。开着的时候所有非本机请求都要带

@@ -94,6 +94,13 @@ class EngineConfig:
     不报错、不降级、只是白开心一场。
     """
     prefer_gpu: bool = False
+    """
+    投喂目录时是否自动跳过看起来像密钥/凭据的文件（.env、id_rsa、
+    credentials.json……）。**默认开，跟 allow_network 一样要显式关掉** ——
+    这类文件本身就是纯文本/JSON，能被正常解析写进搜索索引甚至发去云端，
+    而用户投喂一个项目目录时几百个文件混在一起，肉眼很难逐个排查。
+    """
+    sensitive_guard_enabled: bool = True
 
     @property
     def db_path(self) -> Path:
@@ -250,6 +257,7 @@ class Runtime:
             self.config.model_dir,
             concurrency=self.config.concurrency,
             on_progress=lambda p: self.events.publish("ingest.job", p),
+            sensitive_guard_enabled=self.config.sensitive_guard_enabled,
         )
         self.search = SearchEngine(
             self.db, self.repo, self._get_query_embedder(), self._get_reranker()

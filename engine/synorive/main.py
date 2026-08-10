@@ -285,6 +285,10 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
                     help="C4：允许调云端视觉模型给图片生成描述并入索引（还要 --allow-cloud 且配置好视觉模型）")
     p.add_argument("--enable-face-clustering", action="store_true",
                     help="C5：本地人脸检测与聚类，默认关（隐私敏感）")
+    # 跟 --no-network 一样：默认开的隐私/安全类开关，关掉必须显式传参数，
+    # 不能靠"不传就是关"——那样以后哪次忘了传，这道闸就静默消失了
+    p.add_argument("--disable-sensitive-guard", action="store_true",
+                    help="关掉投喂目录时的敏感文件（.env/私钥/凭据）自动跳过。默认这道闸是开着的")
     p.add_argument("--pairing-token", default=None,
                     help="A16：安卓配对令牌。设了之后，非本机地址的 /api 请求"
                          "必须带匹配的 X-Synorive-Token 头才放行")
@@ -362,6 +366,7 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
         verify_level=a.verify_level,
         trust_profile=trust_profile,
         prefer_gpu=a.prefer_gpu,
+        sensitive_guard_enabled=not a.disable_sensitive_guard,
     )
 
 

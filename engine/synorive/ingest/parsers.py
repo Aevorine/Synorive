@@ -521,6 +521,7 @@ def iter_supported(root: Path, recursive: bool = True) -> Iterator[Path]:
     """
     from ..analyze.image import SUPPORTED_IMAGE_EXT
     from ..analyze.video import SUPPORTED_AUDIO_EXT, SUPPORTED_VIDEO_EXT
+    from .sensitive import sensitive_reason
 
     media_ext = SUPPORTED_IMAGE_EXT | SUPPORTED_VIDEO_EXT | SUPPORTED_AUDIO_EXT
 
@@ -540,4 +541,12 @@ def iter_supported(root: Path, recursive: bool = True) -> Iterator[Path]:
                 if recursive and p.name not in skip_dirs and not p.name.startswith("."):
                     stack.append(p)
             elif can_parse(p) or p.suffix.lower() in media_ext:
+                yield p
+            # 🔴 .env / id_rsa 这类密钥文件本来就没有扩展名，`can_parse()`
+            # 天然判它"不支持"，会像 .exe/.zip 一样悄悄从遍历结果里消失——
+            # 消失了就不会被下面 ingest_paths() 里的敏感文件检查看到，
+            # 用户也就永远不知道这个目录里有个 .env。这里额外放一道口子：
+            # 即使格式不支持，只要命中敏感文件规则也要让它被看见（然后
+            # 在 ingest_paths() 里被明确标成"跳过：敏感文件"，而不是凭空消失）。
+            elif sensitive_reason(p) is not None:
                 yield p

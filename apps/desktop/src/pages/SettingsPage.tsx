@@ -455,6 +455,15 @@ export function SettingsPage() {
             danger
           />
 
+          <Toggle
+            label="投喂目录时自动跳过敏感文件"
+            hint="投喂整个文件夹时，.env、私钥、credentials.json 这类看起来像密钥/
+                  凭据的文件默认不会被索引（不影响其它正常文件）。默认开启——
+                  关掉之后这类文件会像普通文档一样被搜索库收录。"
+            checked={settings.sensitiveGuardEnabled}
+            onChange={(v) => patch({ sensitiveGuardEnabled: v })}
+          />
+
           <Field label="数据位置" hint="索引库和模型都在这里。整个目录拷走就是完整备份。">
             <div className="pathlist">
               <div className="pathlist__item">

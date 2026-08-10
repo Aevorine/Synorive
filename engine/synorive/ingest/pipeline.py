@@ -35,6 +35,7 @@ from ..analyze.video import analyze_video, is_audio, is_video
 from ..store.repository import ChunkRow, Repository
 from .chunker import chunk_segments
 from .parsers import CODE_EXT, ParseError, TextSegment, can_parse, iter_supported, parse
+from .sensitive import sensitive_reason
 from .web import fetch, is_url, url_fingerprint
 
 log = logging.getLogger("synorive.ingest")
@@ -227,11 +228,13 @@ class IngestPipeline:
         *,
         concurrency: int = 7,
         on_progress: ProgressCb | None = None,
+        sensitive_guard_enabled: bool = True,
     ) -> None:
         self.repo = repo
         self.model_dir = model_dir
         self.concurrency = max(1, min(16, concurrency))
         self.on_progress = on_progress
+        self.sensitive_guard_enabled = sensitive_guard_enabled
         self._local = threading.local()
         self._lock = threading.Lock()
         self._vec_ready = False
@@ -1146,11 +1149,31 @@ class IngestPipeline:
             elif p.is_file() and (can_parse(p) or p.suffix.lower() in _MEDIA_EXT):
                 files.append(p)
 
-        stats = IngestStats(total=len(files) + len(urls))
+        # 敏感文件（.env、私钥、credentials.json……）默认不索引——不管是
+        # 目录展开发现的还是直接选中的，都要过一遍。跟"格式不支持"那类
+        # 跳过不一样：这个必须让用户看得见（走 on_item 上报 + 算进
+        # stats.skipped），不能默默从 total 里消失，不然用户不知道
+        # "为什么这个目录只索引了一半"。
+        sensitive_files: list[tuple[Path, str]] = []
+        if self.sensitive_guard_enabled:
+            safe_files: list[Path] = []
+            for p in files:
+                reason = sensitive_reason(p)
+                if reason is not None:
+                    sensitive_files.append((p, reason))
+                else:
+                    safe_files.append(p)
+            files = safe_files
+
+        stats = IngestStats(total=len(files) + len(urls) + len(sensitive_files))
         # 展开完目录立刻报总数。**放在 `if not files` 之前** ——
         # 一个文件都没有时也要报 0，否则调用方那边会一直挂着上一次的总数
         if on_total is not None:
             on_total(stats.total)
+        for p, reason in sensitive_files:
+            stats.skipped += 1
+            if on_item is not None:
+                on_item(str(p), "skipped", f"敏感文件，默认不索引：{reason}")
         if not files and not urls:
             return stats
 

@@ -198,6 +198,9 @@ function startEngine(): void {
     enableGpuAcceleration: settings.enableGpuAcceleration ?? false,
     enableImageDescription: settings.enableImageDescription,
     enableFaceClustering: settings.enableFaceClustering,
+    // `?? true` 兜底：老 settings.json 升级上来没有这个字段时按"默认开"处理，
+    // 不能被当成 false——那样升级完这道安全闸会静默消失
+    sensitiveGuardEnabled: settings.sensitiveGuardEnabled ?? true,
     lanPairingEnabled: settings.lanPairingEnabled,
     pairingToken: settings.pairingToken,
     // 联网搜索这一路（E12/U9 · S1 · V5）。`?? true` 是给老 settings.json

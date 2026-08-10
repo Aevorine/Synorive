@@ -43,6 +43,7 @@ function makeBase(): AppSettings {
     enableAuthenticatedFetch: false,
     enableImageDescription: false,
     enableGpuAcceleration: false,
+    sensitiveGuardEnabled: true,
     lanPairingEnabled: false,
     pairingToken: 'abc123',
     allowNetwork: true,

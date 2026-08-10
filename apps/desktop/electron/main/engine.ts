@@ -49,6 +49,8 @@ export interface EngineLaunchOptions {
   enableImageDescription: boolean;
   /** C5：本地人脸检测与聚类，默认关 */
   enableFaceClustering: boolean;
+  /** 投喂目录时自动跳过 .env/私钥/credentials.json 这类敏感文件，默认开 */
+  sensitiveGuardEnabled: boolean;
   /** A16：开了就把引擎的监听地址从 127.0.0.1 换成 0.0.0.0，局域网里的安卓端才连得上 */
   lanPairingEnabled: boolean;
   /** 局域网配对令牌，非本机请求必须带这个（见 --pairing-token） */
@@ -385,6 +387,8 @@ export class EngineManager {
     if (this.opts.allowCloud) args.push('--allow-cloud');
     if (this.opts.enableImageDescription) args.push('--enable-image-description');
     if (this.opts.enableFaceClustering) args.push('--enable-face-clustering');
+    // 默认开的安全闸，关掉必须显式传参数（跟 --no-network 同一个道理）
+    if (!this.opts.sensitiveGuardEnabled) args.push('--disable-sensitive-guard');
     if (this.opts.lanPairingEnabled) args.push('--pairing-token', this.opts.pairingToken);
 
     // 联网这一路：**关掉时显式传 --no-network**，而不是"什么都不传靠默认值"。
