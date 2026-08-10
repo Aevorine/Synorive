@@ -203,7 +203,7 @@ function ResultCard({
         {highlight && (
           <p
             className="card__snippet syn-selectable"
-            // 高亮标记由引擎生成，只含 <em>，没有用户可控的 HTML
+            // 引擎侧已对原文做 HTML 转义、只留 <em> 标记安全（engine.py _highlight）
             dangerouslySetInnerHTML={{ __html: highlight }}
           />
         )}

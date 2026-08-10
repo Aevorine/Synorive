@@ -19,6 +19,7 @@ K=60 是文献里的常用值，作用是压低头部排名的差距 ——
 
 from __future__ import annotations
 
+import html
 import logging
 import math
 import os
@@ -1168,10 +1169,22 @@ def _highlight(text: str, terms: list[str], window: int = 160) -> str:
     prefix = "…" if start > 0 else ""
     suffix = "…" if start + window < len(text) else ""
 
-    escaped = [re.escape(t) for t in terms if len(t) >= 2]
-    if escaped:
-        snippet = re.sub(f"({'|'.join(escaped)})", r"<em>\1</em>", snippet)
-    return prefix + snippet + suffix
+    escaped_terms = [re.escape(t) for t in terms if len(t) >= 2]
+    if not escaped_terms:
+        return prefix + html.escape(snippet) + suffix
+
+    # 先在原文（未转义）上匹配命中词，再把两侧的普通文本分别做 HTML 转义——
+    # 顺序不能反：文档正文可能带 <img>/<style> 等标签，如果不转义就直接拼进
+    # __html，会在界面里原样渲染成真实 DOM（存储型 XSS/界面伪装）。
+    pattern = re.compile(f"({'|'.join(escaped_terms)})")
+    parts: list[str] = []
+    last = 0
+    for m in pattern.finditer(snippet):
+        parts.append(html.escape(snippet[last : m.start()]))
+        parts.append(f"<em>{html.escape(m.group(0))}</em>")
+        last = m.end()
+    parts.append(html.escape(snippet[last:]))
+    return prefix + "".join(parts) + suffix
 
 
 def _reason(c: Candidate, parts: dict[str, float]) -> str:
