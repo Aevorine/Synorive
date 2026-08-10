@@ -33,8 +33,11 @@ from .runtime import EngineConfig, Runtime
 
 log = logging.getLogger("synorive")
 
-#: A16 安卓配对闸放行的路径——不带令牌也能探测到"这是不是 Synorive"
-_UNGUARDED_PATHS = {"/health", "/status"}
+#: A16 安卓配对闸放行的路径——不带令牌也能探测到"这是不是 Synorive"。
+#: 🔴 **只放行 `/pairing/status` 这一个最小端点，`/health`/`/status` 不再免鉴权。**
+#: 后两者会报 CPU/内存/DB 大小/索引条数/已装模型这些信息，局域网里随便一台没配对
+#: 过的设备扫到端口就能读，超出了"配对前确认这是不是 Synorive"本身需要的范围。
+_UNGUARDED_PATHS = {"/pairing/status"}
 
 
 class _PairingGuardMiddleware:
@@ -158,7 +161,36 @@ def build_app(runtime: Runtime) -> FastAPI:
 
     app.include_router(router, prefix="/api")
 
-    # ── 健康检查：桌面端靠它判断引擎起没起来 ──────────────
+    # ── 配对前探测：免鉴权，只报"这是不是 Synorive + 证书指纹" ──────
+    @app.get("/pairing/status")
+    async def pairing_status() -> dict[str, Any]:
+        """
+        A16 安卓配对页"测试连接"用这个，不是 `/health`。
+
+        配对前手机还没有令牌，但需要两样东西：①确认这台机器真的是 Synorive
+        ②TLS 开着的话，拿到证书指纹做手动核对（4.22b H1）。除此之外的内容
+        （CPU、内存、DB 大小、装了哪些模型……）不属于"配对前需要确认"的范畴，
+        那些字段留在 `/health`/`/status` 里，两者现在都要求配对令牌。
+        """
+        out: dict[str, Any] = {
+            "ok": True,
+            "version": __version__,
+            "indexedItems": runtime.db.count_items(),
+            "pairingRequired": bool(runtime.config.pairing_token),
+        }
+        out["lanTls"] = bool(runtime.config.lan_tls)
+        if runtime.config.lan_tls:
+            from .lan_tls import CERT_NAME, fingerprint
+
+            cert = runtime.config.data_dir / CERT_NAME
+            out["lanCertFingerprint"] = fingerprint(cert) if cert.exists() else None
+            out["lanTlsNote"] = (
+                "手机端要把这个指纹填进去做固定校验。"
+                "**别让手机'第一次连上就信任'** —— 那样第一次就被劫持的话，之后每次都会信任攻击者。"
+            )
+        return out
+
+    # ── 健康检查：桌面端靠它判断引擎起没起来（本机永远放行；局域网需要配对令牌） ──
     @app.get("/health")
     async def health() -> dict[str, Any]:
         cpu, mem = runtime.resource_usage()
