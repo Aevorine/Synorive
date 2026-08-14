@@ -37,8 +37,8 @@ android {
         // 🔴 versionCode 是**自更新唯一的判据**（versionName 只是给人看的字符串）。
         //    每次发版必须 +1，否则装了旧版的手机永远查不到新版，而且它
         //    报的是「已是最新」不是报错。用 `node scripts/release.mjs` 会自动改这两行。
-        versionCode = 105
-        versionName = "0.1.5"
+        versionCode = 106
+        versionName = "0.1.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

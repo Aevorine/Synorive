@@ -1,6 +1,6 @@
 {
   "name": "synorive",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "license": "AGPL-3.0-or-later",
   "private": true,
   "description": "Synorive — 多模态并发分析与极速内容检索平台",
