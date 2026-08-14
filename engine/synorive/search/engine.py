@@ -408,6 +408,13 @@ class Candidate:
     distance: float | None = None
     matched_via: set[str] = field(default_factory=set)
     best_text: str = ""
+    #: best_text 具体是从哪个内容通道来的——跟 matched_via（这条结果命中过
+    #: 的所有通道的并集）不是一回事。同一个 item 可能关键词路命中了正文块、
+    #: 语义路命中了它的 OCR 块，合并后 matched_via={body,ocr} 但界面上
+    #: 实际显示、高亮的摘录只可能来自其中一个通道——这个字段记的是那一个，
+    #: reason()/前端徽标都要按它来说话，不能按 matched_via 整个集合来说话，
+    #: 否则会出现"徽标说是图片文字命中，摘录显示的却是正文"这种对不上。
+    best_text_channel: str = ""
     page: int | None = None
     start_sec: float | None = None
     #: L3：命中的这一块属于论文的哪个章节（Abstract/Method/Results…）
@@ -522,7 +529,9 @@ class SearchEngine:
                 start_sec=r["start_sec"],
                 section=r["section"],
             )
-            c.matched_via.add(str(r["channel"]) or "body")
+            channel = str(r["channel"]) or "body"
+            c.matched_via.add(channel)
+            c.best_text_channel = channel
             seen[iid] = c
             out.append(c)
         return out
@@ -642,7 +651,9 @@ class SearchEngine:
             # 永远不知道这条到底是从图片文字还是视频字幕里找到的。
             # 跟关键词召回（上面 recall_keyword）保持同一种做法：
             # matched_via 记的是"内容通道"，不是"走了哪条召回路"。
-            c.matched_via.add(str(r["channel"]) or "body")
+            channel = str(r["channel"]) or "body"
+            c.matched_via.add(channel)
+            c.best_text_channel = channel
             out.append(c)
             if len(out) >= limit:
                 break
@@ -681,6 +692,7 @@ class SearchEngine:
                     # 有正文片段的优先留着，纯标题命中的片段是空的
                     if not m.best_text and c.best_text:
                         m.best_text = c.best_text
+                        m.best_text_channel = c.best_text_channel
                         m.page = c.page
                         m.start_sec = c.start_sec
 
@@ -939,6 +951,12 @@ class SearchEngine:
                     },
                     "matchedTerms": matched_terms,
                     "matchedVia": sorted(c.matched_via),
+                    # 上面 matchedTerms/highlight 用的 c.best_text 具体来自
+                    # 哪个通道——同一条结果可能在 matched_via 里同时挂着
+                    # body 和 ocr（关键词路命中了正文块、语义路命中了它的
+                    # OCR 块），但界面摘录只可能显示其中一个，徽标/reason
+                    # 必须跟这个字段对齐，不能跟着 matchedVia 整个集合走
+                    "textChannel": c.best_text_channel or "body",
                     # 命中的是哪几条召回路（关键词/语义/文件名子串），
                     # 跟 matchedVia（命中的是正文/OCR/字幕哪个内容通道）是两个轴，
                     # 以前只在 reason 那句话里含糊带过，没有结构化字段
@@ -1298,12 +1316,14 @@ def _reason(c: Candidate, parts: dict[str, float]) -> str:
         bits.append(f"语义相似 {sim:.2f}")
     if c.rank_trigram:
         bits.append("文件名含查询串")
-    # 🔴 这条只有在 recall_vector 的 channel bug 修好之后才有意义——
-    # 之前 matched_via 里纯语义命中永远是字面量 "vector"，映射不到任何人话
-    for ch, label in _CHANNEL_LABEL.items():
-        if ch in c.matched_via:
-            bits.append(f"在{label}命中")
-            break
+    # 🔴 按 best_text_channel（摘录实际来自哪个通道）判断，不能按
+    # matched_via（这条结果命中过的所有通道的并集）判断——同一个 item
+    # 可能关键词路命中正文、语义路命中它的 OCR 块，matched_via 会同时有
+    # body 和 ocr，但界面摘录只显示得出其中一个，说错通道就是"人话解释"
+    # 和"眼前这段摘录"对不上
+    label = _CHANNEL_LABEL.get(c.best_text_channel)
+    if label:
+        bits.append(f"在{label}命中")
     if parts.get("titleBoost", 0) > 0:
         bits.append("标题命中")
     if parts.get("recency", 0) > 0.6:

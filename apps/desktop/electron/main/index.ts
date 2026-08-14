@@ -39,6 +39,24 @@ interface AppRef {
 let win: BrowserWindow | null = null;
 let tray: TrayController | null = null;
 let engine: EngineManager | null = null;
+/**
+ * 🔴 引擎重启必须串行，不能"发了就不管"。
+ * 原来是 `void engine?.stop().then(() => startEngine())`——如果两次
+ * 触发重启的操作挨得很近（比如快速连续切两个库），第二次调用会在第一次
+ * 的 stop() 还没跑完时就读到同一个 `engine`，两条 `.then()` 谁先resolve
+ * 完全看旧进程退出快慢，先resolve的那条 startEngine() 把全局 engine
+ * 覆盖掉，它启动的那个子进程从此再没人管——不会被下一次 stop() 杀掉，
+ * 继续常驻并持有它那个库 dataDir 下索引文件的锁，而界面显示的是另一个库。
+ * 串成一条链，保证同一时刻只有一次"停旧的、起新的"在跑。
+ */
+let engineRestartChain: Promise<void> = Promise.resolve();
+function requestEngineRestart(): Promise<void> {
+  engineRestartChain = engineRestartChain.catch(() => {}).then(async () => {
+    await engine?.stop();
+    startEngine();
+  });
+  return engineRestartChain;
+}
 let clip: ClipboardWatcher | null = null;
 /** N7 随手研究浮窗。默认关，所以默认是 null —— 开了才建 */
 let peek: PeekWindow | null = null;
@@ -325,17 +343,20 @@ function registerIpc(): void {
     mkdirSync(dir, { recursive: true });
     const entry: LibraryEntry = { id, name: trimmedName, dataDir: dir, createdAt: new Date().toISOString() };
     // 只登记，不切换——用户自己决定要不要马上切过去
-    applyPatch({ libraries: [...settings.libraries, entry] });
+    void applyPatch({ libraries: [...settings.libraries, entry] });
     return entry;
   });
 
-  ipcMain.handle(IPC.librarySwitch, (_e, id: string) => {
+  ipcMain.handle(IPC.librarySwitch, async (_e, id: string) => {
     const target = settings.libraries.find((l) => l.id === id);
     if (!target) return { ok: false, error: '找不到这个库' };
     if (target.id === settings.activeLibraryId) return { ok: true, settings };
     // dataDir 一起改掉，触发下面的"dataDir 变了就重启引擎"逻辑——
-    // 这就是"切库"的全部实现：不是引擎同时管理多个库，是换一个库重启一次
-    const next = applyPatch({ activeLibraryId: id, dataDir: target.dataDir });
+    // 这就是"切库"的全部实现：不是引擎同时管理多个库，是换一个库重启一次。
+    // 🔴 必须 await：不等的话这个 handler 会在旧引擎还没停、新引擎还没起
+    // 之前就把"已切换"回给界面，界面显示库 C 已激活，实际处理请求的
+    // 还是库 B 的进程——这就是本轮审计抓到的那个真 bug
+    const next = await applyPatch({ activeLibraryId: id, dataDir: target.dataDir });
     return { ok: true, settings: next };
   });
 
@@ -356,11 +377,11 @@ function registerIpc(): void {
       return { ok: false, error: '至少要保留一个库' };
     }
     const libraries = settings.libraries.filter((l) => l.id !== id);
-    applyPatch({ libraries });
+    void applyPatch({ libraries });
     return { ok: true };
   });
 
-  function applyPatch(patch: Partial<AppSettings>): AppSettings {
+  async function applyPatch(patch: Partial<AppSettings>): Promise<AppSettings> {
     const before = settings;
     settings = patchSettings(patch);
     ensureDataDirs(settings);
@@ -413,7 +434,10 @@ function registerIpc(): void {
       JSON.stringify(before.webEndpoints) !== JSON.stringify(settings.webEndpoints) ||
       JSON.stringify(before.trustProfile) !== JSON.stringify(settings.trustProfile)
     ) {
-      void engine?.stop().then(() => startEngine());
+      // 等重启真正完成（旧进程已退出、新进程已启动）再往下走——调用方
+      // （比如"切库"）靠这个 await 才能保证它返回给界面"已切换"时，
+      // 服务请求的确实已经是新库的引擎，而不是还在悄悄读旧库
+      await requestEngineRestart();
     }
 
     broadcast(IPC.settingsChanged, settings);
@@ -558,7 +582,7 @@ function registerIpc(): void {
     if (next) all[key] = next;
     else delete all[key];
     const ok = saveEngineKeys(all);
-    if (ok) void engine?.stop().then(() => startEngine());
+    if (ok) void requestEngineRestart();
     return ok;
   });
   // U 组 应用自更新。**下载和安装永远是用户点出来的**，

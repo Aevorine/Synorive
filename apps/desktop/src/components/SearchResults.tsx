@@ -73,10 +73,11 @@ const CHANNEL_BADGE: Record<string, string> = {
 
 function explainChannelBadge(explain: MatchExplain | undefined): string | null {
   if (!explain) return null;
-  for (const via of explain.matchedVia) {
-    if (CHANNEL_BADGE[via]) return CHANNEL_BADGE[via];
-  }
-  return null;
+  // 🔴 必须按 textChannel（下面摘录/高亮实际来自哪个通道）取徽标，不能
+  // 扫 matchedVia 整个集合——一条结果可能关键词命中了正文、语义命中了
+  // 它的 OCR 块，matchedVia 里 body 和 ocr 都在，扫集合会挑出"图片文字"
+  // 徽标，但眼前显示的摘录其实是正文，徽标和摘录对不上
+  return CHANNEL_BADGE[explain.textChannel] ?? null;
 }
 
 /**

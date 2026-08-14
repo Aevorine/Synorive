@@ -71,7 +71,15 @@ export function TodayPage() {
    *    所以每路自己兜底成空值，拿到多少显示多少。
    */
   const load = useCallback(async () => {
-    if (!ready) return;
+    if (!ready) {
+      // 🔴 引擎重启期间（比如切库、改联网Key）这一页原来什么都不做，
+      // 会把上一个引擎/上一个库留下的旧卡片原样晾在那，用户看不出
+      // 这是过期数据还是当前数据。其余五个页面共用的 useEngineData 都
+      // 在引擎未就绪时清空数据（见 lib/useEngineData.ts），这里补齐同一条硬化逻辑。
+      setDeck(EMPTY);
+      setLoading(true);
+      return;
+    }
     setLoading(true);
     const [stats, watches, recent, projects] = await Promise.all([
       api.stats().catch(() => null),

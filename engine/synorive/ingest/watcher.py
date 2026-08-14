@@ -157,10 +157,19 @@ class FolderWatcher:
                     log.warning("目录监控：监听 %s 失败：%s", key, e)
 
     def _note(self, path: Path, *, removed: bool) -> None:
-        owner = self._owner_folder(path)
-        if owner is not None and owner.is_ignored(path):
-            return
+        # 🔴 必须在同一把锁里读 self._folders 再改 pending 集合。
+        # 这个方法跑在 watchdog 的调度线程上，set_folders()（来自
+        # POST /api/watch/folders，即用户改"监听的目录"或引擎每次就绪
+        # 重推）跑在别的线程改同一个 dict。原来 _owner_folder() 在锁外
+        # 遍历 self._folders.values()，撞上 set_folders() 同时在
+        # pop()/赋值这个 dict 就是 RuntimeError: dictionary changed
+        # size during iteration——而 watchdog 的调度循环只 catch
+        # queue.Empty，这个异常会直接把调度线程杀死，从此**所有**
+        # 监听目录静默失效，watched_folders() 却还照常报"在监听"。
         with self._lock:
+            owner = self._owner_folder(path)
+            if owner is not None and owner.is_ignored(path):
+                return
             if removed:
                 self._pending_removed.add(path)
                 self._pending_changed.discard(path)

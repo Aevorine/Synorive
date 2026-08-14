@@ -297,6 +297,13 @@ export interface MatchExplain {
    * 'vector' 已经不会再出现——纯语义命中现在也会如实报出具体通道。
    */
   matchedVia: ('title' | 'body' | 'ocr' | 'transcript' | 'description' | 'filename')[];
+  /**
+   * highlight/matchedTerms 这段摘录具体来自 matchedVia 里的哪一个通道。
+   * 同一条结果可能关键词路命中了正文块、语义路命中了它的 OCR 块，
+   * matchedVia 会同时有 'body' 和 'ocr'，但摘录只可能显示其中一个——
+   * 徽标/理由要按这个字段来说话，不能在 matchedVia 整个集合里乱挑。
+   */
+  textChannel: 'title' | 'body' | 'ocr' | 'transcript' | 'description' | 'filename';
   /** 命中的是哪几条召回路（关键词精确匹配 / 语义向量 / 文件名子串），和 matchedVia 是两个轴 */
   routes: ('keyword' | 'vector' | 'trigram')[];
   /** 一句话人话解释 */

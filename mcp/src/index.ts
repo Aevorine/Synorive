@@ -372,6 +372,11 @@ server.registerTool(
   },
   async () => {
     try {
+      // 🔴 doctor 探测失败（网络/超时/500）不能和"探测成功、正好没有缺失
+      // 依赖"混为一谈——原来两种情况都变成 []，Claude 看到的报告里
+      // "还没装的能力"那一段直接消失，跟"全部依赖健康"长得一模一样，
+      // 而实际上探测本身根本没跑成，缺失依赖有没有还是未知数
+      let depsFailed = false;
       const [h, s, deps] = await Promise.all([
         engine.get<Record<string, unknown>>('/health'),
         engine.get<{ items: number; ready: number; failed: number; chunks: number }>('/api/stats'),
@@ -379,7 +384,10 @@ server.registerTool(
           .get<{ name: string; state: string; optional: boolean; degradesTo: string }[]>(
             '/api/doctor',
           )
-          .catch(() => []),
+          .catch(() => {
+            depsFailed = true;
+            return [];
+          }),
       ]);
 
       const missing = deps.filter((d) => d.state !== 'ok');
@@ -389,7 +397,9 @@ server.registerTool(
         `库文件 ${h.dbSizeMb} MB　并发度 ${h.concurrency}　推理执行器 ${h.executionProvider}`,
         `内存占用 ${h.memoryMb} MB　进行中的任务 ${h.activeJobs} 个`,
       ];
-      if (missing.length) {
+      if (depsFailed) {
+        lines.push('', '⚠️ 依赖探测（/api/doctor）本次请求失败，缺不缺依赖这次没查到，不代表都装好了。');
+      } else if (missing.length) {
         lines.push('', '还没装的能力：');
         for (const d of missing) {
           lines.push(
