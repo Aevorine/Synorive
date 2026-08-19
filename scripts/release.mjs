@@ -230,7 +230,10 @@ if (ANDROID) {
     process.exit(1);
   }
   const apkPath = join(apkDir, apk);
-  mustExist(apkPath, 3 * 1024 * 1024, 'APK 太小，多半是资源没打进去');
+  // 门槛 1.2 MB：release 开了 R8 + 资源裁剪之后，实测包是 2.13 MB（开之前 12.2 MB）。
+  // 原来写的 3 MB 是按未混淆包定的，开混淆后会把**正常产物**判成坏的。
+  // 门槛的作用是抓"资源没打进去"这类空壳包（那种只有几十 KB），1.2 MB 足够拦住。
+  mustExist(apkPath, 1.2 * 1024 * 1024, 'APK 太小，多半是资源没打进去');
   artifacts.push(apkPath);
 }
 
