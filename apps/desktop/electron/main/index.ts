@@ -18,8 +18,12 @@ import {
 import { PeekWindow } from './peek.js';
 import {
   clearCloudKey,
+  clearDbKey,
   hasCloudKey,
+  hasDbKey,
   loadCloudKey,
+  loadDbKey,
+  saveDbKey,
   engineKeyStatus,
   loadEngineKeys,
   saveCloudKey,
@@ -225,6 +229,8 @@ function startEngine(): void {
     sensitiveGuardEnabled: settings.sensitiveGuardEnabled ?? true,
     lanPairingEnabled: settings.lanPairingEnabled,
     pairingToken: settings.pairingToken,
+    // 整库加密口令。存在 safeStorage 里，走环境变量传给子进程（不进 argv）
+    dbKey: loadDbKey() ?? '',
     // 联网搜索这一路（E12/U9 · S1 · V5）。`?? true` 是给老 settings.json
     // 兜底 —— 升级上来的用户配置里没有这个字段，读出来是 undefined，
     // 不兜底的话会被当成 false，用户升级完发现联网功能整个消失了
@@ -342,6 +348,81 @@ function registerIpc(): void {
     for (const w of BrowserWindow.getAllWindows()) {
       if (!w.isDestroyed()) w.webContents.setZoomFactor(f);
     }
+  });
+
+  // ── 资料库整库加密 ────────────────────────────────────────
+
+  ipcMain.handle(IPC.dbEncryptStatus, async () => {
+    const port = engine?.getState().port;
+    let cipherAvailable = false;
+    let encrypted = false;
+    if (port) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/api/security/db`);
+        if (r.ok) {
+          const j = (await r.json()) as { cipherAvailable?: boolean; encrypted?: boolean };
+          cipherAvailable = !!j.cipherAvailable;
+          encrypted = !!j.encrypted;
+        }
+      } catch {
+        /* 引擎没起来就照实说"不知道"，见下面的 engineReady */
+      }
+    }
+    return { engineReady: !!port, cipherAvailable, encrypted, keyStored: hasDbKey() };
+  });
+
+  /**
+   * 开启加密。
+   *
+   * 顺序很重要：**先让引擎把库转成加密的，成了再存口令、再重启**。
+   * 反过来（先存口令再转换）的话，转换失败时下次启动会拿着一个口令
+   * 去开一个明文库 —— 引擎直接起不来，而用户完全不知道发生了什么。
+   */
+  ipcMain.handle(IPC.dbEncryptEnable, async (_e, passphrase: string) => {
+    const pw = String(passphrase ?? '');
+    if (pw.length < 8) return { ok: false, error: '口令至少 8 位。这是解开整个资料库的唯一钥匙。' };
+    const port = engine?.getState().port;
+    if (!port) return { ok: false, error: '引擎还没就绪，等它起来再试' };
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/api/security/db/encrypt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passphrase: pw }),
+      });
+      const j = (await r.json()) as { ok?: boolean; error?: string };
+      if (!r.ok || !j.ok) return { ok: false, error: j.error ?? `引擎返回 ${r.status}` };
+    } catch (err) {
+      return { ok: false, error: `转换失败：${String(err)}` };
+    }
+    if (!saveDbKey(pw)) {
+      return {
+        ok: false,
+        error:
+          '库已经加密了，但这台机器上存不住口令（系统密钥库不可用）。' +
+          '下次启动要手动输入 —— 请务必确认你已经把口令记在别处。',
+      };
+    }
+    await requestEngineRestart();
+    return { ok: true };
+  });
+
+  ipcMain.handle(IPC.dbEncryptDisable, async (_e, passphrase: string) => {
+    const port = engine?.getState().port;
+    if (!port) return { ok: false, error: '引擎还没就绪，等它起来再试' };
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/api/security/db/decrypt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passphrase: String(passphrase ?? '') }),
+      });
+      const j = (await r.json()) as { ok?: boolean; error?: string };
+      if (!r.ok || !j.ok) return { ok: false, error: j.error ?? `引擎返回 ${r.status}` };
+    } catch (err) {
+      return { ok: false, error: `转换失败：${String(err)}` };
+    }
+    clearDbKey();
+    await requestEngineRestart();
+    return { ok: true };
   });
 
   // 设置

@@ -137,3 +137,65 @@ export function loadEngineKeys(): Record<string, string> {
 export function engineKeyStatus(): Record<string, boolean> {
   return Object.fromEntries(Object.keys(loadEngineKeys()).map((k) => [k, true]));
 }
+
+// ── 整库加密口令 ────────────────────────────────────────────
+
+function dbKeyFile(): string {
+  return join(app.getPath('userData'), 'db.key');
+}
+
+/**
+ * 存整库加密口令。
+ *
+ * 🔴 **它和云端 API Key 不是一个量级的东西。** API Key 丢了换一个就行；
+ *    这个口令丢了，**整个资料库永远打不开** —— 没有后门、没有找回。
+ *    所以界面上开启加密之前必须强制用户确认已经把口令记在别处，
+ *    而这里只负责"这台机器上下次启动能自动解开"。
+ *
+ * 🔴 safeStorage 用的是当前**系统账号**的密钥。换了 Windows 账号、
+ *    重装系统、把 userData 拷到另一台机器 —— 这份文件都解不开了。
+ *    那时候用户必须手动重新输一次口令，所以口令本身必须由他自己保管。
+ */
+export function saveDbKey(pw: string): boolean {
+  if (!pw) {
+    clearDbKey();
+    return true;
+  }
+  if (!encryptionAvailable()) return false;
+  try {
+    const enc = safeStorage.encryptString(pw);
+    const p = dbKeyFile();
+    const tmp = `${p}.tmp`;
+    writeFileSync(tmp, enc);
+    renameSync(tmp, p);
+    return true;
+  } catch (err) {
+    console.error('[db-key] 加密写入失败：', err);
+    return false;
+  }
+}
+
+/** 读不到 / 解不开都返回 null —— 上层据此提示用户手动输一次，不是崩溃 */
+export function loadDbKey(): string | null {
+  const p = dbKeyFile();
+  if (!existsSync(p)) return null;
+  if (!encryptionAvailable()) return null;
+  try {
+    return safeStorage.decryptString(readFileSync(p));
+  } catch (err) {
+    console.error('[db-key] 解密失败（可能是换了系统账号）：', err);
+    return null;
+  }
+}
+
+export function hasDbKey(): boolean {
+  return existsSync(dbKeyFile());
+}
+
+export function clearDbKey(): void {
+  try {
+    if (existsSync(dbKeyFile())) unlinkSync(dbKeyFile());
+  } catch (err) {
+    console.error('[db-key] 删除失败：', err);
+  }
+}

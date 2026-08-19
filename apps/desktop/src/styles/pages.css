@@ -1210,3 +1210,47 @@
   font-size: var(--syn-fs-caption);
   color: var(--syn-color-danger);
 }
+
+/* ── 整库加密 ────────────────────────────────────────────── */
+
+.dbenc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+
+.dbenc__on {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-success);
+}
+
+.dbenc__err {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-danger);
+}
+
+/* 「口令丢了就永远打不开」那条确认。用警示底色 ——
+   它不是普通的勾选项，是这个功能能不能交付的前提 */
+.dbenc__ack {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-sm);
+  background: var(--syn-color-warning-subtle);
+  border: 1px solid var(--syn-color-warning);
+  border-radius: var(--syn-radius-md);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text);
+  cursor: pointer;
+}
+
+.dbenc__ack input {
+  margin-top: 3px;
+  flex: none;
+}

@@ -71,7 +71,27 @@ extraResources:
       - '!*.egg-info/**'
 
 win:
-  # 26 起用这个；signAndEditExecutable 会把图标和版本信息一起关掉
+  # ── 代码签名 ────────────────────────────────────────────
+  #
+  # 🔴 **现在是没有签名的**（`signExecutable: false`），后果两条，都要如实知道：
+  #    · 用户装的时候 Windows SmartScreen 会弹「未知发布者」
+  #    · electron-updater 的 Authenticode 校验那一步会被跳过 ——
+  #      更新链路上只剩 HTTPS + sha512 两道闸，没有"这个包确实是我们发的"这一道
+  #
+  # 补它只需要一张 OV/EV 代码签名证书，**代码这边不用改**：
+  # 把下面两个环境变量设上再构建，electron-builder 会自动签名，
+  # 而 `publisherName` 会从证书里读出来填进 latest.yml，更新器那道校验就活了。
+  #
+  #   $env:CSC_LINK = "D:\keys\code-sign.pfx"   # 或证书的 base64
+  #   $env:CSC_KEY_PASSWORD = "证书口令"
+  #   npm run release
+  #
+  # 🔴 **别把证书或口令写进这个文件**。它跟着仓库走，仓库是公开的。
+  #    走环境变量是唯一正确的路，和安卓那边 keystore.properties 不进 git 是同一个道理。
+  #
+  # 没设这两个变量时保持 signExecutable: false —— 构建照常出包，
+  # 只是没签名。`scripts/release.mjs` 会在产物清单里明确写出"这次签了没有"，
+  # 不让"以为签了其实没签"这件事发生。
   signExecutable: false
   icon: resources/icons/icon.ico
   target:

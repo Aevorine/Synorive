@@ -241,6 +241,29 @@ if (ANDROID) {
 console.log('\n── 产物清单 ──');
 for (const a of artifacts) console.log(`  ${a}`);
 
+/**
+ * 这次到底签没签名 —— **必须每次都说一句**。
+ *
+ * 🔴 「以为签了其实没签」是这条链路上最容易发生的静默失败：
+ *    构建照常成功、产物照常生成、日志里一个字都不提，
+ *    而用户装的时候会撞上 SmartScreen，更新器的签名校验也是空的。
+ *    与其等别人发现，不如每次发版都把结论摆在眼前。
+ */
+if (DESKTOP) {
+  const signed = !!(process.env.CSC_LINK || process.env.WIN_CSC_LINK);
+  console.log('');
+  if (signed) {
+    console.log('[签名] 检测到代码签名证书（CSC_LINK），产物应该是已签名的。');
+    console.log('       核对：右键 exe -> 属性 -> 数字签名，签名人应该是证书主体。');
+  } else {
+    console.log('[签名] **这次没有代码签名**（没设 CSC_LINK）。后果：');
+    console.log('       1) 用户安装时 Windows 会弹「未知发布者」');
+    console.log('       2) 更新器的 Authenticode 校验这一道闸是空的');
+    console.log('       要补：买一张 OV 代码签名证书，设两个环境变量再跑本脚本，');
+    console.log('       代码一行都不用改：CSC_LINK=证书路径  CSC_KEY_PASSWORD=证书口令');
+  }
+}
+
 if (!PUBLISH) {
   console.log(
     `\n✓ 产物已出，**没有上传**。\n` +

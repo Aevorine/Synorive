@@ -19,12 +19,21 @@ SQLite 连接管理
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
 
 import sqlite_vec
+
+#: 加密后端。装了 sqlcipher3 才有；没装时"整库加密"这个功能整个不可用，
+#: 而**不是降级成明文** —— 加密这块唯一不能干的事就是"库没装就用个办法顶一下"。
+try:
+    import sqlcipher3 as _sqlcipher  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - 取决于运行环境装没装
+    _sqlcipher = None
 
 SCHEMA_VERSION = 1
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
@@ -115,10 +124,40 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
+def cipher_available() -> bool:
+    """能不能做整库加密。界面必须照这个说，不能含糊。"""
+    return _sqlcipher is not None
+
+
+def looks_encrypted(path: Path) -> bool:
+    """
+    这个文件是加密库吗？
+
+    明文 SQLite 的前 16 字节固定是 `SQLite format 3` + 一个 0 字节；SQLCipher 加密之后
+    **连文件头都是密文**（这正是它比"只加密内容"强的地方 —— 连表结构、
+    索引名、有多少张表都看不出来）。所以判据就是"开头不是那串魔数"。
+
+    🔴 文件不存在时返回 False，不是抛异常 —— 调用方问的是"要不要用密钥开"，
+       而一个还不存在的库当然不用。
+    """
+    try:
+        with path.open("rb") as f:
+            return f.read(16) != b"SQLite format 3" + bytes([0])
+    except OSError:
+        return False
+
+
 class Database:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, key: str | None = None) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        #: 整库加密口令。None = 不加密（明文库，和以前完全一样）。
+        #:
+        #: 🔴 **口令绝不能走命令行参数。** 进程的 argv 在同一台机器上是
+        #:    任何用户都能看到的（任务管理器、tasklist、ps）。桌面端是通过
+        #:    环境变量 `SYNORIVE_DB_KEY` 传给引擎子进程的。
+        self._key = key
+        self._raw_hex: str | None = None
         self._local = threading.local()
         #: 所有线程开出来的连接。`close()` 只能关掉**调用它的那个线程**那一条，
         #: 别的线程那几条谁也碰不到 —— 而 SQLite 的文件锁是**进程级**的，
@@ -132,6 +171,135 @@ class Database:
         self._initialized = False
         self.capabilities: dict[str, Any] = {}
 
+    # ── 加密 ────────────────────────────────────────────────
+
+    def _salt_path(self) -> Path:
+        return self.path.with_suffix(self.path.suffix + ".salt")
+
+    def _raw_key_hex(self) -> str:
+        """
+        口令 -> 32 字节原始密钥（十六进制）。只算一次。
+
+        用 stdlib 的 `hashlib.scrypt`，不引额外依赖。
+
+        🔴 **`maxmem` 必须显式给。** OpenSSL 默认上限是 32 MB，而 n=2^15/r=8
+           要 32 MB 出头，于是直接抛 `memory limit exceeded` —— 报的是
+           "内存超限"，看到的人只会以为是机器内存不够，而实际是这个默认值太小。
+           给 64 MB 有余量。
+
+        🔴 **盐单独存一个文件，而且它不是秘密。** 盐的作用是让同一个口令在
+           不同的库上派生出不同的密钥（防彩虹表），它本来就可以是公开的。
+           把盐也加密起来是个死循环。
+        🔴 盐**丢了等于库打不开**，所以它和 .db 放在一起、跟着一起备份。
+        """
+        if self._raw_hex is not None:
+            return self._raw_hex
+        assert self._key is not None
+        sp = self._salt_path()
+        if sp.exists():
+            salt = sp.read_bytes()
+        else:
+            salt = secrets.token_bytes(16)
+            sp.write_bytes(salt)
+        raw = hashlib.scrypt(
+            self._key.encode("utf-8"), salt=salt, n=2**15, r=8, p=1, dklen=32, maxmem=64 * 1024**2
+        )
+        self._raw_hex = raw.hex()
+        return self._raw_hex
+
+    def encrypt_in_place(self, key: str) -> None:
+        """
+        把一个**明文**库原地转成加密库。
+
+        走 SQLCipher 的 `sqlcipher_export` —— 它在 SQL 层整库搬运，
+        FTS5 的影子表、sqlite-vec 的向量表都跟着走，不用我们自己枚举表。
+        自己写"逐表 SELECT/INSERT"的话，一定会漏掉某张影子表，
+        而漏掉的表**不报错**，只是搜索从此少一路召回。
+
+        🔴 **先写到临时文件，成了再换名。** 直接就地改写的话，中途断电
+           留下的是一个半加密的文件 —— 既打不开也没法回退，用户的库就没了。
+        🔴 换名前**必须关掉所有连接**，否则 Windows 上换不了名（文件被占）。
+        """
+        if _sqlcipher is None:
+            raise RuntimeError("没装 sqlcipher3，做不了加密。补上：pip install sqlcipher3-wheels")
+        if looks_encrypted(self.path):
+            raise RuntimeError("这个库已经是加密的了")
+
+        tmp = self.path.with_suffix(self.path.suffix + ".enc-tmp")
+        salt_tmp = tmp.with_suffix(tmp.suffix + ".salt")
+        for f in (tmp, salt_tmp):
+            if f.exists():
+                f.unlink()
+
+        # 目标库的盐和密钥
+        target = Database(tmp, key=key)
+        raw_hex = target._raw_key_hex()
+
+        self.close_all()
+        src = _sqlcipher.connect(str(self.path))
+        try:
+            src.execute(f"ATTACH DATABASE '{tmp.as_posix()}' AS enc KEY \"x'{raw_hex}'\"")
+            src.execute("SELECT sqlcipher_export('enc')")
+            src.execute("DETACH DATABASE enc")
+        finally:
+            src.close()
+
+        if not looks_encrypted(tmp):
+            tmp.unlink(missing_ok=True)
+            salt_tmp.unlink(missing_ok=True)
+            raise RuntimeError("导出的文件看起来不是加密库，已放弃，原库没动")
+
+        # WAL/SHM 是明文库的附属文件，留着会让 SQLite 拿旧数据去回放
+        for suf in ("-wal", "-shm"):
+            side = Path(str(self.path) + suf)
+            side.unlink(missing_ok=True)
+        self.path.unlink()
+        tmp.replace(self.path)
+        salt_tmp.replace(self._salt_path())
+
+        self._key = key
+        self._raw_hex = None
+        self._initialized = False
+
+    def decrypt_in_place(self, key: str) -> None:
+        """加密库转回明文。和上面完全对称，同样先写临时文件再换名。"""
+        if _sqlcipher is None:
+            raise RuntimeError("没装 sqlcipher3，做不了解密")
+        if not looks_encrypted(self.path):
+            raise RuntimeError("这个库本来就是明文的")
+
+        tmp = self.path.with_suffix(self.path.suffix + ".plain-tmp")
+        tmp.unlink(missing_ok=True)
+
+        probe = Database(self.path, key=key)
+        raw_hex = probe._raw_key_hex()
+        self.close_all()
+
+        src = _sqlcipher.connect(str(self.path))
+        try:
+            src.execute(f"PRAGMA key = \"x'{raw_hex}'\"")
+            # 口令对不对在这里才知道 —— 先读一下，错了直接抛，不去动原库
+            src.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            src.execute(f"ATTACH DATABASE '{tmp.as_posix()}' AS plain KEY ''")
+            src.execute("SELECT sqlcipher_export('plain')")
+            src.execute("DETACH DATABASE plain")
+        finally:
+            src.close()
+
+        if looks_encrypted(tmp):
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError("导出的文件仍然是加密的，已放弃，原库没动")
+
+        for suf in ("-wal", "-shm"):
+            Path(str(self.path) + suf).unlink(missing_ok=True)
+        self.path.unlink()
+        tmp.replace(self.path)
+        self._salt_path().unlink(missing_ok=True)
+
+        self._key = None
+        self._raw_hex = None
+        self._initialized = False
+
     # ── 连接 ────────────────────────────────────────────────
 
     def connect(self) -> sqlite3.Connection:
@@ -140,14 +308,35 @@ class Database:
         if conn is not None:
             return conn
 
-        conn = sqlite3.connect(
+        driver = _sqlcipher if self._key else sqlite3
+        if self._key and driver is None:
+            # 🔴 **绝不静默退回明文。** 用户开了加密、界面显示"已加密"，
+            #    而实际写的是明文库 —— 这是这个项目里最不能出的一种错。
+            raise RuntimeError(
+                "这个库是加密的，但当前环境没有 sqlcipher3，打不开。"
+                "补上：pip install sqlcipher3-wheels"
+            )
+        conn = driver.connect(
             str(self.path),
             # 分析流水线里等锁是常态，30 秒够了；再久就是真死锁，该报错
             timeout=30.0,
             isolation_level=None,  # 自己管事务，不要 Python 层的隐式 BEGIN
             check_same_thread=False,
         )
-        conn.row_factory = sqlite3.Row
+        if self._key:
+            # PRAGMA key 必须是**第一条**语句，在任何读写之前。
+            # 晚一条都会先以明文方式碰到文件头，然后报 "file is not a database"。
+            #
+            # 🔴 **不能用绑定参数**（PRAGMA 不支持），也**不能直接把口令拼进 SQL** ——
+            #    口令里有一个单引号就是一条 SQL 注入。所以走 SQLCipher 的
+            #    "原始密钥"形式：自己用 scrypt 把口令派生成 32 字节，
+            #    以 `x'<64位十六进制>'` 传进去。十六进制里不可能有引号，
+            #    这条路从形状上就注入不了。
+            conn.execute(f"PRAGMA key = \"x'{self._raw_key_hex()}'\"")
+        # 🔴 row_factory 要用**这个驱动自己的** Row。
+        #    混用会抛 `Row() argument 1 must be sqlite3.Cursor, not sqlcipher3...` ——
+        #    而且是在第一次 fetchone 时才抛，离真正的原因（连接是另一个驱动开的）很远。
+        conn.row_factory = driver.Row
 
         # 加载 sqlite-vec 扩展
         try:

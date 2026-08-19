@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Check, Columns2, Copy, FileDown, FileText, Loader2, X } from 'lucide-react';
+import { applyRedactions, findSensitive, summarize } from '../lib/redact';
 import { compose, composeHtml, type CiteStyle, type ComposeFormat } from '../lib/compose';
 import { MAX_SELECTION, useSelection } from '../lib/useSelection';
 import { useApp } from '../lib/store';
@@ -51,15 +52,36 @@ export function ComposeBar({ onCompare }: { onCompare?: (ids: string[]) => void 
   const opts = { title: docTitle, format, cite, includeSnippets: withSnippets };
 
   /** 三个动作共用的收尾：给一句话反馈，2.5 秒后自己消失 */
+  /** 出稿前是否自动打码。默认开 —— 漏遮一个身份证号的代价比多遮大得多 */
+  const [redactOn, setRedactOn] = useState(true);
+  /** 上一次出稿遮了什么。必须显示出来，见 guard() 的说明 */
+  const [lastRedaction, setLastRedaction] = useState<string | null>(null);
+
   const finish = (msg: string) => {
     setDone(msg);
     window.setTimeout(() => setDone(null), 2500);
   };
 
+  /**
+   * 出稿前打码。
+   *
+   * 🔴 **三条出口都要走这一道**（复制 / 存文件 / 导 PDF）。只在其中一条上做，
+   *    等于没做 —— 用户会从没做的那条把东西发出去，而他以为都保护着。
+   * 🔴 **遮了什么必须说出来。** 一个悄悄改写你要发出去的内容的功能，
+   *    哪怕改得对也不能接受：他得知道自己发出去的到底是什么。
+   */
+  const guard = (text: string): string => {
+    if (!redactOn) return text;
+    const hits = findSensitive(text);
+    if (hits.length === 0) return text;
+    setLastRedaction(summarize(hits));
+    return applyRedactions(text, hits);
+  };
+
   const doCopy = async () => {
     setBusy('copy');
     try {
-      await navigator.clipboard.writeText(compose(picked, opts));
+      await navigator.clipboard.writeText(guard(compose(picked, opts)));
       finish('已复制到剪贴板');
     } catch (e) {
       finish(e instanceof Error ? `复制失败：${e.message}` : '复制失败');
@@ -71,7 +93,7 @@ export function ComposeBar({ onCompare }: { onCompare?: (ids: string[]) => void 
   const doSave = async () => {
     setBusy('save');
     const ext = FORMATS.find((f) => f.id === format)?.ext ?? 'md';
-    const r = await window.synorive.doc.saveText(compose(picked, opts), docTitle, ext);
+    const r = await window.synorive.doc.saveText(guard(compose(picked, opts)), docTitle, ext);
     setBusy(null);
     // 🔴 `ok:false` 且没有 error = 用户在保存对话框点了取消。
     //    **那是正常操作，不能报成失败** —— 弹一句"保存失败"会让人以为出了问题
@@ -81,7 +103,7 @@ export function ComposeBar({ onCompare }: { onCompare?: (ids: string[]) => void 
 
   const doPdf = async () => {
     setBusy('pdf');
-    const r = await window.synorive.doc.exportPdf(composeHtml(picked, opts), docTitle);
+    const r = await window.synorive.doc.exportPdf(guard(composeHtml(picked, opts)), docTitle);
     setBusy(null);
     if (r.ok) finish(`已导出 ${r.path}`);
     else if (r.error) finish(`导出失败：${r.error}`);
@@ -166,7 +188,31 @@ export function ComposeBar({ onCompare }: { onCompare?: (ids: string[]) => void 
           />
           <span>带原文摘录</span>
         </label>
+
+        {/* 🔴 默认开。漏遮一个身份证号的代价，比多遮一个订单号大得多 ——
+            而多遮的那些，用户看一眼摘要就知道该不该关掉重来 */}
+        <label
+          className="compose__check"
+          title="导出、复制、打 PDF 之前自动遮掉身份证号、手机号、银行卡、密钥这类东西。只影响出稿，不动库里的原文"
+        >
+          <input
+            type="checkbox"
+            checked={redactOn}
+            onChange={(e) => {
+              setRedactOn(e.target.checked);
+              setLastRedaction(null);
+            }}
+          />
+          <span>出稿前遮敏感内容</span>
+        </label>
       </div>
+
+      {/* 遮了什么必须说出来 —— 悄悄改写用户要发出去的内容是不能接受的 */}
+      {lastRedaction && (
+        <p className="compose__redacted">
+          这次出稿遮掉了：{lastRedaction}。不想遮就关掉上面那个勾再来一次。
+        </p>
+      )}
 
       <div className="compose__actions">
         <button className="btn" onClick={() => void doCopy()} disabled={busy !== null}>

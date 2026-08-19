@@ -33,6 +33,12 @@ from .runtime import EngineConfig, Runtime
 
 log = logging.getLogger("synorive")
 
+#: 引擎源码完整性自检结果。**模块加载时算一次**，不是每次 /status 都算 ——
+#: 77 个文件的 SHA-256 大约十几毫秒，放进请求路径上是白白的浪费。
+from .integrity import check as _integrity_check  # noqa: E402
+
+_INTEGRITY = _integrity_check()
+
 #: A16 安卓配对闸放行的路径——不带令牌也能探测到"这是不是 Synorive"。
 #: 🔴 **只放行 `/pairing/status` 这一个最小端点，`/health`/`/status` 不再免鉴权。**
 #: 后两者会报 CPU/内存/DB 大小/索引条数/已装模型这些信息，局域网里随便一台没配对
@@ -180,6 +186,7 @@ def build_app(runtime: Runtime) -> FastAPI:
             "indexedItems": runtime.db.count_items(),
             "pairingRequired": bool(runtime.config.pairing_token),
         }
+        out["integrity"] = _INTEGRITY.to_dict()
         out["lanTls"] = bool(runtime.config.lan_tls)
         if runtime.config.lan_tls:
             from .lan_tls import CERT_NAME, fingerprint
@@ -222,6 +229,7 @@ def build_app(runtime: Runtime) -> FastAPI:
         # 手机是在配对**之前**读它的，那时候还没有令牌。
         # 🔴 指纹不是秘密（它是公钥的哈希），公开它没有任何风险；
         #    真正重要的是用户**核对**它，而不是让手机"第一次连上就信任"。
+        out["integrity"] = _INTEGRITY.to_dict()
         out["lanTls"] = bool(runtime.config.lan_tls)
         if runtime.config.lan_tls:
             from .lan_tls import CERT_NAME, fingerprint
@@ -351,6 +359,9 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
 
     data_dir = a.data_dir.resolve()
     return EngineConfig(
+        # 🔴 口令走环境变量，**不接受命令行参数** —— argv 全机可见。
+        #    桌面端从 safeStorage 取出来后用 env 传给引擎子进程。
+        db_key=os.environ.get("SYNORIVE_DB_KEY", ""),
         host=a.host,
         port=a.port,
         data_dir=data_dir,

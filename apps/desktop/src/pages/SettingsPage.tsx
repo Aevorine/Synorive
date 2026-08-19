@@ -8,6 +8,7 @@ import type {
   FontScheme,
   LibraryEntry,
 } from '@synorive/shared-types';
+import { DbEncryptPanel } from '../components/DbEncryptPanel';
 import { PrivacyFence } from '../components/PrivacyFence';
 import { SynonymPanel } from '../components/SynonymPanel';
 import { HotkeyReport } from '../components/HotkeyReport';
@@ -473,6 +474,14 @@ export function SettingsPage() {
 
           {/* 检索词比文件列表更能反映一个人在想什么。默认开是为了好用，
               但"我不想留痕"必须一次点击就能做到，而且要立刻生效。 */}
+          <Field
+            label="资料库整库加密"
+            hint="加密之后，这个库拷到别的机器上、或者硬盘被拆走，没有口令都是一堆乱码。
+                  连表结构和有多少条内容都看不出来。开库时多花约 0.25 秒解密，用起来无感。"
+          >
+            <DbEncryptPanel />
+          </Field>
+
           <QueryHistoryControl />
 
           <Field

@@ -1,0 +1,165 @@
+# 依赖漏洞每周自动扫描
+# ====================================================================
+# 🔴 **为什么必须是自动的**：这次是我手动扫出来的（1 个高危 nanoid + 1 个中危 hono）。
+#    手动扫的问题不在于麻烦，在于**没人会想起来扫** —— 漏洞是别人发布的，
+#    不是你改代码时冒出来的，所以任何"改完代码顺手扫一下"的习惯都盖不住它。
+#
+# 🔴 **npm audit 必须显式指定官方源。** 这个项目的 .npmrc 指向 npmmirror，
+#    而那个镜像**没有实现安全公告接口** —— 直接 `npm audit` 会 404，
+#    输出看起来像网络抽风，而结论会被当成"没有漏洞"。
+#    本机实测：默认源报错退出，官方源扫出 2 个。
+#
+# 结果直接开 Issue，不只是让 Actions 变红 —— 红了没人看，Issue 会有通知。
+
+name: 依赖漏洞扫描
+
+on:
+  schedule:
+    # 每周一 UTC 01:00（北京时间周一 09:00，上班就能看到）
+    - cron: '0 1 * * 1'
+  workflow_dispatch:
+  # 锁文件变了就立刻扫一次 —— 新引入的依赖是最可能带漏洞的时候
+  push:
+    paths:
+      - 'package-lock.json'
+      - 'engine/pyproject.toml'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  npm:
+    name: npm 依赖
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 扫描
+        id: audit
+        run: |
+          set +e
+          # 🔴 --registry 不能省，见文件头
+          npm audit --registry=https://registry.npmjs.org --json > audit.json
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+          node -e "
+            const a = require('./audit.json');
+            const m = a.metadata?.vulnerabilities ?? {};
+            const bad = (m.critical ?? 0) + (m.high ?? 0) + (m.moderate ?? 0);
+            const lines = Object.entries(a.vulnerabilities ?? {}).map(([name, v]) =>
+              '- **' + v.severity + '** \`' + name + '\` — ' +
+              (v.via ?? []).map(x => typeof x === 'string' ? x : x.title).join('；')
+            );
+            console.log('总计 critical=' + (m.critical??0) + ' high=' + (m.high??0) + ' moderate=' + (m.moderate??0));
+            require('fs').writeFileSync('npm-report.md',
+              bad ? '## npm 依赖\n\n' + lines.join('\n') + '\n\n修法：\`npm audit fix --registry=https://registry.npmjs.org\`\n' : '');
+            process.exitCode = bad ? 1 : 0;
+          "
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit
+          path: |
+            audit.json
+            npm-report.md
+          if-no-files-found: ignore
+
+  python:
+    name: Python 依赖
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: 装 pip-audit
+        run: pip install pip-audit
+
+      # 只扫**声明过的**依赖，不建完整环境 —— 那要下几百 MB 的模型运行时，
+      # 而漏洞信息只跟包版本有关，跟装没装没关系
+      - name: 扫描
+        run: |
+          set +e
+          python - <<'PY'
+          import tomllib, pathlib
+          d = tomllib.loads(pathlib.Path("engine/pyproject.toml").read_text(encoding="utf-8"))
+          deps = list(d["project"]["dependencies"])
+          for group in d["project"].get("optional-dependencies", {}).values():
+              deps += list(group)
+          pathlib.Path("reqs.txt").write_text("\n".join(deps), encoding="utf-8")
+          print(f"共 {len(deps)} 条依赖")
+          PY
+          pip-audit -r reqs.txt --format markdown > py-report.md
+          cat py-report.md
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit
+          path: py-report.md
+          if-no-files-found: ignore
+
+  report:
+    name: 有问题就开 Issue
+    needs: [npm, python]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
+        continue-on-error: true
+
+      # 🔴 只在**真的有内容**时开 Issue。每周开一个"本周没有漏洞"的 Issue
+      #    会让人很快学会无视这个通知 —— 那时候真有漏洞也看不见了。
+      - name: 汇总
+        id: sum
+        run: |
+          BODY=""
+          for f in reports/*/npm-report.md reports/*/py-report.md; do
+            [ -f "$f" ] || continue
+            # pip-audit 没发现问题时输出的是一句 "No known vulnerabilities found"
+            if grep -qi "no known vulnerabilities" "$f"; then continue; fi
+            [ -s "$f" ] || continue
+            BODY="$BODY$(cat "$f")"$'\n\n'
+          done
+          if [ -n "$BODY" ]; then
+            echo "found=1" >> "$GITHUB_OUTPUT"
+            { echo 'body<<EOF'; echo "$BODY"; echo EOF; } >> "$GITHUB_OUTPUT"
+          else
+            echo "found=0" >> "$GITHUB_OUTPUT"
+            echo "本周没有已知漏洞。"
+          fi
+
+      - name: 开 Issue
+        if: steps.sum.outputs.found == '1'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = process.env.BODY;
+            const title = `依赖漏洞扫描：发现问题（${new Date().toISOString().slice(0, 10)}）`;
+            // 已经有一个开着的同类 Issue 就往里追评，不再新开一个 ——
+            // 每周新开一个会攒出一堆重复 Issue，然后没人看
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'security',
+            });
+            const existing = open.data.find((i) => i.title.startsWith('依赖漏洞扫描'));
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['security'],
+              });
+            }
+        env:
+          BODY: ${{ steps.sum.outputs.body }}

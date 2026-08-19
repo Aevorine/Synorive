@@ -16,6 +16,17 @@ export const IPC = {
    * 界面整体缩放。走浏览器级 zoom —— 设计令牌全是 px，改根字号是空操作。
    */
   windowSetZoom: 'window:set-zoom',
+
+  /**
+   * 资料库整库加密。
+   *
+   * 🔴 开/关都要**重启引擎** —— 加密是在打开数据库那一刻决定的，
+   *    运行中的连接换不了密钥。
+   * 🔴 口令丢了整个库永远打不开，没有后门。开启前界面必须让用户确认这一点。
+   */
+  dbEncryptStatus: 'db:encrypt-status',
+  dbEncryptEnable: 'db:encrypt-enable',
+  dbEncryptDisable: 'db:encrypt-disable',
   windowStateChanged: 'window:state-changed',
 
   // ── 设置 ────────────────────────────────────────────────

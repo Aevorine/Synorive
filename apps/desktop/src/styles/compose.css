@@ -474,3 +474,14 @@
 .qchips__clearall:hover {
   color: var(--syn-color-danger);
 }
+
+/* 出稿打码的回执。用提醒色 —— 它不是错误，是"你发出去的东西被我动过，
+   这是动过的地方" */
+.compose__redacted {
+  margin-top: var(--syn-space-xs);
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  background: var(--syn-color-warning-subtle);
+  border-radius: var(--syn-radius-md);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-warning);
+}

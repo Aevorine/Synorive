@@ -73,6 +73,20 @@ export interface SynoriveApi {
     onImage: (cb: (p: { image: string; preview: string; web: boolean }) => void) => Unsubscribe;
     close: () => Promise<void>;
   };
+  /**
+   * 资料库整库加密。口令丢了整个库永远打不开，没有后门。
+   * `cipherAvailable: false` 表示这台机器上**做不了**，不是"降级成弱加密"。
+   */
+  db: {
+    encryptStatus: () => Promise<{
+      engineReady: boolean;
+      cipherAvailable: boolean;
+      encrypted: boolean;
+      keyStored: boolean;
+    }>;
+    encryptEnable: (passphrase: string) => Promise<{ ok: boolean; error?: string }>;
+    encryptDisable: (passphrase: string) => Promise<{ ok: boolean; error?: string }>;
+  };
   /** F7 全局快捷键 ｜ A4 截图直搜 */
   hotkeys: {
     /** 真实注册结果：`active` 可能是备选键，也可能是 null（一个都没抢到） */

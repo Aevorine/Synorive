@@ -731,6 +731,64 @@ async def record_open(item_id: str, request: Request, q: str | None = None) -> d
     return {"ok": True}
 
 
+# ── 资料库整库加密 ──────────────────────────────────────────
+
+
+@router.get("/security/db")
+async def db_security_status(request: Request) -> dict[str, Any]:
+    """这个库加密了吗、这台机器上能不能加密。界面必须照实显示。"""
+    from ..store.db import cipher_available, looks_encrypted
+
+    rt = _rt(request)
+    return {
+        "cipherAvailable": cipher_available(),
+        "encrypted": looks_encrypted(rt.config.db_path),
+        "path": str(rt.config.db_path),
+    }
+
+
+@router.post("/security/db/encrypt")
+async def db_encrypt(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """
+    把明文库转成加密库。
+
+    🔴 **这一步会长时间占住库**（整库重写）。转换期间引擎不能干别的，
+       所以先把监听和流水线停下来 —— 不停的话，watcher 可能在转换中途
+       往旧库里写一条，那条数据在换名之后就凭空消失了，而且不报错。
+    """
+    from ..store.db import cipher_available
+
+    pw = str(body.get("passphrase") or "")
+    if len(pw) < 8:
+        return {"ok": False, "error": "口令至少 8 位"}
+    if not cipher_available():
+        return {"ok": False, "error": "这台机器上没有 sqlcipher3，做不了整库加密"}
+
+    rt = _rt(request)
+    try:
+        rt.pause_for_maintenance()
+        rt.db.encrypt_in_place(pw)
+    except Exception as e:  # noqa: BLE001
+        log.exception("整库加密失败")
+        return {"ok": False, "error": str(e)}
+    # 转换完这个进程里的连接已经作废了，桌面端会立刻重启引擎
+    return {"ok": True, "note": "已加密。引擎正在重启，重启后才会用新库。"}
+
+
+@router.post("/security/db/decrypt")
+async def db_decrypt(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """加密库转回明文。口令不对时原库一个字节都不动。"""
+    pw = str(body.get("passphrase") or "")
+    rt = _rt(request)
+    try:
+        rt.pause_for_maintenance()
+        rt.db.decrypt_in_place(pw)
+    except Exception as e:  # noqa: BLE001
+        log.exception("整库解密失败")
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "note": "已转回明文。引擎正在重启。"}
+
+
 @router.get("/synonyms")
 async def list_synonyms(request: Request) -> dict[str, Any]:
     return {"items": _rt(request).repo.list_synonyms()}

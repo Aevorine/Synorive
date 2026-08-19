@@ -15,10 +15,10 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "prepack:runtime": "node ../../scripts/bundle-python.mjs",
+    "prepack:runtime": "node ../../scripts/build-integrity.mjs && node ../../scripts/bundle-python.mjs",
     "pack:dir": "npm run prepack:runtime && npm run build && electron-builder --dir",
     "pack:win": "npm run prepack:runtime && npm run build && electron-builder --win",
-    "pack:win:slim": "node ../../scripts/bundle-python.mjs --slim && npm run build && electron-builder --win",
+    "pack:win:slim": "node ../../scripts/build-integrity.mjs && node ../../scripts/bundle-python.mjs --slim && npm run build && electron-builder --win",
     "publish:win": "npm run prepack:runtime && npm run build && electron-builder --win --publish always"
   },
   "dependencies": {

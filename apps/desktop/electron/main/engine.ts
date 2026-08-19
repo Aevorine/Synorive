@@ -56,6 +56,16 @@ export interface EngineLaunchOptions {
   /** 局域网配对令牌，非本机请求必须带这个（见 --pairing-token） */
   pairingToken: string;
   /**
+   * 整库加密口令。空 = 明文库。
+   *
+   * 🔴 **走环境变量传给子进程，绝不做成命令行参数。** argv 在同一台机器上
+   *    是任何用户都能看到的（任务管理器加一列"命令行"就行）——
+   *    把解开整个资料库的口令摆在那儿，加密就白做了。
+   *    顺带说明：`--pairing-token` 现在还是走 argv 的，那是个**已经存在**的
+   *    同类问题，只是它的影响面小得多（局域网令牌，不是整库钥匙）。
+   */
+  dbKey: string;
+  /**
    * E12/U9 联网搜索总闸。**和 allowCloud 是两回事，别合并** ——
    * 这个发出去的是查询词（"我在查什么"），那个发出去的是资料原文（"我有什么"）。
    * 关掉后引擎不建 MetaSearch，整条联网链路从根上断掉，
@@ -389,7 +399,22 @@ export class EngineManager {
     if (this.opts.enableFaceClustering) args.push('--enable-face-clustering');
     // 默认开的安全闸，关掉必须显式传参数（跟 --no-network 同一个道理）
     if (!this.opts.sensitiveGuardEnabled) args.push('--disable-sensitive-guard');
-    if (this.opts.lanPairingEnabled) args.push('--pairing-token', this.opts.pairingToken);
+    if (this.opts.lanPairingEnabled) {
+      args.push('--pairing-token', this.opts.pairingToken);
+      /**
+       * 🔴 **开了局域网配对就一并开 TLS。**
+       *
+       * 原来 `--lan-tls` 是纯手动的开关，默认关 —— 也就是说
+       * **所有实际在用局域网配对的人，跑的都是明文 HTTP**。
+       * 同一个 Wi-Fi 下任何一台设备都能嗅到查询词、结果标题、正文片段。
+       * 一个"要用户自己知道去开"的安全选项，等于没有这个安全选项。
+       *
+       * 退路是完好的：引擎侧拿不到证书时会**退回明文并大声报出来**
+       * （不是静默降级），手机端指纹对不上时也会明确说"这台电脑的身份变了"。
+       * 所以默认打开不会把能用的功能弄坏，只会让默认状态变安全。
+       */
+      args.push('--lan-tls');
+    }
 
     // 联网这一路：**关掉时显式传 --no-network**，而不是"什么都不传靠默认值"。
     // 引擎侧的默认是开着的（这是它的主要用途之一），
@@ -429,6 +454,8 @@ export class EngineManager {
         // 且崩的位置和真正的原因隔着十万八千里。
         // 一个独立可执行文件就该只用自己带的东西。
         PYTHONNOUSERSITE: '1',
+        // 整库加密口令。空串时引擎按明文库走，和以前完全一样
+        ...(this.opts.dbKey ? { SYNORIVE_DB_KEY: this.opts.dbKey } : {}),
       },
       windowsHide: true,
     });

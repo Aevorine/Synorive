@@ -41,6 +41,12 @@ class EngineConfig:
     host: str = "127.0.0.1"
     port: int = 0
     data_dir: Path = field(default_factory=lambda: Path.cwd() / "data")
+    #: 整库加密口令。空 = 明文库（和以前完全一样）。
+    #:
+    #: 🔴 **只从环境变量读，绝不做成命令行参数。** 进程的 argv 在同一台机器上
+    #:    是任何用户都能看到的（任务管理器、tasklist、ps）——
+    #:    把解密整个资料库的口令摆在那儿，等于加密白做。
+    db_key: str = ""
     model_dir: Path = field(default_factory=lambda: Path.cwd() / "data" / "models")
     concurrency: int = 7
     """是否允许把内容送到云端（受隐私围栏二次约束）"""
@@ -200,7 +206,7 @@ class Runtime:
     def __init__(self, config: EngineConfig) -> None:
         self.config = config
         self.started_at = time.time()
-        self.db = Database(config.db_path)
+        self.db = Database(config.db_path, key=config.db_key or None)
         self.events = EventBus()
         self._proc_handle: Any | None = None
 
@@ -531,6 +537,27 @@ class Runtime:
             self.events.publish("websearch.autodetect", got)
         else:
             log.debug("没有可用的本机 SearXNG：%s", got.get("reason"))
+
+    def pause_for_maintenance(self) -> None:
+        """
+        为"要对库文件本身动手"的操作腾地方（整库加密/解密）。
+
+        🔴 **必须先把目录监听停掉。** 不停的话，转换进行到一半时 watcher
+           可能往**旧库**里写一条新内容 —— 而转换结束是把新文件换名覆盖旧文件，
+           那条数据就凭空消失了，而且全程不报错。用户只会发现
+           "加密之后好像少了几条"，永远查不出为什么。
+
+        🔴 ANN 索引也要断开：它在内存里，而它对应的向量表马上要被换掉。
+           留着的话下一次搜索会拿旧索引去查新库，返回一堆对不上的 rowid。
+        """
+        if self.watcher is not None:
+            try:
+                self.watcher.stop()
+            except Exception:  # noqa: BLE001
+                log.warning("停目录监听时出错，继续", exc_info=True)
+            self.watcher = None
+        if self.repo is not None:
+            self.repo.ann_index = None
 
     def _load_ann_index(self, dim: int, model_id: str) -> None:
         """

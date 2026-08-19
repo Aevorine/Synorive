@@ -105,6 +105,23 @@ const api = {
     close: (): Promise<void> => ipcRenderer.invoke(IPC.peekClose),
   },
 
+  /**
+   * 资料库整库加密。
+   * 🔴 口令丢了整个库永远打不开 —— 界面开启前必须让用户明确确认这一点。
+   */
+  db: {
+    encryptStatus: (): Promise<{
+      engineReady: boolean;
+      cipherAvailable: boolean;
+      encrypted: boolean;
+      keyStored: boolean;
+    }> => ipcRenderer.invoke(IPC.dbEncryptStatus),
+    encryptEnable: (passphrase: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC.dbEncryptEnable, passphrase),
+    encryptDisable: (passphrase: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC.dbEncryptDisable, passphrase),
+  },
+
   /** F7 全局快捷键 ｜ A4 截图直搜 */
   hotkeys: {
     /**
