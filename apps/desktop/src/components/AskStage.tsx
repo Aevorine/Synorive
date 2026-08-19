@@ -3,6 +3,7 @@ import { CornerDownLeft, FileSearch, Loader2, MessageCircleQuestion, Search, X }
 import type { InputMode } from '@synorive/shared-types';
 import { useApp } from '../lib/store';
 import { useSearch } from '../lib/useSearch';
+import { remember, suggest, type QueryRecord } from '../lib/queryHistory';
 import { useAsk } from '../lib/useAsk';
 import { api } from '../lib/api';
 
@@ -134,6 +135,9 @@ function useSubmit() {
     (q: string) => {
       const text = q.trim();
       if (!text) return;
+      // 记一笔，给下次补全用。放在这里而不是 useSearch 里 ——
+      // 「问一句」模式不走 useSearch，但那些问题同样值得补全
+      remember(text);
       setPage('search');
       // 提交即收窄 —— 大输入区的价值在"还没结果的时候"，
       // 有结果之后它挡着的正是用户要看的东西
@@ -158,6 +162,40 @@ export function AskStage() {
   const focusNonce = useApp((s) => s.searchFocusNonce);
   const asking = useAsk((s) => s.loading);
   const submit = useSubmit();
+
+  /**
+   * 打过什么的补全。
+   *
+   * 🔴 **只在最后一行的末尾补，且输入里没有换行时才补。**
+   *    这是个多行框，用户可能在写一段很长的问题；在段落中间浮出一个
+   *    "你以前搜过 xxx" 的列表，挡住的正是他正在写的那一行。
+   * 🔴 **默认不选中任何一条**（sel = -1）。选中第一条的话，
+   *    用户打完字直接按回车会**搜到补全的那一条而不是他自己打的**，
+   *    而两者往往只差几个字 —— 他不会立刻发现搜错了。
+   */
+  const [sugs, setSugs] = useState<QueryRecord[]>([]);
+  const [sel, setSel] = useState(-1);
+  const [sugOpen, setSugOpen] = useState(false);
+
+  useEffect(() => {
+    // 多行输入时不补全：在段落中间浮出一个列表，挡住的正是他正在写的那一行
+    if (!sugOpen || /[\r\n]/.test(query)) {
+      setSugs([]);
+      setSel(-1);
+      return;
+    }
+    setSugs(suggest(query, 6));
+    setSel(-1);
+  }, [query, sugOpen]);
+
+  const acceptSug = (i: number) => {
+    const r = sugs[i];
+    if (!r) return;
+    setQuery(r.q);
+    setSugs([]);
+    setSel(-1);
+    taRef.current?.focus();
+  };
 
   const dropping = useWindowDrop(
     useCallback(
@@ -219,7 +257,37 @@ export function AskStage() {
             placeholder={dropping ? '松手就开始分析' : active.placeholder}
             aria-label={active.label}
             onChange={(e) => setQuery(e.target.value)}
+            onFocus={() => setSugOpen(true)}
+            // 失焦时晚一拍再关：直接关的话，鼠标点补全项的那一下
+            // 会先触发 blur 把列表拆掉，点击落空 —— 表现是"点了没反应"
+            onBlur={() => setTimeout(() => setSugOpen(false), 140)}
             onKeyDown={(e) => {
+              // 补全列表开着时，方向键归它管
+              if (sugs.length > 0) {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  setSel((i) => (i + 1) % sugs.length);
+                  return;
+                }
+                if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setSel((i) => (i <= 0 ? sugs.length - 1 : i - 1));
+                  return;
+                }
+                // 只有**真的选中了某一条**才用它。没选中时回车走正常提交，
+                // 用户打的是什么就搜什么
+                if (e.key === 'Enter' && sel >= 0 && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  acceptSug(sel);
+                  return;
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setSugs([]);
+                  setSel(-1);
+                  return;
+                }
+              }
               // Enter 提交，Shift+Enter 换行。
               // 反过来（Enter 换行、Ctrl+Enter 提交）对"输入内容很多"更友好，
               // 但这里第一位的是**问一句话就走**，长文场景在研究工作台
@@ -234,6 +302,33 @@ export function AskStage() {
               }
             }}
           />
+
+          {sugs.length > 0 && (
+            <ul className="stage__sugs" role="listbox" aria-label="搜过的">
+              {sugs.map((r, i) => (
+                <li key={r.q}>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={i === sel}
+                    className={`stage__sug${i === sel ? ' stage__sug--on' : ''}`}
+                    // onMouseDown 而不是 onClick：click 发生在 blur 之后，
+                    // 那时候列表已经被拆了
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      acceptSug(i);
+                    }}
+                    onMouseEnter={() => setSel(i)}
+                    title={`用这一条：${r.q}`}
+                  >
+                    <Search size={12} strokeWidth={1.7} aria-hidden />
+                    <span className="stage__sug-text">{r.q}</span>
+                    {r.n > 1 && <span className="stage__sug-n">搜过 {r.n} 次</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
 
           <div className="stage__bar">
             <span className="stage__hint">

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, FolderPlus, Loader2, XCircle, X } from 'lucide-react';
+import { CheckCircle2, FolderPlus, Loader2, Trash2, XCircle, X } from 'lucide-react';
 import type {
   AppSettings,
   CloudConfig,
@@ -15,6 +15,7 @@ import { PerfPanel } from '../components/PerfPanel';
 import { SyncPanel } from '../components/SyncPanel';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useApp } from '../lib/store';
+import { clearQueryHistory, historySize } from '../lib/queryHistory';
 
 const CLOUD_PROVIDERS: { id: CloudConfig['provider']; label: string; hint: string }[] = [
   { id: 'none', label: '不用', hint: '右栏生成版简报不可用，左栏摘录版不受影响' },
@@ -449,6 +450,10 @@ export function SettingsPage() {
         {/* ── 隐私（单项细调）─────────────────────────── */}
         <section className="panel">
           <h2 className="panel__title">隐私（单项）</h2>
+
+          {/* 检索词比文件列表更能反映一个人在想什么。默认开是为了好用，
+              但"我不想留痕"必须一次点击就能做到，而且要立刻生效。 */}
+          <QueryHistoryControl />
 
           <Toggle
             label="人脸检测与聚类"
@@ -1168,5 +1173,41 @@ function Toggle({
         <span className="toggle__hint">{hint}</span>
       </span>
     </label>
+  );
+}
+
+/**
+ * 搜过什么 —— 看一眼、清掉。
+ *
+ * 🔴 **清空必须立刻生效，不能只是不显示。** "隐私开关只是把列表藏起来、
+ *    数据还躺在磁盘上"是隐私功能里最恶劣的一类失败：用户以为清干净了，
+ *    实际什么都没清，而且他永远不会发现。
+ */
+function QueryHistoryControl() {
+  const [n, setN] = useState(() => historySize());
+  const [done, setDone] = useState(false);
+
+  return (
+    <Field
+      label={`搜过什么（本机，共 ${n} 条）`}
+      hint="打头几个字会浮出你以前搜过的整句话，少打很多字。只存在这台电脑上，不上传。"
+    >
+      <div className="panel__row">
+        <button
+          className="btn btn--sm"
+          disabled={n === 0}
+          onClick={() => {
+            clearQueryHistory();
+            setN(historySize());
+            setDone(true);
+          }}
+          title="立刻从本机删掉全部搜索记录"
+        >
+          <Trash2 size={13} strokeWidth={1.8} />
+          清空搜索记录
+        </button>
+        {done && <span className="syn-t-caption">已清空，共删掉之前那 {0 === n ? '全部' : n} 条</span>}
+      </div>
+    </Field>
   );
 }

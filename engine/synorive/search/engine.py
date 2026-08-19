@@ -44,6 +44,10 @@ from .recovery import RecoveryPlanner
 log = logging.getLogger("synorive.search")
 
 #: RRF 的平滑常数
+#: 一份资料最多留几段其余命中给界面展开。
+#: 留太多既没人看，又让每次搜索的响应体白白变大
+EXTRA_HITS_KEEP = 3
+
 RRF_K = 60
 #: 每一路召回多少条送去融合。太少会漏，太多融合和取详情变慢。
 RECALL_LIMIT = 200
@@ -419,6 +423,13 @@ class Candidate:
     start_sec: float | None = None
     #: L3：命中的这一块属于论文的哪个章节（Abstract/Method/Results…）
     section: str | None = None
+    #: 同一份资料里**还有几段**也命中了（不含正在显示的这一段）。
+    #: 融合早就按 item_id 去重了，所以列表里一份资料只占一行 —— 这没问题，
+    #: 问题是那几段就此**彻底看不见了**：用户搜到一份 80 页的报告，
+    #: 界面只给他第 12 页那一段，另外 6 处命中他既不知道存在、也够不着。
+    extra_hits: int = 0
+    #: 其余命中段的摘录，最多留几条给界面展开用
+    extra_texts: list[tuple[str, int | None, str | None]] = field(default_factory=list)
 
 
 def _brute_force_knn(conn: sqlite3.Connection, qv: Any, knn_limit: int) -> list[tuple[int, float]]:
@@ -518,6 +529,12 @@ class SearchEngine:
         for rank, r in enumerate(rows, start=1):
             iid = str(r["item_id"])
             if iid in seen:
+                # 同一份资料的后续命中段。不再新建一行，但要记下来 ——
+                # 直接 continue 会让这几段永远消失（见 Candidate.extra_hits）
+                m = seen[iid]
+                m.extra_hits += 1
+                if len(m.extra_texts) < EXTRA_HITS_KEEP:
+                    m.extra_texts.append((str(r["text"]), r["page"], r["section"]))
                 continue
             c = Candidate(
                 item_id=iid,
@@ -535,6 +552,57 @@ class SearchEngine:
             seen[iid] = c
             out.append(c)
         return out
+
+    def _drop_excluded(self, cands: list[Candidate], excludes: list[str]) -> list[Candidate]:
+        """
+        把命中任一排除词的内容整条拿掉。
+
+        🔴 **判据是"这条内容里有没有这个词"，不是"召回时用的那一块里有没有"。**
+        用户写 `-草稿` 的意思是"别给我看草稿"，不是"别给我看正好命中的那一块里
+        写着草稿的"。只看 `best_text` 的话，一份第 3 页写着"草稿"、而第 8 页被
+        语义召回捞出来的文件照样会出现 —— 排除等于没排。
+
+        一次 FTS 查询解决，范围限定在候选集里，代价与候选数同阶。
+        查询本身出错时**不做任何过滤**并记一条日志：宁可多给几条，
+        也不能因为排除逻辑挂了就把结果集清空（那看起来像"库里什么都没有"）。
+        """
+        if not cands or not excludes:
+            return cands
+        expr = to_query(" ".join(excludes))
+        if not expr:
+            return cands
+        ids = [c.item_id for c in cands]
+        conn = self.db.connect()
+        hit: set[str] = set()
+        # SQLite 的变量数上限是 999，候选集通常远小于它，超了就分批
+        for i in range(0, len(ids), 900):
+            batch = ids[i : i + 900]
+            marks = ",".join("?" * len(batch))
+            try:
+                rows = conn.execute(
+                    f"""SELECT DISTINCT c.item_id FROM chunks_fts
+                        JOIN chunks c ON c.rowid = chunks_fts.rowid
+                        WHERE chunks_fts MATCH ? AND c.item_id IN ({marks})""",
+                    (expr, *batch),
+                ).fetchall()
+            except sqlite3.OperationalError as e:
+                log.debug("排除词查询语法错误（%r）：%s —— 本次不做排除", expr, e)
+                return cands
+            hit.update(str(r["item_id"]) for r in rows)
+            try:
+                rows = conn.execute(
+                    f"""SELECT DISTINCT i.id FROM items_fts
+                        JOIN items i ON i.rowid = items_fts.rowid
+                        WHERE items_fts MATCH ? AND i.id IN ({marks})""",
+                    (expr, *batch),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                pass
+            else:
+                hit.update(str(r["id"]) for r in rows)
+        if not hit:
+            return cands
+        return [c for c in cands if c.item_id not in hit]
 
     def recall_title(self, query: str, filters: Filters, limit: int = 60) -> list[Candidate]:
         """
@@ -684,6 +752,11 @@ class SearchEngine:
                 else:
                     m = merged[c.item_id]
                     m.matched_via |= c.matched_via
+                    # 另一路召回也数出了几段，取更大的那个（同一份资料的
+                    # 命中段数不该因为换一路召回就变少）
+                    if c.extra_hits > m.extra_hits:
+                        m.extra_hits = c.extra_hits
+                        m.extra_texts = c.extra_texts
                     m.rank_keyword = m.rank_keyword or c.rank_keyword
                     m.rank_vector = m.rank_vector or c.rank_vector
                     m.rank_trigram = m.rank_trigram or c.rank_trigram
@@ -868,12 +941,20 @@ class SearchEngine:
         if weights:
             w = Weights.from_dict(weights)
 
+        # 🔴 **三路召回喂的不是同一个串。**
+        #   关键词路：正向词 + `-排除词`（`to_query` 认这个减号，翻成 FTS 的 NOT）
+        #   向量路　：只要正向词，连引号都不要
+        # 以前三路都喂同一个 `parsed.text`，而排除词就留在里面 ——
+        # 嵌入模型只看到"草稿"两个字，于是 `-草稿` 在语义那一路变成了**正向**信号：
+        # 用户想排掉草稿，语义召回反而更倾向于把草稿捞回来。不报错，方向正好相反。
+        kw_query = parsed.keyword_text()
+        sem_query = parsed.semantic_text()
         groups: dict[str, list[Candidate]] = {
-            "keyword": self.recall_keyword(text_query, f),
-            "trigram": self.recall_title(text_query, f),
+            "keyword": self.recall_keyword(kw_query, f),
+            "trigram": self.recall_title(kw_query, f),
         }
         if stage == "semantic":
-            groups["vector"] = self.recall_vector(text_query, f)
+            groups["vector"] = self.recall_vector(sem_query, f)
 
         # 没有查询词时（不管有没有筛选）都走"按时间列内容"这条路。
         #
@@ -885,6 +966,11 @@ class SearchEngine:
             groups = {"filter": self.recall_by_filter(f, limit=max(limit * 3, 200))}
 
         fused = self.fuse(groups, w)
+        # 排除项要落到**所有**召回路上，不只是关键词那一路。
+        # FTS 的 NOT 只管得住 chunks_fts 那条查询；向量路是按相似度捞回来的，
+        # 它根本没经过 FTS —— 不在这里补一刀，`-草稿` 对语义结果就是完全无效。
+        if parsed.excludes:
+            fused = self._drop_excluded(fused, parsed.excludes)
         scored = self.apply_signals(fused, w, text_query)
 
         # D7 精排：只对**第一页**重排。
@@ -914,6 +1000,18 @@ class SearchEngine:
                 "score": round(score, 6),
                 "highlight": _highlight(c.best_text, terms),
             }
+            if c.extra_hits > 0:
+                hit["moreHits"] = {
+                    "count": c.extra_hits,
+                    "samples": [
+                        {
+                            "text": _highlight(t, terms),
+                            **({"page": pg} if pg is not None else {}),
+                            **({"section": sec} if sec else {}),
+                        }
+                        for t, pg, sec in c.extra_texts
+                    ],
+                }
             loc: dict[str, Any] = {}
             if c.page is not None:
                 loc["page"] = c.page
@@ -1021,7 +1119,10 @@ class SearchEngine:
                 weak=weak,
             )
         # 界面把这些渲染成一排可点掉的小标签，让用户看见"我刚才那句话被理解成了什么"
-        if parsed.has_filters or parsed.unknown:
+        # 🔴 条件里必须带上 excludes/phrases。只看 has_filters 的话，
+        #    一条纯 `-草稿` 的查询会**悄悄少掉一大批结果而界面上一个标签都不显示** ——
+        #    用户看到结果变少，完全不知道是那个减号干的。
+        if parsed.has_filters or parsed.unknown or parsed.excludes or parsed.phrases:
             out["parsedQuery"] = {
                 "text": text_query,
                 "filters": describe(parsed),

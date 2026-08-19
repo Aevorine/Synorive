@@ -318,6 +318,17 @@ export interface SearchHit {
   highlight?: string;
   location?: HitLocation;
   explain?: MatchExplain;
+  /**
+   * 同一份资料里还有几段也命中了。
+   *
+   * 结果列表按资料去重（一份资料一行），这本身是对的 —— 否则一份 80 页的
+   * 报告能把整屏占满。但去重之后那几段**彻底看不见了**：用户不知道它们存在，
+   * 也够不着。这个字段让界面能说一句"还有 6 处"并让他展开看。
+   */
+  moreHits?: {
+    count: number;
+    samples: { text: string; page?: number; section?: string }[];
+  };
 }
 
 /**

@@ -50,6 +50,25 @@ const METRICS: { key: keyof RankingWeights; label: string; hint: string; max?: n
   },
 ];
 
+/**
+ * 时间取向的三个档。值就是 `recency` 权重，和「看最近」那个预设用的是同一根。
+ * 分档而不是让用户拧滑块，是因为"我想先看新的"是个**意图**，
+ * 而 0~2 的数字是**实现**——中间那层换算不该由用户来做。
+ */
+const TIME_BIAS: { id: string; label: string; hint: string; value: number }[] = [
+  { id: 'relevance', label: '相关优先', hint: '几乎不看时间，只看内容有多对得上', value: 0.05 },
+  { id: 'balanced', label: '均衡', hint: '内容为主，同样相关时新的排前面', value: 0.3 },
+  { id: 'recent', label: '最近优先', hint: '时间权重拉满，先给你最新的', value: 1.5 },
+];
+
+/** 实时说清当前这个数值意味着什么。数字本身对用户没有意义。 */
+function describeTimeBias(v: number): string {
+  if (v < 0.15) return '现在几乎不看时间——十年前的资料只要更对得上，就排在今天的前面。';
+  if (v < 0.7) return '现在以内容为主，两条同样相关时新的排前面。';
+  if (v < 1.2) return '现在明显偏向新的，稍微差一点但更新的会被提上来。';
+  return '现在时间压过内容——半年前那份更对的可能被压到很后面。找旧资料时记得调回来。';
+}
+
 const PRESETS: { id: Preset; label: string; hint: string }[] = [
   {
     id: 'auto',
@@ -173,6 +192,31 @@ export function RankingPanel() {
           ))}
         </div>
       )}
+
+      {/* 时间取向。
+          六个 0~2 的滑块对"我想先看最近的"这个念头来说门槛太高 ——
+          用户得先知道是 recency 这一根、再猜该拧到几。这里给三个有名字的档，
+          下面那行实时写清"现在是什么效果"，拧完不用去猜。
+          它就是 recency 那根滑块的另一个入口，不是新机制。 */}
+      <div className="ranking__timebias">
+        <span className="slider__label">时间取向</span>
+        <div className="ranking__presets">
+          {TIME_BIAS.map((t) => {
+            const on = Math.abs(weights.recency - t.value) < 0.05;
+            return (
+              <button
+                key={t.id}
+                className={`chip${on ? ' chip--on' : ''}`}
+                onClick={() => setWeights({ recency: t.value })}
+                title={t.hint}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+        <p className="ranking__autohint">{describeTimeBias(weights.recency)}</p>
+      </div>
 
       <div className="ranking__list">
         {METRICS.map((m) => (

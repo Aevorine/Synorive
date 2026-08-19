@@ -1147,3 +1147,67 @@
   font-size: var(--syn-fs-micro);
   color: var(--syn-color-text-muted);
 }
+
+/* 时间取向：三个有名字的档 + 一行实时说明，是 recency 滑块的另一个入口 */
+.ranking__timebias {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+  padding-bottom: var(--syn-space-sm);
+  border-bottom: 1px solid var(--syn-color-border);
+}
+
+/* 同一份资料的其余命中段。默认折起来只占一行 —— 结果行高是虚拟滚动量出来的，
+   展开时行会变高，measureElement 会自动跟上（这正是改用测量式虚拟滚动的原因之一） */
+.card__more {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+}
+
+.card__more > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 2px 0;
+  border-radius: var(--syn-radius-sm);
+}
+
+.card__more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.card__more > summary::before {
+  content: '▸ ';
+  display: inline-block;
+  transition: transform var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.card__more[open] > summary::before {
+  content: '▾ ';
+}
+
+.card__more > summary:hover {
+  color: var(--syn-color-primary);
+}
+
+.card__more-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-xs) 0 var(--syn-space-xs) var(--syn-space-md);
+  border-left: 2px solid var(--syn-color-border);
+  margin-left: var(--syn-space-xxs);
+  color: var(--syn-color-text-secondary);
+}
+
+.card__more-list em {
+  background: var(--syn-color-highlight);
+  font-style: normal;
+  font-weight: var(--syn-fw-medium);
+  border-radius: var(--syn-radius-sm);
+  padding: 0 1px;
+}
+
+.card__more-rest {
+  color: var(--syn-color-text-muted);
+}

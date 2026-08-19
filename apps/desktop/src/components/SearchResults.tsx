@@ -26,10 +26,12 @@ const MODALITY_ICON: Record<Modality, typeof FileText> = {
 };
 
 /**
- * D6 可解释性详情。**只能走 title 原生 tooltip，不能做成展开面板** ——
- * 这个列表是虚拟滚动，行高必须固定（见文件顶部说明），任何会撑高单行的
- * UI 都会让滚动重新变卡。tooltip 不占文档流的位置，是唯一不违反这条
- * 约束的展示方式。
+ * D6 可解释性详情，走 title 原生 tooltip。
+ *
+ * ⚠️ 原来的理由是"行高必须固定，展开面板会撑高单行"。改成测量式虚拟滚动
+ * 之后这条约束没有了（"还有 N 处命中"就是个真的展开面板）。这里继续用
+ * tooltip 是另一个理由：打分明细是**排查用的**，不是每次都要看的东西，
+ * 给它一个占位置的展开区，等于让每一行都为一件很少做的事付出高度。
  */
 function buildExplainTooltip(explain: MatchExplain): string {
   const lines: string[] = [explain.reason];
@@ -87,8 +89,13 @@ function explainChannelBadge(explain: MatchExplain | undefined): string | null {
  * 1 万条结果全渲染成 DOM 必然掉帧，无论代码写得多好。
  * 虚拟滚动只渲染视口内的十几行，所以 1 万条和 10 条一样流畅。
  *
- * 行高必须固定（从设计令牌取），变高行会让虚拟滚动每次都要测量，
- * 滚动时反而更卡。
+ * ⚠️ 这里原来的做法是**固定行高**（从设计令牌取一个值），理由写的是
+ * "变高行要每次测量，反而更卡"。实测下来那个理由不成立，代价倒是实打实的：
+ * 一条网页结果可能只有一行标题，也可能标题换行 + 三行摘要 + 一排来源标签，
+ * 固定值只是个平均数 —— 症状是滚动条长度一路在跳、滚到底下面还空着一块、
+ * 按 ↓ 键选中框和实际行错位。都不报错，只是"用起来怪"。
+ * 现在用 `measureElement` 量真实高度（ResizeObserver，只在行变化时触发），
+ * 固定值退回去只当首帧铺开的估算。展开"还有 N 处命中"时行会变高，也能跟上。
  */
 export function SearchResults({
   hits,
@@ -278,6 +285,41 @@ function ResultCard({
             // 引擎侧已对原文做 HTML 转义、只留 <em> 标记安全（engine.py _highlight）
             dangerouslySetInnerHTML={{ __html: highlight }}
           />
+        )}
+
+        {/* 同一份资料的其余命中段。
+            列表按资料去重是对的（否则一份 80 页的报告能占满整屏），
+            但去重之后那几段就彻底看不见了 —— 用户既不知道它们存在，也够不着。
+            折起来放在这儿：默认只占一行字，点开才展开。 */}
+        {hit.moreHits && hit.moreHits.count > 0 && (
+          <details className="card__more">
+            <summary title={`这份资料里还有 ${hit.moreHits.count} 处命中，点开看`}>
+              这份资料里还有 {hit.moreHits.count} 处命中
+            </summary>
+            <ul className="card__more-list">
+              {hit.moreHits.samples.map((sm, i) => (
+                <li key={i}>
+                  {(sm.page != null || sm.section) && (
+                    <span className="card__loc">
+                      {sm.page != null ? `第 ${sm.page} 页` : ''}
+                      {sm.page != null && sm.section ? ' · ' : ''}
+                      {sm.section ?? ''}
+                    </span>
+                  )}
+                  <span
+                    className="syn-selectable"
+                    /* 引擎侧已转义原文、只留 <em>（engine.py _highlight），和上面那段同源 */
+                    dangerouslySetInnerHTML={{ __html: sm.text }}
+                  />
+                </li>
+              ))}
+              {hit.moreHits.count > hit.moreHits.samples.length && (
+                <li className="card__more-rest">
+                  还有 {hit.moreHits.count - hit.moreHits.samples.length} 处，打开这份资料看全部
+                </li>
+              )}
+            </ul>
+          </details>
         )}
 
         <div className="card__meta">

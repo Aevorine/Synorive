@@ -78,6 +78,8 @@
 /* 输入框外壳：整块可见的"这里是主角"。
    阴影用 md 不用 xl —— 大阴影配衬线字会显廉价（tokens.ts 的原则） */
 .stage__box {
+  /* 补全列表绝对定位在它下沿，所以这里必须是定位上下文 */
+  position: relative;
   display: flex;
   flex-direction: column;
   background: var(--syn-color-bg-elevated);
@@ -417,4 +419,56 @@
   flex-shrink: 0;
   margin-top: 2px;
   color: var(--syn-color-warning);
+}
+
+/* ── 搜过什么：补全列表 ──────────────────────────────────
+   贴在输入框下沿，不改变输入框本身的位置 —— 列表一出现输入框就往上跳
+   是最让人心烦的一类抖动。 */
+
+.stage__sugs {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 20;
+  margin-top: var(--syn-space-xs);
+  padding: var(--syn-space-xxs);
+  list-style: none;
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+  box-shadow: var(--syn-shadow-lg);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.stage__sug {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  width: 100%;
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border-radius: var(--syn-radius-md);
+  color: var(--syn-color-text-secondary);
+  text-align: left;
+}
+
+.stage__sug--on {
+  background: var(--syn-color-bg-selected);
+  color: var(--syn-color-text);
+}
+
+.stage__sug-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--syn-fs-body);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stage__sug-n {
+  flex: none;
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
 }

@@ -142,6 +142,15 @@ _SOURCE_ALIAS = {
     "api": "api",
 }
 
+#: `"整段短语"`。只认成对的英文双引号 —— 中文引号「」在正文里太常见，
+#: 当成语法会把大量正常查询切坏。
+_PHRASE = re.compile(r'"([^"]+)"')
+
+#: `-排除词`。减号前面必须是行首或空白，后面至少一个非空白且不是减号。
+#: 🔴 少了前面那个边界，`UTF-8` / `COVID-19` / `2026-08-01` 会被切开，
+#:    而且是**静默**切开：用户只看到搜不出东西。
+_NEGATIVE = re.compile(r'(?:(?<=\s)|^)-(?!-)("[^"]+"|[^\s]+)')
+
 _SIZE_UNITS = {"b": 1, "k": 1024, "kb": 1024, "m": 1024**2, "mb": 1024**2, "g": 1024**3, "gb": 1024**3}
 
 
@@ -153,10 +162,34 @@ class ParsedQuery:
     filters: dict[str, Any] = field(default_factory=dict)
     #: 没看懂的指令，原样退回查询词里的同时记下来，界面可以提示一下
     unknown: list[str] = field(default_factory=list)
+    #: `-词` 排除项。
+    #:
+    #: 🔴 **这个必须从 `text` 里摘出来，不能留在里面。**
+    #: 关键词那一路（`store/text.to_query`）本来就认 `-`，会翻成 FTS 的 NOT；
+    #: 但**向量那一路是把 `text` 整段拿去编码的** —— `-草稿` 留在里面时，
+    #: 嵌入模型只看到"草稿"这两个字，于是它成了一个**正向**语义信号：
+    #: 用户写 `-草稿` 想排掉草稿，语义召回反而**更倾向**于捞草稿回来。
+    #: 不报错、结果看着也像那么回事，只是和意图正好相反。
+    excludes: list[str] = field(default_factory=list)
+    #: `"整段"` 精确短语。留在 `text` 里（它是正向内容），单独记一份给界面显示。
+    phrases: list[str] = field(default_factory=list)
 
     @property
     def has_filters(self) -> bool:
         return bool(self.filters)
+
+    def keyword_text(self) -> str:
+        """给关键词那一路用：正向词 + `-排除词`，`to_query` 会把后者翻成 NOT。"""
+        neg = " ".join(f"-{w}" for w in self.excludes)
+        return f"{self.text} {neg}".strip() if neg else self.text
+
+    def semantic_text(self) -> str:
+        """给向量那一路用：只有正向内容，连引号都去掉。
+
+        引号是给 FTS 看的语法符号，嵌入模型看不懂它 —— 留着只是往语义里
+        掺了两个无意义字符。
+        """
+        return re.sub(r"\s+", " ", self.text.replace('"', " ")).strip()
 
 
 def parse_query(raw: str) -> ParsedQuery:
@@ -185,7 +218,26 @@ def parse_query(raw: str) -> ParsedQuery:
     for start, end in sorted(consumed, reverse=True):
         text = text[:start] + " " + text[end:]
 
-    return ParsedQuery(text=re.sub(r"\s+", " ", text).strip(), filters=filters, unknown=unknown)
+    phrases = [m.group(1) for m in _PHRASE.finditer(text) if m.group(1).strip()]
+
+    # 摘 `-排除词`。**只认独立成词的减号**：`-` 前面必须是行首或空白，
+    # 否则 `UTF-8`、`COVID-19`、`2026-08-01` 会被切成"UTF 排除 8"这种东西，
+    # 而那种切错是静默的 —— 用户只会发现搜不到，不会知道是减号干的。
+    excludes: list[str] = []
+
+    def _take_neg(m: "re.Match[str]") -> str:
+        excludes.append(m.group(1))
+        return " "
+
+    text = _NEGATIVE.sub(_take_neg, text)
+
+    return ParsedQuery(
+        text=re.sub(r"\s+", " ", text).strip(),
+        filters=filters,
+        unknown=unknown,
+        excludes=excludes,
+        phrases=phrases,
+    )
 
 
 def _apply(key: str, value: str, filters: dict[str, Any]) -> bool:
@@ -391,6 +443,12 @@ def describe(parsed: ParsedQuery) -> list[str]:
         out.append(f"大于 {_fmt_size(f['sizeMinBytes'])}")
     if f.get("sizeMaxBytes"):
         out.append(f"小于 {_fmt_size(f['sizeMaxBytes'])}")
+    # 排除项一定要显示出来。它是**减少结果**的操作，而且减号很容易误打 ——
+    # 不显示的话用户只会觉得"怎么少了这么多"，找不到是哪一步干的
+    if parsed.excludes:
+        out.append("排除：" + "、".join(parsed.excludes))
+    if parsed.phrases:
+        out.append("精确短语：" + "、".join(parsed.phrases))
     return out
 
 
