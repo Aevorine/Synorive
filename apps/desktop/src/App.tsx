@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType } from 'react';
+import { lazy, Suspense, useEffect, useState, type ComponentType } from 'react';
 import { ClipboardPeek } from './components/ClipboardPeek';
 import { EngineSetup } from './components/EngineSetup';
 import { SideBar } from './components/SideBar';
@@ -6,14 +6,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { Onboarding } from './components/Onboarding';
 import { StatusBar } from './components/StatusBar';
 import { TopBar } from './components/TopBar';
-import { AnalyzePage } from './pages/AnalyzePage';
-import { GraphPage } from './pages/GraphPage';
-import { LibraryPage } from './pages/LibraryPage';
-import { ResearchPage } from './pages/ResearchPage';
 import { SearchPage } from './pages/SearchPage';
-import { SettingsPage } from './pages/SettingsPage';
-import { TimelinePage } from './pages/TimelinePage';
-import { TodayPage } from './pages/TodayPage';
 import { api, setEnginePort } from './lib/api';
 import { projectApi } from './lib/webApi';
 import { useApp, useResolvedTheme, type PageId } from './lib/store';
@@ -59,6 +52,9 @@ function MainApp() {
   const page = useApp((s) => s.page);
   const engine = useApp((s) => s.engine);
   const theme = useResolvedTheme();
+
+  // 首屏画完之后，空闲时把其余七页的分片预取回来
+  usePrefetchPages();
 
   // ── 开机接线：拉设置、拉引擎状态、订阅变化 ────────────────
   useEffect(() => {
@@ -202,9 +198,37 @@ function MainApp() {
 }
 
 /**
- * 路由。没上路由库 —— 五个页面、无嵌套、无 URL 需求，
+ * 路由。没上路由库 —— 八个页面、无嵌套、无 URL 需求，
  * 引一个库进来只会多一层要维护的东西。
+ *
+ * ── 为什么只有搜索页是静态导入 ────────────────────────────
+ * 其余七页走 `lazy()`，各自切成独立的分片，打开软件时不下载也不解析。
+ * 搜索页是默认落地页，把它也切出去等于给最常走的那条路多加一次
+ * 网络（这里是磁盘）往返 —— 首屏反而变慢。
+ *
+ * 🔴 **`lazy()` 必须在模块顶层调用，绝不能放进组件体内。**
+ *    放进去的话每次渲染都会造一个新的 lazy 组件，React 认不出它是
+ *    同一个，于是每次切页都把整页卸载重挂 —— 表现是页面状态莫名丢失，
+ *    而且不报任何错。
  */
+const TodayPage = lazy(() => import('./pages/TodayPage').then((m) => ({ default: m.TodayPage })));
+const LibraryPage = lazy(() =>
+  import('./pages/LibraryPage').then((m) => ({ default: m.LibraryPage })),
+);
+const AnalyzePage = lazy(() =>
+  import('./pages/AnalyzePage').then((m) => ({ default: m.AnalyzePage })),
+);
+const TimelinePage = lazy(() =>
+  import('./pages/TimelinePage').then((m) => ({ default: m.TimelinePage })),
+);
+const GraphPage = lazy(() => import('./pages/GraphPage').then((m) => ({ default: m.GraphPage })));
+const ResearchPage = lazy(() =>
+  import('./pages/ResearchPage').then((m) => ({ default: m.ResearchPage })),
+);
+const SettingsPage = lazy(() =>
+  import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })),
+);
+
 const PAGES: Record<PageId, ComponentType> = {
   today: TodayPage,
   search: SearchPage,
@@ -216,7 +240,54 @@ const PAGES: Record<PageId, ComponentType> = {
   settings: SettingsPage,
 };
 
+/**
+ * 空闲时把其余页面悄悄预取回来。
+ *
+ * 只做代码切分的话，第一次点某一页会有一段可见的空白 —— 那是"变慢了"的观感，
+ * 哪怕启动其实快了。预取放在 `requestIdleCallback` 里：主线程闲下来才做，
+ * 抢不到用户正在等的任何一帧；等用户真去点的时候分片已经在内存里，零等待。
+ */
+function usePrefetchPages(): void {
+  useEffect(() => {
+    const idle =
+      typeof requestIdleCallback === 'function'
+        ? requestIdleCallback
+        : (cb: () => void) => setTimeout(cb, 1200);
+    const handle = idle(() => {
+      void import('./pages/TodayPage');
+      void import('./pages/LibraryPage');
+      void import('./pages/AnalyzePage');
+      void import('./pages/TimelinePage');
+      void import('./pages/GraphPage');
+      void import('./pages/ResearchPage');
+      void import('./pages/SettingsPage');
+    });
+    return () => {
+      if (typeof cancelIdleCallback === 'function' && typeof handle === 'number') {
+        cancelIdleCallback(handle);
+      }
+    };
+  }, []);
+}
+
 function Router({ page }: { page: PageId }) {
   const Comp = PAGES[page] ?? SearchPage;
-  return <Comp />;
+  return (
+    <Suspense fallback={<PageSkeleton />}>
+      <Comp />
+    </Suspense>
+  );
+}
+
+/** 分片还在读的那一瞬间垫一下。不是转圈 —— 转圈会让人觉得"卡住了" */
+function PageSkeleton() {
+  return (
+    <div className="page">
+      <div className="page__body syn-stack">
+        <div className="syn-skel syn-skel--line syn-skel--title" />
+        <div className="syn-skel syn-skel--line" />
+        <div className="syn-skel syn-skel--line syn-skel--short" />
+      </div>
+    </div>
+  );
 }

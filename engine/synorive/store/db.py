@@ -47,6 +47,56 @@ _COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+#: 页缓存与内存映射的档位，按本机物理内存挑。
+#:
+#: 🔴 **不能写死。** 原来固定 64 MB 页缓存：8 GB 内存的机器上偏保守（十万块以上的库
+#: 每次翻页都要重新从磁盘读 B 树内页），4 GB 的上网本上又偏激进。
+#:
+#: 🔴 **`mmap_size` 对工作线程来说是全新的。** 它原来只写在 `schema.sql` 里，
+#: 而那个脚本只在建库时跑一次、只作用于当时那一条连接 —— 引擎是每线程一条连接，
+#: 所以真正干活的那些线程上 `mmap_size` 一直是 0（映射关闭），
+#: 而 schema.sql 里那句"读放大明显下降"的注释一次都没成立过，也不报错。
+#: 现在改成每条连接都设。没有映射时每次读页要走一次 read() 系统调用 + 一次
+#: 用户态拷贝；开了之后 SQLite 直接读映射内存。它**不占额外物理内存**——
+#: 映射的是文件本身，操作系统按需换页，内存紧张时自己回收。
+#:
+#: ⚠️ 实测本机 SQLite 3.50.4 接受到 2 GB；有些发行版编译上限更低，
+#: 请求超过上限会被**静默截断**（不报错）。截断后仍然远好于 0，所以不做校验。
+#:
+#: 每条线程一条连接，页缓存是**每连接**的，所以档位按"单连接"算，
+#: 别拿总内存直接除。
+_TUNING_TIERS: tuple[tuple[int, int, int], ...] = (
+    # (物理内存下限 GB, 页缓存 KB, mmap 字节)
+    (32, 262144, 8 * 1024**3),   # ≥32G：256 MB 缓存 / 8 GB 映射
+    (16, 131072, 4 * 1024**3),   # ≥16G：128 MB / 4 GB
+    (8, 65536, 2 * 1024**3),     # ≥8G ：64 MB  / 2 GB（和原来的固定值一致）
+    (0, 32768, 512 * 1024**2),   # 更小：32 MB  / 512 MB
+)
+
+_tuning_cache: tuple[int, int] | None = None
+
+
+def _tuning() -> tuple[int, int]:
+    """(页缓存 KB, mmap 字节)。只算一次——每开一条连接都去问一遍内存是浪费。"""
+    global _tuning_cache
+    if _tuning_cache is not None:
+        return _tuning_cache
+    total_gb = 8.0
+    try:
+        import psutil
+
+        total_gb = psutil.virtual_memory().total / 1024**3
+    except Exception:
+        # 问不到就当 8 GB —— 退回原来的固定档位，不比以前差
+        pass
+    for floor_gb, cache_kb, mmap_bytes in _TUNING_TIERS:
+        if total_gb >= floor_gb:
+            _tuning_cache = (cache_kb, mmap_bytes)
+            return _tuning_cache
+    _tuning_cache = (32768, 512 * 1024**2)
+    return _tuning_cache
+
+
 def _migrate_columns(conn: sqlite3.Connection) -> None:
     #: 表不存在时 `PRAGMA table_info` 返回 0 行且**不报错**，于是"列不在里面"
     #: 恒为真，接着 `ALTER TABLE` 抛 `no such table`。老库（建库时还没有 jobs 表）
@@ -103,13 +153,15 @@ class Database:
                 pass
 
         # 每条连接都要设的 PRAGMA（WAL 是库级的，只需设一次，但重设无害）
+        cache_kb, mmap_bytes = _tuning()
         for pragma in (
             "PRAGMA journal_mode = WAL",
             "PRAGMA synchronous = NORMAL",
             "PRAGMA foreign_keys = ON",
             "PRAGMA temp_store = MEMORY",
             "PRAGMA busy_timeout = 30000",
-            "PRAGMA cache_size = -65536",
+            f"PRAGMA cache_size = -{cache_kb}",
+            f"PRAGMA mmap_size = {mmap_bytes}",
         ):
             conn.execute(pragma)
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, Loader2, RotateCcw, Trash2 } from 'lucide-react';
 import { labApi, type TrashEntry } from '../lib/labApi';
+import { VirtualList } from './VirtualList';
 
 /**
  * 回收站 —— 删除进 30 天缓冲区，不是永久丢失
@@ -80,8 +81,15 @@ export function TrashPanel() {
   }
 
   return (
-    <div className="trash">
-      {entries.map((e) => (
+    // 回收站保留 30 天，重度整理的一天就能删掉上千条。
+    // VirtualList 自带阈值：少于 60 条时它整个跳过虚拟化，直接全渲染。
+    <VirtualList
+      items={entries}
+      className="trash"
+      estimateHeight={72}
+      keyOf={(e) => e.id}
+    >
+      {(e) => (
         <div className="trash__item" key={e.id}>
           <div className="trash__info">
             <span className="trash__title">{e.title || e.locator}</span>
@@ -123,7 +131,7 @@ export function TrashPanel() {
             </button>
           </div>
         </div>
-      ))}
-    </div>
+      )}
+    </VirtualList>
   );
 }

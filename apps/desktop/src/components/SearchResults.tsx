@@ -121,6 +121,19 @@ export function SearchResults({
     estimateSize: () => rowHeight,
     // 视口外多渲染 6 行，快速滚动时不会出现白条
     overscan: 6,
+    /**
+     * 🔴 **量真实行高，不要只靠估算值。**
+     *
+     * 这里的行高是变的：一条网页结果可能只有一行标题，也可能是
+     * 标题换行 + 三行摘要 + 一排来源标签。密度档位给的 `rowHeight`
+     * 只是个平均数，用它当真值的症状是——滚动条长度一路在跳、
+     * 滚到底了下面还空着一块、按 ↓ 键选中框和实际行错位。
+     * 这些都不报错，只是"用起来怪"。
+     *
+     * `measureElement` 让 virtualizer 用 ResizeObserver 量出每行的
+     * 真实高度并回填，估算值就只在首帧铺开时用一下。
+     */
+    measureElement: (el) => el.getBoundingClientRect().height,
   });
 
   /**
@@ -159,7 +172,11 @@ export function SearchResults({
             <div
               key={hit.item.id}
               className="results__row"
-              style={{ height: `${v.size}px`, transform: `translateY(${v.start}px)` }}
+              /* data-index 是 measureElement 回填高度时认行的依据，少了它量到的
+                 高度会写错行 —— 表现是滚动位置越滚越偏 */
+              data-index={v.index}
+              ref={virtualizer.measureElement}
+              style={{ transform: `translateY(${v.start}px)` }}
             >
               <ResultCard
                 hit={hit}
