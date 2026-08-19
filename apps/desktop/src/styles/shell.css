@@ -628,3 +628,82 @@
 .sidebar__item--minor {
   color: var(--syn-color-text-muted);
 }
+
+/* ── 标签页面板 ──────────────────────────────────────────
+   开着的标签全部挂载，非当前的用 hidden（= display:none）藏起来。
+   藏起来的那些不占布局、不参与命中测试、也不绘制。 */
+
+.tabpane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.tabpane[hidden] {
+  display: none;
+}
+
+/* ── 标签页条 ────────────────────────────────────────────
+   只在开了不止一个界面时出现。刻意做得很轻 ——
+   它是"你还开着这几页"的提示，不是第二套导航。 */
+
+.tabbar {
+  display: flex;
+  align-items: stretch;
+  gap: var(--syn-space-xxs);
+  flex: none;
+  padding: var(--syn-space-xxs) var(--syn-layout-content-pad) 0;
+  border-bottom: 1px solid var(--syn-color-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabbar::-webkit-scrollbar {
+  display: none;
+}
+
+.tabbar__tab {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  padding-inline: var(--syn-space-xs) var(--syn-space-xxs);
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-top-left-radius: var(--syn-radius-md);
+  border-top-right-radius: var(--syn-radius-md);
+  white-space: nowrap;
+  color: var(--syn-color-text-muted);
+}
+
+.tabbar__tab:hover {
+  background: var(--syn-color-bg-hover);
+}
+
+/* 当前那一页：和正文同底色 + 一条主色顶边，视觉上和下面的内容连成一块 */
+.tabbar__tab--on {
+  background: var(--syn-color-bg);
+  border-color: var(--syn-color-border);
+  box-shadow: inset 0 2px 0 var(--syn-color-primary);
+  color: var(--syn-color-text);
+}
+
+.tabbar__label {
+  padding-block: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  color: inherit;
+}
+
+.tabbar__x {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--syn-radius-sm);
+  color: var(--syn-color-text-muted);
+}
+
+.tabbar__x:hover {
+  background: var(--syn-color-danger-subtle);
+  color: var(--syn-color-danger);
+}

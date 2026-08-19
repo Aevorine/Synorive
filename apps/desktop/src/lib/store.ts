@@ -45,6 +45,21 @@ interface AppState {
   engine: EngineProcessState | null;
   systemTheme: ResolvedTheme;
   page: PageId;
+  /**
+   * 开着的标签页 —— **每个界面最多一个**。
+   *
+   * 🔴 这条约束不是偷懒，是这个功能能不能站住的关键。允许同一个界面开两个
+   *    标签的话，同一个组件会被挂载两次，而 `useSearch` / `useAsk` 这些
+   *    store 是**全局单例** —— 两份实例读写同一份状态，症状是
+   *    "在 A 标签改了筛选，B 标签跟着变"。那种串味极难排查，
+   *    因为两边看起来都是"自己的"界面。
+   *    一页一个标签之后，这条路整个不存在。
+   *
+   * 🔴 **没关掉的标签保持挂载**（只是隐藏），这才是"不丢上下文"的本意：
+   *    研究工作台在后台继续跑它的检索，切回来进度还在。
+   *    代价是内存 —— 所以关掉标签是真的卸载，不是留着。
+   */
+  tabs: PageId[];
   sideBarCollapsed: boolean;
   commandPaletteOpen: boolean;
   /** 搜索框要不要抢焦点（托盘快捷键唤起时置 true） */
@@ -77,6 +92,8 @@ interface AppState {
   setEngine: (s: EngineProcessState | null) => void;
   setSystemTheme: (t: ResolvedTheme) => void;
   setPage: (p: PageId) => void;
+  /** 关掉一个标签。关的是当前页时会自动落到旁边那个 */
+  closeTab: (p: PageId) => void;
   toggleSideBar: () => void;
   setCommandPaletteOpen: (v: boolean) => void;
   focusSearch: () => void;
@@ -93,6 +110,7 @@ export const useApp = create<AppState>((set) => ({
   engine: null,
   systemTheme: 'light',
   page: 'search',
+  tabs: ['search'],
   sideBarCollapsed: false,
   commandPaletteOpen: false,
   searchFocusNonce: 0,
@@ -104,10 +122,28 @@ export const useApp = create<AppState>((set) => ({
   setSettings: (s) => set({ settings: s }),
   setEngine: (s) => set({ engine: s }),
   setSystemTheme: (t) => set({ systemTheme: t }),
-  setPage: (p) => set({ page: p }),
+  // 切页 = 激活那一页的标签；还没开过就开一个。
+  // 这样"点导航"和"切标签"是同一件事，用户不用理解两套概念
+  setPage: (p) =>
+    set((s) => ({ page: p, tabs: s.tabs.includes(p) ? s.tabs : [...s.tabs, p] })),
+  closeTab: (p) =>
+    set((s) => {
+      const tabs = s.tabs.filter((t) => t !== p);
+      // 关掉的是当前这一页时要落到别的页上，否则主区会空掉。
+      // 落到**右边那个**（关掉后原位置上的那个），没有就落到最后一个
+      if (s.page !== p) return { tabs };
+      const at = s.tabs.indexOf(p);
+      const next = tabs[Math.min(at, tabs.length - 1)] ?? 'search';
+      return { tabs: tabs.length ? tabs : [next], page: next };
+    }),
   toggleSideBar: () => set((s) => ({ sideBarCollapsed: !s.sideBarCollapsed })),
   setCommandPaletteOpen: (v) => set({ commandPaletteOpen: v }),
-  focusSearch: () => set((s) => ({ page: 'search', searchFocusNonce: s.searchFocusNonce + 1 })),
+  focusSearch: () =>
+    set((s) => ({
+      page: 'search',
+      tabs: s.tabs.includes('search') ? s.tabs : [...s.tabs, 'search'],
+      searchFocusNonce: s.searchFocusNonce + 1,
+    })),
   setStageExpanded: (v) => set({ stageExpanded: v }),
   setInputMode: (m) => set({ inputMode: m }),
   setActiveProjectName: (n) => set({ activeProjectName: n }),
@@ -116,6 +152,7 @@ export const useApp = create<AppState>((set) => ({
   openStage: () =>
     set((s) => ({
       page: 'search',
+      tabs: s.tabs.includes('search') ? s.tabs : [...s.tabs, 'search'],
       stageExpanded: true,
       searchFocusNonce: s.searchFocusNonce + 1,
     })),

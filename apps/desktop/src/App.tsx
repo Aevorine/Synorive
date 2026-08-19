@@ -5,6 +5,7 @@ import { SideBar } from './components/SideBar';
 import { CommandPalette } from './components/CommandPalette';
 import { Onboarding } from './components/Onboarding';
 import { StatusBar } from './components/StatusBar';
+import { TabBar } from './components/TabBar';
 import { TopBar } from './components/TopBar';
 import { SearchPage } from './pages/SearchPage';
 import { api, setEnginePort } from './lib/api';
@@ -50,6 +51,7 @@ function MainApp() {
   const focusSearch = useApp((s) => s.focusSearch);
   const setPage = useApp((s) => s.setPage);
   const page = useApp((s) => s.page);
+  const tabs = useApp((s) => s.tabs);
   const engine = useApp((s) => s.engine);
   const theme = useResolvedTheme();
 
@@ -162,13 +164,15 @@ function MainApp() {
       <TopBar />
       <SideBar />
       <main className="main">
+        {/* 开了不止一个界面时才显示。只有一个标签的"标签栏"是纯噪声 */}
+        <TabBar />
         {/* 引擎起不来时，把"缺什么怎么补"摊在正中间，
             而不是让用户对着一个状态栏里的「引擎启动失败」发呆。
             设置页不拦 —— 那页不依赖引擎，而且用户可能想先改数据目录。 */}
         {engine?.lifecycle === 'failed' && page !== 'settings' ? (
           <EngineSetup />
         ) : (
-          <Router page={page} />
+          <Router page={page} tabs={tabs} />
         )}
       </main>
       <StatusBar />
@@ -270,12 +274,34 @@ function usePrefetchPages(): void {
   }, []);
 }
 
-function Router({ page }: { page: PageId }) {
-  const Comp = PAGES[page] ?? SearchPage;
+/**
+ * 路由 + 标签页。
+ *
+ * 🔴 **开着的标签全部保持挂载，只是把非当前的藏起来。**
+ *    只渲染当前那一页的话，切回研究工作台时它会重新挂载 ——
+ *    正在跑的检索、已经出来的一半结果、滚动位置全没了，
+ *    而"切走再切回来不丢东西"正是做标签页的唯一理由。
+ *
+ * 🔴 用 `hidden` 属性而不是条件渲染，也不是 `visibility`。
+ *    `hidden` 走的是 `display:none` —— 不占布局、不参与命中测试、
+ *    浏览器也不会给它算样式和绘制，开五个标签也不会掉帧。
+ *    `visibility:hidden` 会继续占位并参与布局，那才是真的会卡。
+ */
+function Router({ page, tabs }: { page: PageId; tabs: PageId[] }) {
+  const open = tabs.length ? tabs : [page];
   return (
-    <Suspense fallback={<PageSkeleton />}>
-      <Comp />
-    </Suspense>
+    <>
+      {open.map((p) => {
+        const Comp = PAGES[p] ?? SearchPage;
+        return (
+          <div key={p} className="tabpane" hidden={p !== page}>
+            <Suspense fallback={<PageSkeleton />}>
+              <Comp />
+            </Suspense>
+          </div>
+        );
+      })}
+    </>
   );
 }
 
