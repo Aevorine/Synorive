@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  长按桌面图标的快捷方式。
+
+  只放**一条**：拍照搜索。
+  多放几条不是更好 —— 长按菜单里塞四五条，用户每次都要读一遍才能挑，
+  比一条直达慢。拍照搜索是唯一一个"在手机上做比在电脑上做更自然"的动作，
+  其余功能（搜索、配对）打开 App 就在第一屏，不值得占这个位置。
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="camera_search"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_camera_short"
+        android:shortcutLongLabel="@string/shortcut_camera_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.synorive.mobile"
+            android:targetClass="com.synorive.mobile.MainActivity">
+            <!-- MainActivity 靠这个 extra 直接落到拍照搜索页 -->
+            <extra
+                android:name="synorive.route"
+                android:value="camera" />
+        </intent>
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+</shortcuts>

@@ -39,7 +39,22 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel as composeViewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.synorive.mobile.LocalAppContainer
+import com.synorive.mobile.data.pairing.QrPayload
+import java.io.File
 import com.synorive.mobile.ui.update.UpdateCard
 
 /**
@@ -65,6 +80,62 @@ fun PairingScreen() {
     val port = portText.toIntOrNull() ?: 0
     val canSubmit = host.isNotBlank() && port in 1..65535 && token.isNotBlank()
 
+    // ── 扫码配对 ────────────────────────────────────────────
+    //
+    // 走系统相机拍一张再本地解码，不引整套 CameraX 预览栈。
+    // 收益（不用手抄三串字符）一样，而依赖少 4 个 artifact、少一个预览 Surface。
+    val context = LocalContext.current
+    var scanMsg by remember { mutableStateOf<String?>(null) }
+    var pendingUri by remember { mutableStateOf<Uri?>(null) }
+
+    val takePhoto = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture(),
+    ) { ok ->
+        val uri = pendingUri
+        if (!ok || uri == null) {
+            // 用户自己取消了拍照，这是正常操作，不该报成失败
+            scanMsg = null
+            return@rememberLauncherForActivityResult
+        }
+        val payload = QrPayload.parse(QrPayload.decodeFromImage(context, uri))
+        if (payload == null) {
+            // 🔴 认不出来要说清"这不是配对码"，而不是含糊的"失败" ——
+            //    用户多半是拍糊了或者拍了别的码，得知道往哪个方向再来一次
+            scanMsg = "没认出配对二维码。对准一点、拍清楚一些再来一次；" +
+                "确认电脑上「设置 → 安卓配对 → 显示配对二维码」是打开着的（它两分钟会自动收起）。"
+        } else {
+            host = payload.host
+            portText = payload.port.toString()
+            token = payload.token
+            scanMsg = "已填好 ${payload.host}:${payload.port}，点下面「测试连接」确认一下。"
+        }
+    }
+
+    val askCamera = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            val uri = createQrCaptureUri(context)
+            pendingUri = uri
+            takePhoto.launch(uri)
+        } else {
+            scanMsg = "没有相机权限就扫不了码。可以用下面三栏手动填，效果一样。"
+        }
+    }
+
+    fun startScan() {
+        scanMsg = null
+        val has = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        if (has) {
+            val uri = createQrCaptureUri(context)
+            pendingUri = uri
+            takePhoto.launch(uri)
+        } else {
+            askCamera.launch(Manifest.permission.CAMERA)
+        }
+    }
+
     Scaffold(
         topBar = { TopAppBar(title = { Text("安卓配对") }) },
     ) { padding ->
@@ -81,6 +152,24 @@ fun PairingScreen() {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            // 扫码放在手填三栏之前 —— 它是这一屏里唯一不用抄东西的路径。
+            // 手填的留着：扫码失败时必须有退路
+            Button(
+                onClick = { startScan() },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("扫二维码配对（推荐）")
+            }
+            Text(
+                "在电脑上点「设置 → 安卓配对 → 显示配对二维码」，然后用这里拍一张。" +
+                    "地址、端口、令牌会自动填好，不用一个字一个字抄。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            scanMsg?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
 
             OutlinedTextField(
                 value = host,
@@ -160,4 +249,17 @@ fun PairingScreen() {
             UpdateCard()
         }
     }
+}
+
+/**
+ * 拍二维码用的临时文件。
+ *
+ * 和拍照搜索共用 `cacheDir/camera` —— 系统会在空间紧张时自己清理这个目录，
+ * 不用我们自己管生命周期。走 FileProvider 是因为 Android 7 起
+ * 直接传 `file://` 给相机 App 会抛 FileUriExposedException。
+ */
+private fun createQrCaptureUri(context: Context): Uri {
+    val dir = File(context.cacheDir, "camera").apply { mkdirs() }
+    val file = File(dir, "qr_${System.currentTimeMillis()}.jpg")
+    return FileProvider.getUriForFile(context, "com.synorive.mobile.fileprovider", file)
 }

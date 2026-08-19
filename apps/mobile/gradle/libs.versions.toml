@@ -20,6 +20,8 @@ retrofit = "2.11.0"
 okhttp = "4.12.0"
 kotlinxSerializationJson = "1.7.3"
 coil = "2.7.0"
+zxing = "3.5.3"
+junit = "4.13.2"
 datastore = "1.1.1"
 coroutines = "1.9.0"
 
@@ -47,6 +49,12 @@ okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor",
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
+# 二维码解码。**纯 Java、无 Play 服务依赖** —— 走系统相机拍一张再本地解，
+# 比引入整套 CameraX 预览栈（4 个 artifact + 一个预览 Surface）小得多，
+# 而"不用手抄三串字符"这个收益是一样的
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
+# 纯 JVM 单测。扫码解析那段刻意不依赖 android.net.Uri，就是为了能用它来测
+junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

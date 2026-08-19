@@ -44,7 +44,13 @@ private object Routes {
  * 压在上面的临时页面——用户完成一次动作就该退回搜索，不该占一个常驻标签位。
  */
 @Composable
-fun SynoriveApp(shareInbox: ShareInboxViewModel) {
+fun SynoriveApp(
+    shareInbox: ShareInboxViewModel,
+    /** 长按桌面图标进来时要直达哪一页。null = 正常启动 */
+    pendingRoute: String? = null,
+    /** 跳过去之后要清掉，否则每次重组都会再跳一次 */
+    onRouteConsumed: () -> Unit = {},
+) {
     val navController = rememberNavController()
     val pendingShare by shareInbox.pending.collectAsState()
 
@@ -58,6 +64,16 @@ fun SynoriveApp(shareInbox: ShareInboxViewModel) {
 
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
+    // 快捷方式直达。**跳完立刻清掉** —— 不清的话每次重组都会再跳一次，
+    // 表现是"从拍照页返回，立刻又被弹回拍照页"，用户根本退不出来
+    LaunchedEffect(pendingRoute) {
+        when (pendingRoute) {
+            "camera" -> navController.navigate(Routes.CAMERA_SEARCH)
+            "pairing" -> navController.navigateToTab(Routes.PAIRING)
+            else -> null
+        }?.also { onRouteConsumed() } ?: run { if (pendingRoute != null) onRouteConsumed() }
+    }
+
     val showBottomBar = currentRoute == Routes.SEARCH || currentRoute == Routes.PAIRING
 
     Scaffold(

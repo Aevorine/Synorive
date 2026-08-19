@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Synorive</string>
+    <string name="shortcut_camera_short">拍照搜索</string>
+    <string name="shortcut_camera_long">拍一张，在你的资料库里找</string>
 </resources>

@@ -25,12 +25,14 @@
     "@synorive/design-tokens": "*",
     "@synorive/shared-types": "*",
     "electron-updater": "^6.8.9",
+    "qrcode": "1.5.4",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@fontsource/noto-serif-sc": "^5.2.8",
     "@tanstack/react-virtual": "^3.11.2",
     "@types/node": "^22.20.1",
+    "@types/qrcode": "1.5.5",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",

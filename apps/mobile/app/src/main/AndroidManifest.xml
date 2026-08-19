@@ -45,6 +45,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- 长按桌面图标的快捷方式：直达拍照搜索，少点两下 -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+
             <!-- 分享文本/链接进来：转发给 /api/ingest -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

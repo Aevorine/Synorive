@@ -1254,3 +1254,34 @@
   margin-top: 3px;
   flex: none;
 }
+
+/* ── 配对二维码 ──────────────────────────────────────────
+   默认折叠、显示两分钟自动收起 —— 它带着完整连接凭据，
+   等于把钥匙印在屏幕上，不该一直挂在设置页里。 */
+
+.pairqr {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-md);
+  background: var(--syn-color-bg-sunken);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+}
+
+/* 二维码必须是白底黑码 —— 深色主题下反色的码有些手机认不出来。
+   这里给一圈白色内边距当静默区（QR 规范要求四周留白才好识别）。 */
+.pairqr__img {
+  width: 220px;
+  height: 220px;
+  padding: var(--syn-space-sm);
+  background: #ffffff; /* allow-hardcoded：二维码静默区必须是纯白，不跟主题走 */
+  border-radius: var(--syn-radius-md);
+}
+
+.pairqr__note {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  line-height: var(--syn-lh-relaxed);
+}

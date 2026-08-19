@@ -87,5 +87,26 @@ class EngineRepository(
 
     fun recentCached(limit: Int = 100): Flow<List<CachedItemEntity>> = cacheDao.recent(limit)
 
+    /**
+     * 离线检索：连不上电脑时，在缓存过的内容里找。
+     *
+     * 🔴 **它不是"降级的搜索"，是"另一件事"。** 缓存里只有最近搜过的那几百条，
+     *    既没有语义召回也没有全文索引。所以调用方**必须**把结果标成离线的，
+     *    并且把"内容截至某时刻"显示出来 —— 不标的话，用户会把
+     *    "缓存里没有"当成"库里没有"，然后得出一个错的结论。
+     */
+    suspend fun searchOffline(query: String, limit: Int = 50): OfflineResult {
+        val hits = cacheDao.searchOffline(query.trim(), limit)
+        return OfflineResult(hits = hits, newestCachedAt = cacheDao.newestCachedAt(), total = cacheDao.count())
+    }
+
+    data class OfflineResult(
+        val hits: List<CachedItemEntity>,
+        /** 缓存里最新那条的时间戳。null = 缓存是空的 */
+        val newestCachedAt: Long?,
+        /** 缓存里一共多少条 —— 用来说清"你能离线搜的范围有多大" */
+        val total: Int,
+    )
+
     suspend fun clearCache() = cacheDao.clear()
 }

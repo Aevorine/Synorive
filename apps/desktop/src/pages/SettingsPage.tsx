@@ -9,6 +9,7 @@ import type {
   LibraryEntry,
 } from '@synorive/shared-types';
 import { DbEncryptPanel } from '../components/DbEncryptPanel';
+import { PairingQr } from '../components/PairingQr';
 import { PrivacyFence } from '../components/PrivacyFence';
 import { SynonymPanel } from '../components/SynonymPanel';
 import { HotkeyReport } from '../components/HotkeyReport';
@@ -809,7 +810,16 @@ function AndroidPairingInfo({
 
   return (
     <div className="pairing-info">
-      <Field label="地址" hint="手机端「配对设置」里填这几个之一——具体哪个是本机地址，看手机连的是哪个 Wi-Fi/网段。">
+      {/* 二维码放最前面：它是这一屏里唯一"不用抄任何东西"的路径。
+          下面那几栏手抄的留着 —— 扫码失败时得有退路 */}
+      <Field
+        label="扫码配对（推荐）"
+        hint="不用抄 IP、端口、令牌，手机拍一张就配好了。抄错任意一个字符，手机端得到的都是同一句「连不上」，而你没法知道是抄错了还是网不通。"
+      >
+        <PairingQr addrs={addrs} port={port} token={settings.pairingToken} />
+      </Field>
+
+      <Field label="地址" hint="扫码不成时手动填。手机端「配对设置」里填这几个之一——具体哪个是本机地址，看手机连的是哪个 Wi-Fi/网段。">
         {addrs.length === 0 ? (
           <p className="field__hint">没探测到局域网 IPv4 地址——检查一下这台机器是不是连着 Wi-Fi/网线。</p>
         ) : (

@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.synorive.mobile.data.model.ReverseImageResult
+import com.synorive.mobile.data.model.IngestJob
 import com.synorive.mobile.data.repository.EngineRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,8 +34,8 @@ class ShareIntakeViewModel(private val repository: EngineRepository) : ViewModel
         _ingestState.value = ShareOpState.Working
         viewModelScope.launch {
             repository.ingestText(text).fold(
-                onSuccess = { _ingestState.value = ShareOpState.Done("已加入资料库") },
-                onFailure = { e -> _ingestState.value = ShareOpState.Failed(e.message ?: "投喂失败") },
+                onSuccess = { job -> _ingestState.value = ShareOpState.Done(receipt(job)) },
+                onFailure = { e -> _ingestState.value = ShareOpState.Failed(explain(e)) },
             )
         }
     }
@@ -43,8 +44,8 @@ class ShareIntakeViewModel(private val repository: EngineRepository) : ViewModel
         _ingestState.value = ShareOpState.Working
         viewModelScope.launch {
             repository.ingestUri(context, uri).fold(
-                onSuccess = { _ingestState.value = ShareOpState.Done("已上传并加入资料库") },
-                onFailure = { e -> _ingestState.value = ShareOpState.Failed(e.message ?: "投喂失败") },
+                onSuccess = { job -> _ingestState.value = ShareOpState.Done("已上传。" + receipt(job)) },
+                onFailure = { e -> _ingestState.value = ShareOpState.Failed(explain(e)) },
             )
         }
     }
@@ -64,5 +65,35 @@ class ShareIntakeViewModel(private val repository: EngineRepository) : ViewModel
                 onFailure = { e -> _reverseOpState.value = ShareOpState.Failed(e.message ?: "反查失败") },
             )
         }
+    }
+}
+
+/**
+ * 投喂回执。
+ *
+ * 🔴 **要说清"存进去几条"，不能只说"已加入资料库"。**
+ *    分享一个网页进来，引擎可能抓到 1 条正文、也可能因为登录墙抓到 0 条 ——
+ *    两种情况下"已加入资料库"这句话都会显示出来，而后者其实什么都没进去。
+ *    用户过几天回去搜发现没有，只会以为是搜索坏了。
+ */
+private fun receipt(job: IngestJob): String = when {
+    job.totalItems > 0 -> "已存入 ${job.totalItems} 条，回电脑上就能搜到。"
+    // 🔴 0 条要明说。引擎接了任务但没解析出内容是很常见的一类结果
+    //    （登录墙、纯图片页、格式不支持），而它**不是错误**，所以不能报成失败
+    else -> "引擎收下了，但这一份没解析出可索引的内容（常见于要登录的网页、纯图片页）。" +
+        "回电脑上看「分析中心」能看到它的处理结果。"
+}
+
+/** 失败也要说清是哪一类，而不是把异常消息原样甩出来 */
+private fun explain(e: Throwable): String {
+    val raw = e.message ?: "投喂失败"
+    return when {
+        raw.contains("Unable to resolve host", true) ||
+            raw.contains("Failed to connect", true) ||
+            raw.contains("timeout", true) ->
+            "连不上电脑。确认两台设备在同一个 Wi-Fi、电脑上的 Synorive 开着、" +
+                "而且配对里的端口没变（端口每次启动都会变）。"
+        raw.contains("401") -> "配对令牌不对。回电脑上「设置 → 安卓配对」重新扫一次码。"
+        else -> raw
     }
 }

@@ -49,6 +49,13 @@
 -keep class com.synorive.mobile.data.model.** { *; }
 -keep class com.synorive.mobile.data.update.UpdateModels* { *; }
 
+# ── ZXing（二维码解码）────────────────────────────────────────
+# MultiFormatReader 按格式**反射**查找具体的 Reader 实现。
+# R8 看不到那条引用链，会把它们当成没人用而删掉 ——
+# 删了不报错，只是扫码永远返回"没认出配对二维码"。
+-keep class com.google.zxing.** { *; }
+-dontwarn com.google.zxing.**
+
 # ── 保留行号，崩溃栈还能对上源码 ─────────────────────────────────
 -keepattributes SourceFile, LineNumberTable
 -renamesourcefileattribute SourceFile

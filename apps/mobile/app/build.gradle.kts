@@ -136,4 +136,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.coil.compose)
+    implementation(libs.zxing.core)
+
+    testImplementation(libs.junit)
 }
