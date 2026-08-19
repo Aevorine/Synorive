@@ -102,6 +102,51 @@ def to_index_text(text: str) -> str:
     return " ".join(segment(text))
 
 
+def to_query_with_synonyms(text: str, syn: dict[str, list[str]] | None) -> str:
+    """
+    带自定义同义词的 MATCH 表达式。
+
+    每个正向词展开成 `("原词" OR "同义词1" OR "同义词2")`。
+    🔴 **展开只做一层 OR，不改 AND 结构**：多个词之间仍然是 AND，
+       否则加了一对同义词之后整条查询会从"全都要命中"变成"命中一个就算"，
+       结果集暴涨而用户完全不知道为什么。
+
+    🔴 **排除词不展开。** 用户写 `-草稿` 是明确排掉这个词；顺带把它的同义词
+       也排掉，是替他做了一个他没说过的决定。
+    """
+    base = to_query(text)
+    if not syn or not base:
+        return base
+    _ensure_init()
+    out_parts: list[str] = []
+    for part in base.split(" AND "):
+        if part.startswith("NOT "):
+            out_parts.append(part)
+            continue
+        # 只对单词形式的项展开（`"词"`）。带括号的多词组合不展开 ——
+        # 那是分词切出来的一个短语，逐词展开会把它拆散
+        m = _SINGLE_TERM.fullmatch(part)
+        if not m:
+            out_parts.append(part)
+            continue
+        word = m.group(1)
+        alts = syn.get(word)
+        if not alts:
+            out_parts.append(part)
+            continue
+        variants = [part]
+        for alt in alts[:6]:
+            seg = to_index_text(alt)
+            if seg:
+                variants.append(f'"{seg}"' if " " not in seg else f'("{seg}")')
+        out_parts.append("(" + " OR ".join(variants) + ")")
+    return " AND ".join(out_parts)
+
+
+#: 只匹配 `"某个词"` 这种单项，用来判断能不能安全地做 OR 展开
+_SINGLE_TERM = re.compile(r'"([^"]+)"')
+
+
 @lru_cache(maxsize=2048)
 def to_query(text: str) -> str:
     """

@@ -411,3 +411,42 @@ CREATE TABLE IF NOT EXISTS research_sources (
     note        TEXT,
     PRIMARY KEY (project_id, url)
 );
+
+-- ── 点击学习（E11+）────────────────────────────────────────
+-- 「你搜这个词的时候，实际点开了哪一条」。
+--
+-- 🔴 和 items.open_count 不是一回事。那个是**全局**热度（你常开哪些文件），
+--    这张表是**条件**热度（搜"预算"时你点的是哪一份）。两者都有用，
+--    但只有后者能解决"同一个词我每次都得往下翻三条才找到那份"。
+--
+-- 🔴 只存分词后的词和 item_id，**不存完整查询串**。完整查询串是一句话，
+--    比词表敏感得多；而排序只需要词级别的关联。
+CREATE TABLE IF NOT EXISTS click_log (
+    term    TEXT NOT NULL,
+    item_id TEXT NOT NULL REFERENCES items (id) ON DELETE CASCADE,
+    n       INTEGER NOT NULL DEFAULT 0,           -- 点了几次
+    at      TEXT NOT NULL,                        -- 最后一次点的时间
+    PRIMARY KEY (term, item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_click_log_term ON click_log (term);
+
+-- ── 自定义同义词 ────────────────────────────────────────────
+-- 「小李方案」也要能命中「李明的技术方案」。
+--
+-- 🔴 和 websearch/expand.py 里那张 _GLOSSARY 不是一回事：那张是**中译英**，
+--    只在联网搜索时把查询翻成英文再发出去，对本地库一点作用都没有。
+--    这张表管的是本地检索的同义扩展，而且是**用户自己的**黑话和缩写 ——
+--    内置词表不可能知道"小李"指的是谁。
+--
+-- 双向：存 (a,b) 时搜 a 能命中 b、搜 b 也能命中 a。单向同义在实际使用里
+-- 几乎总是让人困惑（"我明明设了同义词，怎么反过来搜就不行"）。
+CREATE TABLE IF NOT EXISTS synonyms (
+    a  TEXT NOT NULL,
+    b  TEXT NOT NULL,
+    at TEXT NOT NULL,
+    PRIMARY KEY (a, b)
+);
+
+CREATE INDEX IF NOT EXISTS idx_synonyms_a ON synonyms (a);
+CREATE INDEX IF NOT EXISTS idx_synonyms_b ON synonyms (b);

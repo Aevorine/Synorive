@@ -15,6 +15,7 @@ import { useApp } from '../lib/store';
 import { useKeyNav } from '../lib/keynav';
 import { api } from '../lib/api';
 import { useSelection } from '../lib/useSelection';
+import { useSearch } from '../lib/useSearch';
 
 const MODALITY_ICON: Record<Modality, typeof FileText> = {
   text: FileText,
@@ -154,7 +155,9 @@ export function SearchResults({
   const openHit = (i: number): void => {
     const hit = hits[i];
     if (!hit) return;
-    void api.recordOpen(hit.item.id);
+    // 带上当前查询词：引擎据此学"搜这几个词时你点的是哪一条"。
+    // 不带的话只会更新全局热度，而全局热度回答不了"搜『预算』时我每次都得往下翻"
+    void api.recordOpen(hit.item.id, useSearch.getState().query);
     if (hit.item.source === 'link') void window.synorive.sys.openExternal(hit.item.locator);
     else void window.synorive.sys.openPath(hit.item.locator);
   };
@@ -226,7 +229,7 @@ function ResultCard({
   const toggle = useSelection((s) => s.toggle);
 
   const open = () => {
-    void api.recordOpen(item.id);
+    void api.recordOpen(item.id, useSearch.getState().query);
     if (item.source === 'link') void window.synorive.sys.openExternal(item.locator);
     else void window.synorive.sys.openPath(item.locator);
   };

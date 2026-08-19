@@ -35,7 +35,7 @@ import sqlite_vec
 
 from ..store.db import Database
 from ..store.repository import Repository
-from ..store.text import highlight_terms, to_query, to_trigram_query
+from ..store.text import highlight_terms, to_query, to_query_with_synonyms, to_trigram_query
 from .query_syntax import describe, parse_query
 from . import answer as answer_mod
 from . import ask as ask_mod
@@ -130,6 +130,17 @@ class Weights:
     source_trust: float = 0.2
     popularity: float = 0.2
     title_boost: float = 0.5
+    #: E11+ 条件热度：**搜这几个词的时候**你以前点开的是哪一条。
+    #:
+    #: 和 popularity（全局热度：你常开哪些文件）是两回事。
+    #: 全局热度解决不了"搜『预算』时我每次都得往下翻三条才找到那份" ——
+    #: 那份报告在别的查询下并不该被提上来。
+    #:
+    #: 🔴 默认值刻意压得低（0.25）。学出来的偏好一旦压过内容相关性，
+    #:    就会形成"点过的更容易被点、更容易被点又更容易被提上来"的回路，
+    #:    库里其余内容会被越埋越深，而用户完全看不出发生了什么。
+    #:    设成 0 = 完全关掉，设置里有一键清空历史。
+    personal: float = 0.25
 
     #: D1 结果多样性：**同一个目录 / 同一个域名**下的第 2、3 条依次降权。
     #:
@@ -166,6 +177,7 @@ class Weights:
             #    表现是"手机上一搜就 500"，而桌面端一切正常
             diversity=float(d.get("diversity", 0.5)),
             length_penalty=float(d.get("lengthPenalty", 0.3)),
+            personal=float(d.get("personal", 0.25)),
         )
 
 
@@ -499,7 +511,8 @@ class SearchEngine:
 
     def recall_keyword(self, query: str, filters: Filters, limit: int = RECALL_LIMIT) -> list[Candidate]:
         """FTS5 + BM25。分块级召回，一条内容可能命中多个块，取最好的那个。"""
-        expr = to_query(query)
+        # 用户自定义的同义词在这里展开成 OR。内置词表管不了"小李"指的是谁
+        expr = to_query_with_synonyms(query, self._synonyms())
         if not expr:
             return []
 
@@ -603,6 +616,28 @@ class SearchEngine:
         if not hit:
             return cands
         return [c for c in cands if c.item_id not in hit]
+
+    def _synonyms(self) -> dict[str, list[str]]:
+        """
+        自定义同义词表。**缓存一份**：每次搜索都查一遍库是白花的 I/O，
+        而这张表只有用户在设置里改的时候才会变。
+        改动走 `invalidate_synonyms()` 主动失效，不做定时轮询 ——
+        轮询意味着"改完要等几秒才生效"，那种延迟用户只会当成没生效。
+        """
+        cached = getattr(self, "_syn_cache", None)
+        if cached is not None:
+            return cached
+        try:
+            cached = self.repo.synonym_map()
+        except Exception as e:  # noqa: BLE001
+            log.debug("同义词表读取失败，本次不展开：%s", e)
+            cached = {}
+        self._syn_cache = cached
+        return cached
+
+    def invalidate_synonyms(self) -> None:
+        """设置里改过同义词之后调一次，让下一次搜索重新读表。"""
+        self._syn_cache = None
 
     def recall_title(self, query: str, filters: Filters, limit: int = 60) -> list[Candidate]:
         """
@@ -795,6 +830,18 @@ class SearchEngine:
         for r in rows.values():
             max_open = max(max_open, int(r["open_count"] or 0))
 
+        # E11+ 条件热度。一次查表拿到"这几个词历史上点开过哪些"，
+        # 权重为 0 时连查都不查 —— 关掉就该是真的一点代价都不付
+        clicks: dict[str, int] = {}
+        if weights.personal > 0 and terms:
+            try:
+                clicks = self.repo.clicks_for_terms(terms)
+            except sqlite3.OperationalError as e:
+                # 老库还没有 click_log 表（正常升级路径上会被 schema.sql 建出来，
+                # 但引擎可能在建表之前就跑了一次搜索）。不影响排序，记一条就走
+                log.debug("条件热度查表失败，本次跳过：%s", e)
+        max_click = max(clicks.values()) if clicks else 0
+
         out: list[tuple[Candidate, float, dict[str, float]]] = []
         for c in cands:
             r = rows.get(c.item_id)
@@ -822,6 +869,12 @@ class SearchEngine:
             opens = int(r["open_count"] or 0)
             pop = math.log1p(opens) / math.log1p(max_open) if max_open > 1 else 0.0
             parts["popularity"] = pop
+
+            # 条件热度：同样取 log 压平长尾，再按本次候选集里的最大值归一化。
+            # 不归一化的话，点过 50 次的那条会把 0~1 的量纲整个撑破，
+            # 加到 RRF 分（量级 0.01~0.03）上就是永久霸榜
+            if max_click > 0:
+                parts["personal"] = math.log1p(clicks.get(c.item_id, 0)) / math.log1p(max_click)
 
             # 标题命中
             title = str(r["title"] or "")
@@ -853,6 +906,7 @@ class SearchEngine:
                 + weights.popularity * pop
                 + weights.title_boost * title_hit
                 + weights.source_trust * trust
+                + weights.personal * parts.get("personal", 0.0)
                 - weights.length_penalty * short
             )
             # 🔴 **必须夹到非负。** 长度惩罚是唯一一个做减法的项，
@@ -1112,12 +1166,19 @@ class SearchEngine:
         # 只在**最终那一轮**算 —— keyword 首屏为空是正常的（语义还没跑完），
         # 那时候弹补救建议会把用户往错误方向带。
         if (not hits or weak) and stage == "semantic":
-            out["recovery"] = self._recovery.plan(
-                text_query,
-                f.to_dict(),
-                total_items=int(self.repo.stats().get("items", 0)),
-                weak=weak,
-            )
+            # 🔴 **补救建议不能拖垮搜索本身。** 它是"搜不到时的一条退路"，
+            #    而这条退路要读词表、算拼音、还要反过来试跑几次查询 ——
+            #    任何一环抛异常都会让整次搜索变成 500，用户看到的是
+            #    "搜索出错"而不是"没搜到"。前者会让人以为软件坏了。
+            try:
+                out["recovery"] = self._recovery.plan(
+                    text_query,
+                    f.to_dict(),
+                    total_items=int(self.repo.stats().get("items", 0)),
+                    weak=weak,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("补救建议生成失败，本次不给建议：%s", e)
         # 界面把这些渲染成一排可点掉的小标签，让用户看见"我刚才那句话被理解成了什么"
         # 🔴 条件里必须带上 excludes/phrases。只看 has_filters 的话，
         #    一条纯 `-草稿` 的查询会**悄悄少掉一大批结果而界面上一个标签都不显示** ——

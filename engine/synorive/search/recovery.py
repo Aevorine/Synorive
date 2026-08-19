@@ -28,6 +28,10 @@ log = logging.getLogger("synorive.search.recovery")
 #: 每类建议最多给几条。给多了就成了另一种形式的"你自己猜"
 MAX_PER_KIND = 4
 
+#: 拼音表最多收多少个词（按词频取前 N）。全量算一遍在几十万词的库上要几秒，
+#: 而拼音纠错本来就只是"搜不到时的一条退路"，覆盖高频词已经够用。
+PINYIN_VOCAB_MAX = 20000
+
 
 @dataclass
 class Suggestion:
@@ -81,6 +85,42 @@ def _edit_distance_le(a: str, b: str, limit: int) -> bool:
     return prev[-1] <= limit
 
 
+def _split_pinyin(key: str, table: dict[str, list[str]]) -> list[str]:
+    """
+    把一串连写的拼音按最长匹配切成库里真有的词。
+
+    `jiqixuexi` → `jiqi` + `xuexi` → ["机器", "学习"]
+
+    最长优先：`jiqi` 比 `ji` 更可能是用户想打的整词。切不干净就整个放弃 ——
+    切出一半汉字一半残留拉丁的查询，比不建议还糟。
+    末尾允许一小截切不出来的残留（用户可能只打了半个词），
+    那种情况下用已经切出来的部分做前缀建议。
+    """
+    n = len(key)
+    i = 0
+    words: list[str] = []
+    while i < n:
+        best_len = 0
+        best_word = ""
+        # 拼音音节最长 6 个字母（zhuang/chuang），一个词最多几个音节，
+        # 上限给到 12 足够覆盖两三字词
+        for ln in range(min(12, n - i), 0, -1):
+            cand = table.get(key[i : i + ln])
+            if cand:
+                best_len, best_word = ln, cand[0]
+                break
+        if best_len == 0:
+            break
+        words.append(best_word)
+        i += best_len
+    if not words:
+        return []
+    # 剩下的尾巴太长说明这串根本不是拼音（多半是英文词），别硬凑
+    if n - i > 3:
+        return []
+    return words
+
+
 class RecoveryPlanner:
     """
     零结果时算补救方案。
@@ -113,6 +153,7 @@ class RecoveryPlanner:
         suggestions += self._drop_filters(text_query, filters)
         suggestions += self._split_terms(text_query, filters)
         suggestions += self._did_you_mean(text_query, filters)
+        suggestions += self._pinyin_match(text_query, filters)
 
         # 还在索引的话，"没搜到"很可能只是还没轮到那些文件
         pending = self._pending_count()
@@ -265,6 +306,84 @@ class RecoveryPlanner:
                 break
         return out
 
+    def _pinyin_match(self, q: str, filters: dict[str, Any]) -> list[Suggestion]:
+        """
+        整串拼音 → 汉字词。打 `jiqixuexi` 找到「机器学习」。
+
+        ── 为什么这条和 `_did_you_mean` 分开 ────────────────────
+        编辑距离治的是"打错一个字"（机气学习 → 机器学习），它对
+        `jiqixuexi` 完全无能为力 —— 拉丁串和汉字词之间的编辑距离是词长本身。
+        中文输入法没切换、或者干脆懒得切，是很常见的一种输入，
+        而现在的表现是**一条结果都没有**，用户只会以为库里没这东西。
+
+        ── 为什么要切分，不能整串查表 ──────────────────────────
+        🔴 词表来自 FTS，而 FTS 里存的是**分好词的**：「机器学习」在词表里
+           是「机器」和「学习」两条，整串 `jiqixuexi` 一次都查不到。
+           第一版就是这么写的，测出来永远返回空 —— 不报错，只是永远不工作。
+           所以按最长匹配把拼音串切开，和输入法做的是同一件事。
+
+        🔴 **只在纯拉丁字母的词上触发。** 英文查询（`transformer`）也会走到
+           这儿，但它切不出任何汉字词，自然什么都不建议 —— 不会误伤。
+
+        🔴 **候选只从库里真有的词里取，且要真的能搜出东西才建议。**
+           建议一个点进去还是零结果的写法，等于骗用户点一下。
+        """
+        terms = [t for t in to_index_text(q).split() if 4 <= len(t) <= 24]
+        latin = [t for t in terms if t.isascii() and t.isalpha()]
+        if not latin:
+            return []
+
+        table = self._pinyin_table()
+        if not table:
+            return []
+
+        out: list[Suggestion] = []
+        for t in latin[:2]:
+            words = _split_pinyin(t.lower(), table)
+            if not words:
+                continue
+            guess = " ".join(words)
+            fixed = q.replace(t, guess) if t in q else guess
+            n = self._run(fixed, filters)
+            if n > 0:
+                out.append(Suggestion(
+                    kind="did-you-mean",
+                    label=f"按拼音，是不是想搜「{guess}」 → {n} 条",
+                    count=n,
+                    payload={"query": fixed},
+                ))
+            if len(out) >= MAX_PER_KIND:
+                break
+        return out
+
+    def _pinyin_table(self) -> dict[str, list[str]]:
+        """库里每个词的整串拼音 → 词。懒建一次，之后复用。"""
+        cached = getattr(self, "_pinyin_cache", None)
+        vocab = self._vocabulary()
+        if cached is not None and getattr(self, "_pinyin_vocab_n", -1) == len(vocab):
+            return cached
+        try:
+            from pypinyin import Style, lazy_pinyin
+        except ImportError:
+            # 没装就没有这条补救路，其余补救照常。不报错、不影响搜索
+            log.debug("pypinyin 不可用，跳过拼音纠错")
+            self._pinyin_cache = {}
+            self._pinyin_vocab_n = len(vocab)
+            return {}
+
+        table: dict[str, list[str]] = {}
+        for w, freq in sorted(vocab.items(), key=lambda x: -x[1])[:PINYIN_VOCAB_MAX]:
+            # 只给含汉字的词算拼音；纯英文词算出来还是它自己，进表只是噪声
+            if not any("一" <= ch <= "鿿" for ch in w):
+                continue
+            key = "".join(lazy_pinyin(w, style=Style.NORMAL))
+            if not key or not key.isascii():
+                continue
+            table.setdefault(key, []).append(w)
+        self._pinyin_cache = table
+        self._pinyin_vocab_n = len(vocab)
+        return table
+
     # ── 数据 ────────────────────────────────────────────────
 
     def _vocabulary(self) -> dict[str, int]:
@@ -273,7 +392,15 @@ class RecoveryPlanner:
         用 fts5vocab 直接读索引里的词，不用自己再扫一遍全库文本。
         表可能不存在（老库），取不到就返回空、不报错 —— 纠错功能没了不影响搜索。
         """
-        conn = self._conn()
+        try:
+            conn = self._conn()
+        except Exception as e:  # noqa: BLE001
+            # 🔴 **拿连接这一步也要包住。** 原来只包了下面那条查询 ——
+            #    库文件被挪走 / 切库正在重启时 `self._conn()` 本身会抛，
+            #    而这个异常会一路冒到 `search()` 里，**把整次搜索变成 500**。
+            #    补救建议挂了顶多是少几条建议，绝不该拖垮主功能。
+            log.warning("D9 取词表时拿不到连接，纠错建议不可用：%s", e)
+            return {}
         try:
             # ⚠️ 建在 temp 里就必须显式写主库名。
             #    写成 fts5vocab('chunks_fts','row') 时它会去找 **temp.chunks_fts**，
@@ -295,7 +422,11 @@ class RecoveryPlanner:
         return {r[0]: r[1] for r in rows}
 
     def _pending_count(self) -> int:
-        conn = self._conn()
+        try:
+            conn = self._conn()
+        except Exception:  # noqa: BLE001
+            # 同 _vocabulary：拿不到连接不该把整次搜索拖成 500
+            return 0
         try:
             row = conn.execute(
                 "SELECT COUNT(*) FROM items WHERE status IN ('queued','running','partial')"

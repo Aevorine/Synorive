@@ -719,10 +719,63 @@ async def get_content(item_id: str, request: Request, maxChars: int = 20000) -> 
 
 
 @router.post("/items/{item_id}/open")
-async def record_open(item_id: str, request: Request) -> dict[str, Any]:
-    """E11 热度学习：记一次打开。"""
-    _rt(request).repo.record_open(item_id)
+async def record_open(item_id: str, request: Request, q: str | None = None) -> dict[str, Any]:
+    """
+    E11 热度学习：记一次打开。
+
+    带 `?q=` 时顺便记一笔**条件热度**（搜这几个词时你点的是这一条）。
+    不带也完全正常 —— 老客户端（安卓端 / MCP / CLI）不会传这个参数，
+    它们只更新全局热度，不该因此报错。
+    """
+    _rt(request).repo.record_open(item_id, query=q)
     return {"ok": True}
+
+
+@router.get("/synonyms")
+async def list_synonyms(request: Request) -> dict[str, Any]:
+    return {"items": _rt(request).repo.list_synonyms()}
+
+
+@router.post("/synonyms")
+async def add_synonym(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """
+    加一对同义词。双向 —— 搜 a 命中 b，搜 b 也命中 a。
+    单向同义在实际使用里几乎总是让人困惑（"反过来搜怎么就不行"）。
+    """
+    rt = _rt(request)
+    ok = rt.repo.add_synonym(str(body.get("a", "")), str(body.get("b", "")))
+    # 🔴 加完必须让检索器重读，否则要等下次重启才生效 ——
+    #    而"改完没反应"用户只会当成这个功能是坏的
+    if ok and rt.search is not None:
+        rt.search.invalidate_synonyms()
+    return {"ok": ok, "items": rt.repo.list_synonyms()}
+
+
+@router.delete("/synonyms")
+async def remove_synonym(request: Request, a: str, b: str) -> dict[str, Any]:
+    rt = _rt(request)
+    rt.repo.remove_synonym(a, b)
+    if rt.search is not None:
+        rt.search.invalidate_synonyms()
+    return {"ok": True, "items": rt.repo.list_synonyms()}
+
+
+@router.delete("/personalization/clicks")
+async def clear_clicks(request: Request) -> dict[str, Any]:
+    """清空条件热度。返回清掉多少条 —— 界面要能说出确切数字，不能只说"已清空"。"""
+    n = _rt(request).repo.clear_click_log()
+    return {"ok": True, "cleared": n}
+
+
+@router.get("/personalization/clicks")
+async def click_stats(request: Request) -> dict[str, Any]:
+    """条件热度攒了多少条。给设置页显示用。"""
+    conn = _rt(request).repo.db.connect()
+    try:
+        n = int(conn.execute("SELECT COUNT(*) FROM click_log").fetchone()[0])
+    except Exception:
+        n = 0
+    return {"count": n}
 
 
 @router.delete("/items/{item_id}")

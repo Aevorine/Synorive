@@ -1009,13 +1009,104 @@ class Repository:
             slot["byModality"][str(r["modality"])] = int(r["n"])
         return sorted(agg.values(), key=lambda x: str(x["at"]))[-limit:]
 
-    def record_open(self, item_id: str) -> None:
-        """E11 热度学习：记一次打开。纯本地统计，设置里可一键清空。"""
+    def record_open(self, item_id: str, query: str | None = None) -> None:
+        """
+        E11 热度学习：记一次打开。纯本地统计，设置里可一键清空。
+
+        带上 `query` 时**顺便记一笔条件热度**：搜这几个词的时候你点的是这一条。
+        全局热度（open_count）回答不了"搜『预算』时我每次都得往下翻三条"
+        这个问题 —— 那份报告在别的查询下并不该被提上来。
+        """
         conn = self.db.connect()
         conn.execute(
             "UPDATE items SET open_count = open_count + 1, last_opened_at = ? WHERE id = ?",
             (now_iso(), item_id),
         )
+        if query:
+            self.record_click(query, item_id)
+
+    #: 一次点击最多记几个词。查询很长时全记进去只会摊薄每个词的信号，
+    #: 而且让这张表增长得毫无必要
+    CLICK_TERMS_MAX = 6
+
+    def record_click(self, query: str, item_id: str) -> None:
+        """把「这几个词 → 这一条」记下来。分词后只存词，不存完整查询串。"""
+        from .text import segment
+
+        terms = [t for t in segment(query) if len(t) >= 2][: self.CLICK_TERMS_MAX]
+        if not terms:
+            return
+        conn = self.db.connect()
+        ts = now_iso()
+        for t in terms:
+            conn.execute(
+                """INSERT INTO click_log (term, item_id, n, at) VALUES (?,?,1,?)
+                   ON CONFLICT(term, item_id) DO UPDATE SET n = n + 1, at = excluded.at""",
+                (t, item_id, ts),
+            )
+
+    def clicks_for_terms(self, terms: list[str]) -> dict[str, int]:
+        """这几个词历史上点开过哪些内容、各几次。返回 {item_id: 次数合计}。"""
+        good = [t for t in terms if len(t) >= 2][: self.CLICK_TERMS_MAX]
+        if not good:
+            return {}
+        conn = self.db.connect()
+        marks = ",".join("?" * len(good))
+        rows = conn.execute(
+            f"SELECT item_id, SUM(n) AS n FROM click_log WHERE term IN ({marks}) GROUP BY item_id",
+            tuple(good),
+        ).fetchall()
+        return {str(r["item_id"]): int(r["n"]) for r in rows}
+
+    # ── 自定义同义词 ────────────────────────────────────────
+
+    def list_synonyms(self) -> list[dict[str, str]]:
+        conn = self.db.connect()
+        rows = conn.execute("SELECT a, b, at FROM synonyms ORDER BY at DESC").fetchall()
+        return [{"a": str(r["a"]), "b": str(r["b"]), "at": str(r["at"])} for r in rows]
+
+    def add_synonym(self, a: str, b: str) -> bool:
+        """加一对。返回 False 表示没加（空词、两边一样、或已经有了）。"""
+        a, b = a.strip(), b.strip()
+        if not a or not b or a == b:
+            return False
+        conn = self.db.connect()
+        conn.execute(
+            "INSERT OR IGNORE INTO synonyms (a, b, at) VALUES (?,?,?)", (a, b, now_iso())
+        )
+        return True
+
+    def remove_synonym(self, a: str, b: str) -> None:
+        conn = self.db.connect()
+        conn.execute("DELETE FROM synonyms WHERE a = ? AND b = ?", (a, b))
+
+    def synonym_map(self) -> dict[str, list[str]]:
+        """
+        词 → 它的同义词列表。**双向展开**。
+
+        🔴 只做一跳，不做传递闭包。`a=b`、`b=c` 时搜 a 不会扩到 c ——
+        传递闭包很容易在用户加了几对之后把两个不相干的概念连起来，
+        表现是"搜什么都出来一大堆无关的"，而他根本想不到是同义词表干的。
+        """
+        conn = self.db.connect()
+        try:
+            rows = conn.execute("SELECT a, b FROM synonyms").fetchall()
+        except sqlite3.OperationalError:
+            # 老库还没有这张表。少个同义扩展不影响搜索
+            return {}
+        out: dict[str, list[str]] = {}
+        for r in rows:
+            a, b = str(r["a"]), str(r["b"])
+            out.setdefault(a, []).append(b)
+            out.setdefault(b, []).append(a)
+        return out
+
+    def clear_click_log(self) -> int:
+        """一键清空条件热度。返回清掉多少条 —— 界面要能说出确切数字。"""
+        conn = self.db.connect()
+        n = int(conn.execute("SELECT COUNT(*) FROM click_log").fetchone()[0])
+        conn.execute("DELETE FROM click_log")
+        return n
 
     def delete_item(self, item_id: str) -> None:
         """

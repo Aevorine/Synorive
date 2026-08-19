@@ -71,7 +71,37 @@ export const api = {
   content: (id: string, maxChars = 20000) =>
     call<{ text: string; item: ContentItem }>(`/api/items/${id}/content?maxChars=${maxChars}`),
 
-  recordOpen: (id: string) => call<{ ok: boolean }>(`/api/items/${id}/open`, { method: 'POST' }),
+  /**
+   * 记一次打开。带上当前查询词的话，引擎会顺便学一条"搜这几个词时你点了这个"。
+   * 不传 query 也完全正常 —— 那时候只更新全局热度。
+   */
+  recordOpen: (id: string, query?: string) =>
+    call<{ ok: boolean }>(
+      `/api/items/${id}/open${query && query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ''}`,
+      { method: 'POST' },
+    ),
+  /** 清空"搜这几个词时你点了什么"的记录。返回清掉多少条 */
+  clearClicks: () =>
+    call<{ ok: boolean; cleared: number }>('/api/personalization/clicks', { method: 'DELETE' }),
+  clickStats: () => call<{ count: number }>('/api/personalization/clicks'),
+
+  /**
+   * 自定义同义词。双向 —— 搜 a 命中 b，搜 b 也命中 a。
+   * 内置词表不可能知道"小李"指的是谁，这张表是用户自己的黑话和缩写。
+   */
+  synonyms: {
+    list: () => call<{ items: { a: string; b: string; at: string }[] }>('/api/synonyms'),
+    add: (a: string, b: string) =>
+      call<{ ok: boolean; items: { a: string; b: string; at: string }[] }>('/api/synonyms', {
+        method: 'POST',
+        body: JSON.stringify({ a, b }),
+      }),
+    remove: (a: string, b: string) =>
+      call<{ ok: boolean; items: { a: string; b: string; at: string }[] }>(
+        `/api/synonyms?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`,
+        { method: 'DELETE' },
+      ),
+  },
 
   stats: () => call<{ items: number; ready: number; failed: number; chunks: number }>('/api/stats'),
 

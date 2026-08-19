@@ -9,6 +9,7 @@ import type {
   LibraryEntry,
 } from '@synorive/shared-types';
 import { PrivacyFence } from '../components/PrivacyFence';
+import { SynonymPanel } from '../components/SynonymPanel';
 import { HotkeyReport } from '../components/HotkeyReport';
 import { ModelPanel } from '../components/ModelPanel';
 import { PerfPanel } from '../components/PerfPanel';
@@ -454,6 +455,13 @@ export function SettingsPage() {
           {/* 检索词比文件列表更能反映一个人在想什么。默认开是为了好用，
               但"我不想留痕"必须一次点击就能做到，而且要立刻生效。 */}
           <QueryHistoryControl />
+
+          <Field
+            label="我自己的同义词"
+            hint="内置词表不可能知道「小李」指的是谁。加一对之后，搜任意一边都能命中另一边，改完立刻生效。"
+          >
+            <SynonymPanel />
+          </Field>
 
           <Toggle
             label="人脸检测与聚类"
