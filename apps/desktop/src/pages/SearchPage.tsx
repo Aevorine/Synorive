@@ -17,7 +17,7 @@ import { api } from '../lib/api';
 import { useAsk } from '../lib/useAsk';
 import { useSearch } from '../lib/useSearch';
 import { useSelection } from '../lib/useSelection';
-import { PAGE_TITLES, useApp } from '../lib/store';
+import { useApp } from '../lib/store';
 
 const STAGE_LABEL: Record<string, string> = {
   instant: '最近打开',
@@ -104,8 +104,7 @@ export function SearchPage() {
   if (mode === 'ask') {
     return (
       <div className="page">
-        <div className="page__header">
-          <h1 className="page__title">{PAGE_TITLES.search}</h1>
+        <div className="page__meta">
           {askLoading && (
             <span className="page__subtitle page__subtitle--busy">
               <Loader2 size={13} className="spin" strokeWidth={2} />
@@ -165,8 +164,7 @@ export function SearchPage() {
   // ── ③ 列表态（原有的三级瀑布）────────────────────────
   return (
     <div className="page">
-      <div className="page__header">
-        <h1 className="page__title">{PAGE_TITLES.search}</h1>
+      <div className="page__meta">
         {searched && !loading && (
           <span className="page__subtitle">
             {total} 条结果 · {elapsedMs.toFixed(0)}ms
@@ -296,7 +294,7 @@ function SceneDrawer({
     <aside className="qp" role="dialog" aria-label="视频镜头">
       <header className="qp__head">
         <h3>{scening.title}</h3>
-        <button className="qp__close" onClick={onClose} aria-label="关闭">
+        <button className="qp__close" onClick={onClose} aria-label="关闭" title="关闭">
           ×
         </button>
       </header>

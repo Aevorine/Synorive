@@ -3,7 +3,7 @@ import { ArrowLeft, Network } from 'lucide-react';
 import type { Entity } from '@synorive/shared-types';
 import { api } from '../lib/api';
 import { useEngineData } from '../lib/useEngineData';
-import { PAGE_TITLES, useApp } from '../lib/store';
+import { useApp } from '../lib/store';
 import { useSearch } from '../lib/useSearch';
 
 /**
@@ -77,8 +77,7 @@ export function GraphPage() {
 
   return (
     <div className="page">
-      <div className="page__header">
-        <h1 className="page__title">{PAGE_TITLES.graph}</h1>
+      <div className="page__meta">
         <span className="page__subtitle">
           {focus
             ? `${focus.name} 的关联（${neighbors.length} 个）`

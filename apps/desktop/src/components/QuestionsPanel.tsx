@@ -99,7 +99,7 @@ export function QuestionsPanel({
       <header className="qp__head">
         <HelpCircle size={16} aria-hidden />
         <h3>这篇能回答哪些问题</h3>
-        <button className="qp__close" onClick={onClose} aria-label="关闭">
+        <button className="qp__close" onClick={onClose} aria-label="关闭" title="关闭">
           <X size={16} />
         </button>
       </header>

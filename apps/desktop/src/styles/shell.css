@@ -261,14 +261,27 @@
   padding: var(--syn-space-xl) var(--syn-layout-content-pad) var(--syn-space-lg);
 }
 
-/* 界面主标题：用户点名「文件管理器」这种要用更大的宋体 */
-.page__title {
-  font-family: var(--syn-ff-display);
-  font-size: var(--syn-fs-page-title); /* 小二 24px */
-  font-weight: var(--syn-fw-semibold);
-  line-height: var(--syn-lh-tight);
-  letter-spacing: var(--syn-ls-display);
-  color: var(--syn-color-text);
+/* 状态行。导航栏已经写着当前在哪一页，正文顶上不再重复一遍页名 ——
+   这里只放"这一页现在是什么情况"（几条结果、几毫秒、正在忙什么）。
+   没内容时整行不占高度，正文直接顶到窗口上沿。 */
+.page__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-md);
+  padding-inline: var(--syn-layout-content-pad);
+  min-height: 0;
+}
+
+.page__meta:empty {
+  display: none;
+}
+
+.page__meta > .page__subtitle {
+  padding-block: var(--syn-space-sm);
+}
+
+.page__meta > .page__subtitle:empty {
+  display: none;
 }
 
 .page__subtitle {
@@ -280,6 +293,7 @@
   flex: 1;
   min-height: 0;
   padding-inline: var(--syn-layout-content-pad);
+  padding-block: var(--syn-space-md) var(--syn-space-xl);
   overflow: auto;
 }
 
@@ -516,4 +530,73 @@
    「可以下载」和「装就完事了」对用户是两件不同的事 */
 .sidebar__badge--ready {
   background: var(--syn-color-success);
+}
+
+/* ── 窄屏自适应 ──────────────────────────────────────────
+   平板竖屏、分屏、把窗口拖窄，都走这一层。断点按内容定，不按机型定。 */
+
+/* ① ≤1180px：侧栏自动收成图标栏。名字靠 title 悬停显示，不再占横向宽度 */
+@media (max-width: 1180px) {
+  .sidebar {
+    width: var(--syn-layout-side-bar-collapsed);
+  }
+  .sidebar__label {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .sidebar__group,
+  .sidebar__pin {
+    display: none;
+  }
+  .topbar {
+    grid-template-columns: auto 1fr auto;
+  }
+}
+
+/* ② ≤1000px：双栏一律并成单栏，排序面板挪到结果下面而不是挤在右边 */
+@media (max-width: 1000px) {
+  .searchlayout {
+    grid-template-columns: 1fr;
+  }
+  .searchlayout__side {
+    max-width: none;
+  }
+  .syn-grid,
+  .syn-grid--wide {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  }
+}
+
+/* ③ ≤760px（手机横屏 / 小平板）：内容左右留白压到一半，正文吃满宽度 */
+@media (max-width: 760px) {
+  :root {
+    --syn-layout-content-pad: 12px;
+  }
+  .topbar__name {
+    display: none;
+  }
+  .topbar {
+    gap: var(--syn-space-sm);
+  }
+  .filterbar {
+    flex-wrap: wrap;
+  }
+  /* 状态栏挤不下时横向滚动，而不是把后面几项挤没 */
+  .statusbar {
+    overflow-x: auto;
+    gap: var(--syn-space-md);
+  }
+  .statusbar__group {
+    white-space: nowrap;
+  }
+}
+
+/* ④ 触摸设备：命中区不小于 44px，鼠标才有的悬停态一律不生效 */
+@media (pointer: coarse) {
+  .sidebar__item,
+  .btn,
+  .chip,
+  .wincontrols__btn {
+    min-height: 44px;
+  }
 }

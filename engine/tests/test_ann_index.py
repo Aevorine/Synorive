@@ -129,7 +129,7 @@ def test_distance_formula_parity() -> None:
     conn.execute("BEGIN")
     for i, v in enumerate(vecs):
         conn.execute(
-            "INSERT INTO vec_chunks (chunk_rowid, embedding) VALUES (?,?)",
+            "INSERT OR REPLACE INTO vec_chunks (chunk_rowid, embedding) VALUES (?,?)",
             (i, sqlite_vec.serialize_float32(v.tolist())),
         )
     conn.execute("COMMIT")
@@ -245,23 +245,23 @@ def build_synthetic_corpus(data_dir: Path, target: int) -> None:
         title = f"锚点文档·{aid}"
         locator = f"D:\\bench\\anchors\\{aid}.md"
         conn.execute(
-            "INSERT INTO items (rowid,id,fingerprint,modality,source,status,title,locator,"
+            "INSERT OR REPLACE INTO items (rowid,id,fingerprint,modality,source,status,title,locator,"
             "snippet,mime,size_bytes,content_time,created_at,updated_at,last_opened_at,"
             "open_count,thumb_path,meta_json,error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (irid, aid, f"fp-{aid}", "text", "file", "done", title, locator,
              text[:160], "text/markdown", len(text) * 3, None, now, now, None, 0, None, "{}", None),
         )
         conn.execute(
-            "INSERT INTO chunks (rowid,id,item_id,chunk_index,text,channel,page,"
+            "INSERT OR REPLACE INTO chunks (rowid,id,item_id,chunk_index,text,channel,page,"
             "start_sec,end_sec,bbox_json,section,token_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (crid, f"{aid}-c0", aid, 0, text, "body", None, None, None, None, None, len(text)),
         )
-        conn.execute("INSERT INTO items_fts (rowid,title,snippet,locator) VALUES (?,?,?,?)",
+        conn.execute("INSERT OR REPLACE INTO items_fts (rowid,title,snippet,locator) VALUES (?,?,?,?)",
                      (irid, to_index_text(title), to_index_text(text[:160]), to_index_text(_path_words(locator))))
-        conn.execute("INSERT INTO items_tri (rowid,title,locator) VALUES (?,?,?)", (irid, title, locator))
-        conn.execute("INSERT INTO chunks_fts (rowid,text) VALUES (?,?)", (crid, to_index_text(text)))
+        conn.execute("INSERT OR REPLACE INTO items_tri (rowid,title,locator) VALUES (?,?,?)", (irid, title, locator))
+        conn.execute("INSERT OR REPLACE INTO chunks_fts (rowid,text) VALUES (?,?)", (crid, to_index_text(text)))
         import sqlite_vec as _sv
-        conn.execute("INSERT INTO vec_chunks (chunk_rowid,embedding) VALUES (?,?)",
+        conn.execute("INSERT OR REPLACE INTO vec_chunks (chunk_rowid,embedding) VALUES (?,?)",
                      (crid, _sv.serialize_float32(base.astype("float32").tolist())))
         next_item_rid += 1
         next_chunk_rid += 1
@@ -288,20 +288,20 @@ def build_synthetic_corpus(data_dir: Path, target: int) -> None:
 
         conn.execute("BEGIN")
         conn.executemany(
-            "INSERT INTO items (rowid,id,fingerprint,modality,source,status,title,locator,"
+            "INSERT OR REPLACE INTO items (rowid,id,fingerprint,modality,source,status,title,locator,"
             "snippet,mime,size_bytes,content_time,created_at,updated_at,last_opened_at,"
             "open_count,thumb_path,meta_json,error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             items,
         )
         conn.executemany(
-            "INSERT INTO chunks (rowid,id,item_id,chunk_index,text,channel,page,"
+            "INSERT OR REPLACE INTO chunks (rowid,id,item_id,chunk_index,text,channel,page,"
             "start_sec,end_sec,bbox_json,section,token_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             chunks,
         )
-        conn.executemany("INSERT INTO items_fts (rowid,title,snippet,locator) VALUES (?,?,?,?)", ifts)
-        conn.executemany("INSERT INTO items_tri (rowid,title,locator) VALUES (?,?,?)", itri)
-        conn.executemany("INSERT INTO chunks_fts (rowid,text) VALUES (?,?)", cfts)
-        conn.executemany("INSERT INTO vec_chunks (chunk_rowid,embedding) VALUES (?,?)", vecs)
+        conn.executemany("INSERT OR REPLACE INTO items_fts (rowid,title,snippet,locator) VALUES (?,?,?,?)", ifts)
+        conn.executemany("INSERT OR REPLACE INTO items_tri (rowid,title,locator) VALUES (?,?,?)", itri)
+        conn.executemany("INSERT OR REPLACE INTO chunks_fts (rowid,text) VALUES (?,?)", cfts)
+        conn.executemany("INSERT OR REPLACE INTO vec_chunks (chunk_rowid,embedding) VALUES (?,?)", vecs)
         conn.execute("COMMIT")
         next_item_rid += n
         next_chunk_rid += n

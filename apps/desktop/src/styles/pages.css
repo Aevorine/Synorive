@@ -1042,3 +1042,33 @@
   line-height: var(--syn-lh-relaxed);
   flex-basis: 100%;
 }
+
+/* ── 宽屏把面板铺成多列 ──────────────────────────────────
+   单列 + 78ch 的行宽对**阅读**是对的，但在 1400px 的窗口上右边会空掉一大片。
+   两者不冲突：让字段横向排两三列，每列仍然在易读的行宽内，整块面板被填满。
+   标题、说明、以及本来就要横向铺开的列表/表格跨满整行。 */
+@media (min-width: 1120px) {
+  /* 只对内容够多的面板分栏。只有两三项的面板铺成两栏会让右半边空着，
+     那是把一个问题换成另一个问题 —— :has 判子元素数量，够 5 个才分。 */
+  .panel:has(> :nth-child(5)) {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    column-gap: var(--syn-space-xxl);
+    align-items: start;
+  }
+
+  .panel > .panel__title,
+  .panel > .panel__hint,
+  .panel > .panel__subtitle,
+  .panel > .pathlist,
+  .panel > table,
+  .panel > .panel__wide {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (min-width: 1600px) {
+  .panel:has(> :nth-child(5)) {
+    grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+  }
+}

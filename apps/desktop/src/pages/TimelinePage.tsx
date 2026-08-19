@@ -4,7 +4,7 @@ import type { TimelineBucket } from '@synorive/shared-types';
 import { PageState } from '../components/PageState';
 import { api } from '../lib/api';
 import { useEngineData } from '../lib/useEngineData';
-import { PAGE_TITLES, useApp } from '../lib/store';
+import { useApp } from '../lib/store';
 import { useSearch } from '../lib/useSearch';
 
 /**
@@ -68,8 +68,7 @@ export function TimelinePage() {
 
   return (
     <div className="page">
-      <div className="page__header">
-        <h1 className="page__title">{PAGE_TITLES.timeline}</h1>
+      <div className="page__meta">
         <span className="page__subtitle">
           {rows.length ? `${rows.length} 个时间段 · 共 ${total.toLocaleString('zh-CN')} 条` : ''}
         </span>

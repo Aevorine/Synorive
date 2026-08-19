@@ -66,8 +66,7 @@ export function ChapterList({
       {data.method === 'equal' && (
         <p className="syn-chap-warn">
           <AlertTriangle size={14} aria-hidden />
-          这份目录是**按时长等分的**，不是按内容切的 —— 没有语音转写也没有足够的画面切换数据。
-          时间码能用来跳转，但章节标题不代表那一段真的在讲这件事。
+          按时长等分，不是按内容切分。时间码可跳转，标题不代表该段内容。
         </p>
       )}
 

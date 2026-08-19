@@ -152,7 +152,7 @@ export function OmniFeed({ onRun, busy, initial, placeholder }: OmniFeedProps) {
             <X size={16} />
           </button>
         )}
-        <button className="omni__go" onClick={run} disabled={busy || !hasInput}>
+        <button className="omni__go" onClick={run} disabled={busy || !hasInput} title={routeLabel(route)}>
           {busy ? <Loader2 size={16} className="spin" /> : <ArrowRight size={16} />}
           <span>{routeLabel(route)}</span>
         </button>

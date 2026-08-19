@@ -14,7 +14,7 @@ import { ModelPanel } from '../components/ModelPanel';
 import { PerfPanel } from '../components/PerfPanel';
 import { SyncPanel } from '../components/SyncPanel';
 import { UpdatePanel } from '../components/UpdatePanel';
-import { PAGE_TITLES, useApp } from '../lib/store';
+import { useApp } from '../lib/store';
 
 const CLOUD_PROVIDERS: { id: CloudConfig['provider']; label: string; hint: string }[] = [
   { id: 'none', label: '不用', hint: '右栏生成版简报不可用，左栏摘录版不受影响' },
@@ -76,10 +76,6 @@ export function SettingsPage() {
 
   return (
     <div className="page">
-      <div className="page__header">
-        <h1 className="page__title">{PAGE_TITLES.settings}</h1>
-      </div>
-
       <div className="page__body">
         {/* ── 外观 ────────────────────────────────────── */}
         <section className="panel">
@@ -314,10 +310,7 @@ export function SettingsPage() {
 
           <Toggle
             label="随手研究浮窗"
-            hint="复制一段文字后，在屏幕右下角浮出三条最相关的（你自己的库）。
-                  浮窗**不会抢走键盘焦点** —— 你复制东西多半是为了马上粘贴，
-                  抢焦点等于毁掉你正在做的事。12 秒自动消失，也可以随时点掉。
-                  默认关：每次复制都弹窗是一种很具体的打扰，得你自己说要。"
+            hint="复制文字后右下角浮出三条最相关的，不抢键盘焦点，12 秒自动消失。"
             checked={settings.clipboardPeek ?? false}
             onChange={(v) => patch({ clipboardPeek: v })}
             disabled={!settings.clipboardSentinel}

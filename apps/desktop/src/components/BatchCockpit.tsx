@@ -91,7 +91,7 @@ export function BatchCockpit({
         <span className="syn-cockpit-count">
           {state.done} / {state.total}
         </span>
-        <button type="button" className="syn-cockpit-x" onClick={onClose} aria-label="收起">
+        <button type="button" className="syn-cockpit-x" onClick={onClose} aria-label="收起" title="收起">
           <X size={16} aria-hidden />
         </button>
       </header>

@@ -84,7 +84,7 @@ const GROUPS: { title: string; desc: string; rows: Row[] }[] = [
         icon: Clipboard,
         label: '剪贴板哨兵（E4）',
         leaks: '复制的内容留在内存里最近 20 条',
-        hint: '刻意**不自动入库** —— 密码、验证码、私钥都经过剪贴板。点了才存',
+        hint: '不自动入库。密码、验证码、私钥都经过剪贴板，点了才存',
       },
       {
         key: 'clipboardAutoArchiveLinks',

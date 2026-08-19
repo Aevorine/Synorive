@@ -46,7 +46,6 @@ export const IPC = {
   revealInExplorer: 'sys:reveal',
   openExternal: 'sys:open-external',
   openPath: 'sys:open-path',
-  readDroppedPaths: 'sys:read-dropped-paths',
   /** A16 安卓配对：列出本机所有局域网 IPv4 地址，给配对面板显示 */
   sysGetLanAddresses: 'sys:get-lan-addresses',
 

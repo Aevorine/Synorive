@@ -48,7 +48,18 @@ _COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
 
 
 def _migrate_columns(conn: sqlite3.Connection) -> None:
+    #: 表不存在时 `PRAGMA table_info` 返回 0 行且**不报错**，于是"列不在里面"
+    #: 恒为真，接着 `ALTER TABLE` 抛 `no such table`。老库（建库时还没有 jobs 表）
+    #: 升级到新版会在这里直接崩，症状是引擎启动失败而不是迁移失败。
+    #: 先问 sqlite_master 拿真实表清单，缺表就跳过——那张表会由
+    #: schema.sql 的 CREATE TABLE IF NOT EXISTS 建出来，建出来就自带新列。
+    have = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
     for table, column, decl in _COLUMN_MIGRATIONS:
+        if table not in have:
+            continue
         cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")

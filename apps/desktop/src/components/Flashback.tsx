@@ -91,16 +91,13 @@ export function Flashback({
 
       {open && snaps.length > 0 && (
         <div className="syn-fb-pop" role="menu">
-          <p className="syn-fb-pop-note">
-            回到那一刻的**界面状态**（查询词、筛选、选中项），结果会**重新查一遍** ——
-            存的不是结果快照，所以你看到的一定是现在库里的样子，不是当时的。
-          </p>
           {snaps.map((s) => (
             <button
               key={s.id}
               type="button"
               role="menuitem"
               className="syn-fb-snap"
+              title={`回到这一刻：${s.label}`}
               onClick={() => {
                 onRestore(s);
                 setOpen(false);

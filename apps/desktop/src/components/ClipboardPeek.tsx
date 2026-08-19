@@ -107,7 +107,7 @@ export function ClipboardPeek() {
           {query.length > 42 ? `${query.slice(0, 41)}…` : query}
         </span>
         {loading && <Loader2 size={12} className="spin" aria-hidden />}
-        <button className="peek__close" onClick={close} aria-label="关闭">
+        <button className="peek__close" onClick={close} aria-label="关闭" title="关闭">
           <X size={13} />
         </button>
       </header>

@@ -37,8 +37,8 @@ android {
         // 🔴 versionCode 是**自更新唯一的判据**（versionName 只是给人看的字符串）。
         //    每次发版必须 +1，否则装了旧版的手机永远查不到新版，而且它
         //    报的是「已是最新」不是报错。用 `node scripts/release.mjs` 会自动改这两行。
-        versionCode = 106
-        versionName = "0.1.6"
+        versionCode = 107
+        versionName = "0.1.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -68,7 +68,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8：删无用代码 + 混淆。反编译出来是 a.b.c，包体也小一圈（少解压少加载 = 冷启动更快）。
+            // 反射能拿到的东西 R8 看不见，删了**不报错、装上才崩** —— 保留规则全在 proguard-rules.pro。
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")

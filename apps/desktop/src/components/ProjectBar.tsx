@@ -196,7 +196,7 @@ export function ProjectBar({
         </button>
 
         {active ? (
-          <button className="pb__btn" onClick={saveToActive} disabled={!result || busy !== null}>
+          <button className="pb__btn" onClick={saveToActive} disabled={!result || busy !== null} title="把这次结果存进当前项目">
             {busy === 'save' ? (
               <Loader2 size={14} className="spin" />
             ) : saved ? (

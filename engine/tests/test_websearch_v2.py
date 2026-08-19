@@ -132,9 +132,9 @@ def test_scheduler() -> None:
     check("探索位不撑大阵容", len(picked2) == 2, str(len(picked2)))
 
 
-def test_scheduler_persist(tmp: Path) -> None:
+def test_scheduler_persist(tmp_path: Path) -> None:
     print("\n[S1] 健康状态落盘与读回")
-    p = tmp / "health.json"
+    p = tmp_path / "health.json"
     s1 = EngineScheduler(p)
     for _ in range(5):
         s1.observe("bing", ParseOutcome.OK, 600)

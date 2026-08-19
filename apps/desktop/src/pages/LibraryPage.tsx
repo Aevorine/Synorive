@@ -10,7 +10,6 @@ import { TrashPanel } from '../components/TrashPanel';
 import { SearchResults } from '../components/SearchResults';
 import { api } from '../lib/api';
 import { useEngineData } from '../lib/useEngineData';
-import { PAGE_TITLES } from '../lib/store';
 
 /**
  * 文件管理器 —— 浏览、筛选、管理库里的全部内容
@@ -85,8 +84,7 @@ export function LibraryPage() {
 
   return (
     <div className="page">
-      <div className="page__header">
-        <h1 className="page__title">{PAGE_TITLES.library}</h1>
+      <div className="page__meta">
         <span className="page__subtitle">
           {stats.data
             ? `库里共 ${stats.data.items.toLocaleString('zh-CN')} 条 · ${stats.data.chunks.toLocaleString('zh-CN')} 个文本块`

@@ -91,7 +91,7 @@ export function SideBySide({ hits, onClose }: { hits: SearchHit[]; onClose: () =
           </span>
         )}
         <span className="sbs__spacer" />
-        <button className="qp__close" onClick={onClose} aria-label="关闭">
+        <button className="qp__close" onClick={onClose} aria-label="关闭" title="关闭">
           ×
         </button>
       </header>

@@ -149,7 +149,7 @@ export function EngineSetup() {
         </div>
 
         <div className="setup__actions">
-          <button className="btn" onClick={retry} disabled={retrying || busy}>
+          <button className="btn" onClick={retry} disabled={retrying || busy} title="重试启动引擎">
             <RotateCw size={15} strokeWidth={1.8} className={retrying ? 'spin' : ''} />
             {retrying ? '正在重试…' : '我自己装好了，重试'}
           </button>

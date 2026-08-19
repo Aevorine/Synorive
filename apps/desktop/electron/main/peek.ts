@@ -26,6 +26,7 @@
 
 import { BrowserWindow, screen, shell } from 'electron';
 import { join } from 'node:path';
+import { IPC } from '../shared/ipc-contract.js';
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 
@@ -65,7 +66,7 @@ export class PeekWindow {
     };
     // 用 hash 传参而不是 IPC：浮窗可能还在加载中，IPC 会丢；
     // hash 变化在页面就绪后仍然读得到
-    const send = () => win.webContents.send('peek:query', payload);
+    const send = () => win.webContents.send(IPC.peekQuery, payload);
     if (win.webContents.isLoading()) {
       win.webContents.once('did-finish-load', send);
     } else {
@@ -101,7 +102,7 @@ export class PeekWindow {
 
     const win = this.ensure();
     const payload = { image: dataUrl, preview, web: false };
-    const send = () => win.webContents.send('peek:image', payload);
+    const send = () => win.webContents.send(IPC.peekImage, payload);
     if (win.webContents.isLoading()) {
       win.webContents.once('did-finish-load', send);
     } else {

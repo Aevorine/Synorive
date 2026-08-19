@@ -90,7 +90,7 @@ export function Onboarding({
   return (
     <div className="syn-onb-mask" role="dialog" aria-modal="true" aria-label="首次使用引导">
       <section className="syn-onb">
-        <button type="button" className="syn-onb-x" onClick={close} aria-label="跳过引导">
+        <button type="button" className="syn-onb-x" onClick={close} aria-label="跳过引导" title="跳过引导">
           <X size={16} aria-hidden />
         </button>
 

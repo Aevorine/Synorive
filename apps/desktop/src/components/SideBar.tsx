@@ -108,7 +108,8 @@ export function SideBar() {
       <button
         className={`sidebar__item${page === n.id ? ' sidebar__item--active' : ''}`}
         onClick={() => setPage(n.id)}
-        title={collapsed ? `${PAGE_TITLES[n.id]} —— ${n.hint}` : n.hint}
+        title={`${PAGE_TITLES[n.id]} —— ${n.hint}`}
+        aria-label={PAGE_TITLES[n.id]}
         aria-current={page === n.id ? 'page' : undefined}
       >
         <n.icon className="sidebar__icon" size={18} strokeWidth={1.7} />
@@ -149,8 +150,10 @@ export function SideBar() {
         title={
           badge.show
             ? `设置 —— 有新版本 v${badge.version}${badge.ready ? '（已下载，等你确认安装）' : '可以下载'}`
-            : '设置'
+            : '设置 —— 外观、性能、隐私、更新、同步'
         }
+        aria-label="设置"
+        aria-current={page === 'settings' ? 'page' : undefined}
       >
         <Settings className="sidebar__icon" size={18} strokeWidth={1.7} />
         <span className="sidebar__label">{PAGE_TITLES.settings}</span>

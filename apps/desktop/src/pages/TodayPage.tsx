@@ -13,7 +13,7 @@ import type { SearchHit } from '@synorive/shared-types';
 import { api } from '../lib/api';
 import { labApi, type WatchItem } from '../lib/labApi';
 import { projectApi, type ResearchProject } from '../lib/webApi';
-import { PAGE_TITLES, useApp } from '../lib/store';
+import { useApp } from '../lib/store';
 import { useSearch } from '../lib/useSearch';
 
 /**
@@ -129,7 +129,6 @@ export function TodayPage() {
   return (
     <div className="syn-page">
       <header className="syn-page__head">
-        <h1 className="syn-page__title">{PAGE_TITLES.today}</h1>
         {loading && (
           <span className="syn-page__sub">
             <Loader2 size={12} className="spin" strokeWidth={2} /> 正在看有什么新东西…

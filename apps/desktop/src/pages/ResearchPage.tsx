@@ -29,7 +29,7 @@ import { NumberAudit } from '../components/NumberAudit';
 import { ScholarLab } from '../components/ScholarLab';
 import { api } from '../lib/api';
 import { labApi, streamSearch } from '../lib/labApi';
-import { PAGE_TITLES, useApp } from '../lib/store';
+import { useApp } from '../lib/store';
 import {
   webApi,
   type ReadUrlResponse,
@@ -448,8 +448,7 @@ export function ResearchPage() {
 
   return (
     <div className="page">
-      <div className="page__header">
-        <h1 className="page__title">{PAGE_TITLES.research}</h1>
+      <div className="page__meta">
         <span className="page__subtitle">{subtitle}</span>
       </div>
 
@@ -523,7 +522,7 @@ export function ResearchPage() {
           <Activity size={13} strokeWidth={1.8} /> 健康
         </button>
 
-        <button className="btn btn--primary" type="submit" disabled={loading}>
+        <button className="btn btn--primary" type="submit" disabled={loading} title="开始搜索">
           {loading ? <Loader2 size={14} className="spin" strokeWidth={2} /> : '搜索'}
         </button>
       </form>
@@ -624,9 +623,6 @@ export function ResearchPage() {
               <Loader2 size={13} className="spin" aria-hidden />
               已经回来 {streamState.done.length} 家（{(streamState.ms / 1000).toFixed(1)}s），
               还在等：{streamState.pending.join('、')}
-              <span className="streamwait__note">
-                下面的结果会随着它们回来继续长，**已经出现的不会重排**
-              </span>
             </p>
           )}
           {!unified && !readResult && mode === 'quick' && quickResult && (

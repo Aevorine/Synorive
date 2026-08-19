@@ -200,10 +200,6 @@ export function NumberAudit({
               <span className="syn-audit-tally">平均 {contro.controversyAvg}/100</span>
             )}
           </h3>
-          <p className="syn-audit-note">
-            争议度高**不等于假** —— 学界正在讨论的前沿问题天然就高，那往往正是最值得读的。
-            这个数只用来排序和提示。
-          </p>
           {contro.claims
             .filter((c) => c.controversy && c.controversy.level !== 'unknown')
             .sort((a, b) => (b.controversy?.score ?? 0) - (a.controversy?.score ?? 0))

@@ -9,7 +9,7 @@ import { PageState } from '../components/PageState';
 import { api, type DoctorEntry } from '../lib/api';
 import { labApi, type IngestJob } from '../lib/labApi';
 import { useEngineData } from '../lib/useEngineData';
-import { PAGE_TITLES, useApp } from '../lib/store';
+import { useApp } from '../lib/store';
 
 /**
  * 分析中心 —— 投喂入口 + 依赖医生 + 进度看板（E3 / E14）
@@ -236,8 +236,7 @@ export function AnalyzePage() {
 
   return (
     <div className="page">
-      <div className="page__header">
-        <h1 className="page__title">{PAGE_TITLES.analyze}</h1>
+      <div className="page__meta">
         <span className="page__subtitle">
           {stats.data ? `已索引 ${stats.data.items.toLocaleString('zh-CN')} 条` : ''}
           {detail.queueDepth ? ` · 队列 ${detail.queueDepth}` : ''}

@@ -124,6 +124,11 @@ Phases 1–3, 5 and 8 are complete. **The application is genuinely usable right 
 After `claude mcp add synorive`, Claude Code can search your library, verify a claim, and compare
 **what you have** against **what the web says** — in the same answer.
 
+### How-to guides
+
+- Desktop, including every keyboard shortcut — [`docs/操作指南-电脑版.md`](docs/操作指南-电脑版.md)
+- Android phone / tablet, step by step — [`docs/操作指南-安卓版.md`](docs/操作指南-安卓版.md)
+
 The full technical design and the 76-item feature menu live in
 [`docs/00-技术方案.md`](docs/00-技术方案.md). Every performance target, how it counts as measured,
 and **which ones are still untested**, are declared in code at
