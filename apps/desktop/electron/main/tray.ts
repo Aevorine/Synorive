@@ -57,6 +57,14 @@ export class TrayController {
   create(clipboardEnabled: boolean): void {
     this.clipboardEnabled = clipboardEnabled;
 
+    // 🔴 重复调用只更新状态，不再建一个。设置里来回拨「托盘常驻」会走到这里，
+    //    每次都 new 一个 Tray 的话，系统托盘里会攒下一排点不动的僵尸图标，
+    //    而且旧的那些永远收不回来（原来的 this.tray 引用被覆盖了）。
+    if (this.tray && !this.tray.isDestroyed()) {
+      this.rebuild();
+      return;
+    }
+
     const img = nativeImage.createFromPath(trayIconPath());
     // Windows 托盘按 DPI 取 16/20/24，给一张 20 的让系统自己缩最稳
     this.tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);

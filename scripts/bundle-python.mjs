@@ -76,13 +76,22 @@ const HEAVY = ['onnxruntime', 'numpy'];
  * · `media`（rapidocr / av）同理是代码，OCR 和视频解码都是主打功能。
  * · 模型权重（BGE-small-zh 等）是**数据**，几百 MB，且用户未必用得上
  *   全部语言/模态 —— 那些继续按需下载，这个不算破坏独立性。
- * · `gpu` / `face` / `ann` 是**可选加速与可选功能**，默认关，
+ * · `gpu` / `face` 是**可选加速与可选功能**，默认关，
  *   而且 `gpu` 和 `onnxruntime` 互斥（同一个命名空间），
- *   打进同一个包里必然冲突。这三个必须留给依赖医生。
+ *   打进同一个包里必然冲突。这两个必须留给依赖医生。
+ *
+ * · `ann`（usearch）2026-08-19 从"留给依赖医生"改成**随包带**。
+ *   🔴 原来把它和 gpu/face 归成一类，但它既不大也不冲突：**实测 1.0 MB**，
+ *      纯 wheel，没有命名空间竞争。而不带它的后果是——
+ *      `search/engine.py` 里那条"超过 15 万块自动切近似检索"的路径，
+ *      在**任何一台装机版机器上都走不到**（`import usearch` 直接失败，
+ *      外层当成"索引不可用"静默退回暴力扫描）。
+ *      也就是说这个功能只在开发机上活着，用户从来没享受过，且完全无感。
+ *      1 MB 换回一整条大库提速路径，这笔账没什么好算的。
  *
  * 用 `--extras=` 可以覆盖（`--extras=` 空串表示一个都不装）。
  */
-const DEFAULT_EXTRAS = ['docs', 'sync', 'media'];
+const DEFAULT_EXTRAS = ['docs', 'sync', 'media', 'ann'];
 
 const argv = process.argv.slice(2);
 const args = new Set(argv);

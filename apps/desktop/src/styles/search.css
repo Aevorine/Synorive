@@ -1058,3 +1058,92 @@
 .qchips__chip--unknown button:hover {
   color: var(--syn-color-danger);
 }
+
+/* ── 上次那一屏 ──────────────────────────────────────────
+   挂在大输入区下面的一条窄条。它是"顺手可用的旧记录"，
+   不是当前结果 —— 所以用下沉底色和更淡的字，视觉重量压在结果之下。 */
+
+.lastsess {
+  width: 100%;
+  max-width: var(--syn-layout-search-max);
+  margin-inline: auto;
+  padding: var(--syn-space-md);
+  background: var(--syn-color-bg-sunken);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-xl);
+}
+
+.lastsess__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  color: var(--syn-color-text-secondary);
+  margin-bottom: var(--syn-space-sm);
+}
+
+.lastsess__title {
+  font-size: var(--syn-fs-caption);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lastsess__age {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  white-space: nowrap;
+}
+
+.lastsess__spacer {
+  flex: 1;
+}
+
+.lastsess__list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+}
+
+.lastsess__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-sm);
+  width: 100%;
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border-radius: var(--syn-radius-md);
+  text-align: left;
+  transition: background-color var(--syn-dur-instant) var(--syn-ease-standard);
+}
+
+.lastsess__row:hover {
+  background: var(--syn-color-bg-hover);
+}
+
+.lastsess__row-title {
+  font-size: var(--syn-fs-body);
+  color: var(--syn-color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: none;
+  max-width: 55%;
+}
+
+.lastsess__row-loc {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  direction: rtl;
+  text-align: left;
+}
+
+.lastsess__note {
+  margin-top: var(--syn-space-sm);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+}

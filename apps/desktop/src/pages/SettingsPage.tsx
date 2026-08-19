@@ -271,14 +271,23 @@ export function SettingsPage() {
             hint="关掉窗口后引擎继续在后台跑。目录监听、剪贴板哨兵、订阅通知都需要它。
                   关掉的话这三项只能在应用打开时工作。"
             checked={settings.runInTray}
-            onChange={(v) => patch({ runInTray: v })}
+            onChange={(v) =>
+              // 关掉托盘常驻时，开机自启必须跟着关：静默启动 + 没有托盘图标
+              // = 一个既没窗口也没图标的进程，用户根本回不来
+              patch(v ? { runInTray: true } : { runInTray: false, launchAtLogin: false })
+            }
           />
 
           <Toggle
-            label="开机自启"
-            hint="开机后静默进托盘，不弹窗口。"
+            label="开机自启（引擎提前热好）"
+            hint="开机后静默进托盘把引擎先起起来，你点图标时直接就能搜，不用等冷启动。
+                  托盘图标上悬停能看到引擎状态和这次启动花了多久。
+                  打开它会自动把上面的「托盘常驻」也打开——没有托盘图标的静默启动
+                  等于一个你找不回来的后台进程。"
             checked={settings.launchAtLogin}
-            onChange={(v) => patch({ launchAtLogin: v })}
+            onChange={(v) =>
+              patch(v ? { launchAtLogin: true, runInTray: true } : { launchAtLogin: false })
+            }
           />
 
           <Toggle

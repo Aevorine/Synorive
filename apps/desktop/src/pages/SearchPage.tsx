@@ -6,6 +6,7 @@ import { ComposeBar } from '../components/ComposeBar';
 import { SearchHistory } from '../components/SearchHistory';
 import { SideBySide } from '../components/SideBySide';
 import { ClipboardTray } from '../components/ClipboardTray';
+import { LastSessionStrip } from '../components/LastSessionStrip';
 import { QuestionsPanel } from '../components/QuestionsPanel';
 import { SceneStrip } from '../components/SceneStrip';
 import { ChapterList } from '../components/ChapterList';
@@ -71,6 +72,7 @@ export function SearchPage() {
     await api.ingest({ targets: dirs, source: 'file', recursive: true });
   };
 
+
   // ── ① 舞台态 ───────────────────────────────────────────
   // 大输入区独占一屏。**不在它下面塞结果列表** —— 那样两边都不完整，
   // 而"输入的内容很多时界面要很大"这条要求首先意味着别的东西要让位
@@ -81,6 +83,8 @@ export function SearchPage() {
         {/* 剪贴板托盘放在舞台下面：它是"你刚复制的东西"，
             属于顺手可投喂的素材，不抢输入区的位置 */}
         <div className="page--stage__under">
+          {/* 打开就有东西看：上次那一屏。一次真实搜索之后它自己消失 */}
+          <LastSessionStrip />
           <ClipboardTray />
           {ready && !searched && !answer && (
             <div className="syn-blank">

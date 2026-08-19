@@ -547,7 +547,15 @@ class Runtime:
             return  # 已经被摄取流水线设置过了
         try:
             from .search.ann_index import AnnIndex
-        except ImportError:
+        except ImportError as e:
+            # 🔴 **不能静默 return。** usearch 缺失时这里一声不吭地退出，
+            # 结果是语义检索永远走暴力扫描 —— 功能"正常"、不报错、只是慢，
+            # 用户和开发者都不会发现。装机版里它曾经就是这个状态
+            # （usearch 没被打进随包运行时，见 scripts/bundle-python.mjs）。
+            log.warning(
+                "ANN 近似检索不可用（%s）—— 语义检索将一直走全量扫描。"
+                "库超过 15 万块之后会明显变慢。补上：pip install -e \"engine[ann]\"", e
+            )
             return
 
         index_path = self.db.path.parent / "ann_index.usearch"

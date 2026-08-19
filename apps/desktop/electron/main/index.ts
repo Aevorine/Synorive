@@ -389,6 +389,25 @@ function registerIpc(): void {
     if (before.launchAtLogin !== settings.launchAtLogin) {
       setLaunchAtLogin(settings.launchAtLogin);
     }
+
+    /**
+     * 🔴 **托盘常驻改了要当场生效，不能等重启。**
+     *
+     * 原来这里根本没处理 runInTray，两个方向都是坏的：
+     *   · 打开它 → 托盘图标不出现。而 `window-all-closed` 已经开始按
+     *     runInTray=true 走了（不退出），于是用户关掉窗口之后
+     *     **既没有窗口也没有托盘图标** —— 又一个隐形进程。
+     *   · 关掉它 → 图标赖着不走，点它还能唤出窗口，看着像没关掉。
+     * 两种都不报错，都只能靠重启应用"自己好了"。
+     */
+    if (before.runInTray !== settings.runInTray) {
+      if (settings.runInTray) {
+        tray?.create(settings.clipboardSentinel);
+        if (engine) tray?.setEngineState(engine.getState());
+      } else {
+        tray?.destroy();
+      }
+    }
     if (before.clipboardSentinel !== settings.clipboardSentinel) {
       tray?.setClipboardEnabled(settings.clipboardSentinel);
       applyClipboardSetting();
@@ -664,7 +683,28 @@ app.whenReady().then(() => {
     },
   });
 
-  if (settings.runInTray) tray.create(settings.clipboardSentinel);
+  // --tray-only 是开机自启带的参数：这一趟不弹窗口。
+  const trayOnly = process.argv.includes('--tray-only');
+
+  /**
+   * 🔴 **静默进托盘时必须有托盘图标，哪怕 runInTray 是关的。**
+   *
+   * 原来的条件是 `if (settings.runInTray)`。于是「开机自启开着 + 托盘常驻关着」
+   * 这个组合下，开机后：`--tray-only` 让窗口不弹，`runInTray` 为假让托盘不建 ——
+   * 结果是一个**既看不见窗口、也看不见图标**的进程在后台跑。
+   * 用户看到的现象是"开机自启根本没生效"，实际它生效了，只是没有任何入口能回到它。
+   * 任务管理器里能看到 Synorive.exe，但没人会去那儿找。
+   *
+   * 规则改成：**只要这一趟不弹窗口，就一定有托盘图标。** 界面永远要有一条回来的路。
+   */
+  if (settings.runInTray || trayOnly) {
+    tray.create(settings.clipboardSentinel);
+    console.log(
+      `[tray] 已创建托盘图标（托盘常驻=${settings.runInTray} 静默启动=${trayOnly}）`,
+    );
+  } else {
+    console.log('[tray] 不创建托盘图标：托盘常驻关着，且这一趟会弹出窗口');
+  }
   setLaunchAtLogin(settings.launchAtLogin);
 
   startEngine();
@@ -704,8 +744,6 @@ app.whenReady().then(() => {
     }
   }
 
-  // --tray-only 是开机自启时带的，静默进托盘不弹窗口
-  const trayOnly = process.argv.includes('--tray-only');
   if (!trayOnly) showWindow();
 
   app.on('activate', () => {

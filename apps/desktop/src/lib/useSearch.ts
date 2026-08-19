@@ -18,6 +18,7 @@ import { DEFAULT_WEIGHTS } from '@synorive/shared-types';
 import { createWaterfallSearch } from './api';
 import { recordSearch } from './perf';
 import { history } from './undo';
+import { saveLastSession } from './lastSession';
 
 const waterfall = createWaterfallSearch();
 
@@ -81,6 +82,7 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 export const useSearch = create<SearchState>((set, get) => {
   const fire = () => {
     const { query, weights, filters, preset, explain } = get();
+    const q = query;
     if (!query.trim()) {
       waterfall.cancel();
       set({ hits: [], stage: null, total: 0, loading: false, searched: false, error: null, recovery: null, weakMatch: false, parsed: null });
@@ -124,6 +126,9 @@ export const useSearch = create<SearchState>((set, get) => {
         // 首屏关键词那一波天然只要几十毫秒，把它也记进去会让 P95 好看得失真 ——
         // 而用户体感的"搜完了"是最后一波，不是第一波
         if (r.final) recordSearch(r.elapsedMs);
+        // 只在最终那一轮存快照。首屏关键词那一波结果还会被语义层重排，
+        // 存它等于把一份"马上就要变的中间态"留给下次启动看
+        if (r.final) saveLastSession(q, r.hits, r.totalEstimate);
         set({
           hits: r.hits,
           stage: r.stage,
@@ -216,5 +221,6 @@ export const useSearch = create<SearchState>((set, get) => {
       waterfall.cancel();
       set({ query: '', hits: [], stage: null, total: 0, searched: false, error: null, recovery: null, weakMatch: false, parsed: null });
     },
+
   };
 });
