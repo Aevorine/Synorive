@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, FolderPlus, Loader2, Trash2, XCircle, X } from 'lucide-react';
+import { CheckCircle2, FileText, FolderPlus, Loader2, Trash2, XCircle, X } from 'lucide-react';
 import type {
   AppSettings,
   CloudConfig,
@@ -143,6 +143,22 @@ export function SettingsPage() {
           </Field>
 
           <Field
+            label="界面缩放"
+            hint="整套等比放大：字、图标、间距、按钮命中区一起变。
+                  只放大字号会让图标和间距对不上，那不叫放大，叫变形。"
+          >
+            <Segmented
+              options={[
+                { id: '100', label: '100%', title: '默认' },
+                { id: '125', label: '125%', title: '高分屏 / 看小字吃力时' },
+                { id: '150', label: '150%', title: '最大' },
+              ]}
+              value={String(settings.uiScale ?? 100)}
+              onChange={(v) => patch({ uiScale: Number(v) as 100 | 125 | 150 })}
+            />
+          </Field>
+
+          <Field
             label="列表密度"
             hint={DENSITIES.find((d) => d.id === settings.density)?.hint ?? ''}
           >
@@ -151,6 +167,9 @@ export function SettingsPage() {
               value={settings.density}
               onChange={(v) => patch({ density: v as Density })}
             />
+            {/* 实时预览：改密度/字体方案时旁边就有一条真样例跟着变。
+                不用切回搜索页看一眼再切回来 —— 那三步里有两步是白走的 */}
+            <ResultPreview />
           </Field>
 
           {/* ⚠️ 这一档是**整层滤镜**，开着会让浏览器把整个页面提成独立合成层，
@@ -1217,5 +1236,43 @@ function QueryHistoryControl() {
         {done && <span className="syn-t-caption">已清空，共删掉之前那 {0 === n ? '全部' : n} 条</span>}
       </div>
     </Field>
+  );
+}
+
+/**
+ * 结果卡片实时预览
+ * ============================================================
+ * 改「列表密度」「字体方案」「界面缩放」时，旁边就有一条**真样例**跟着变。
+ *
+ * 🔴 **用的是真组件的类名，不另写一套。** 预览和真实效果不一致的话，
+ *    它比没有预览更糟 —— 用户按预览选了一档，切回去发现不是那样。
+ *    这里刻意复用 `.card` 那一整套类名，密度和缩放都是靠 <html> 上的
+ *    data-* 驱动的，所以它天然跟真列表一模一样。
+ */
+function ResultPreview() {
+  return (
+    <div className="preview" aria-label="效果预览">
+      <span className="preview__tag">预览</span>
+      <article className="card" style={{ pointerEvents: 'none' }}>
+        <span className="card__rank">1</span>
+        <FileText className="card__icon" size={16} strokeWidth={1.7} aria-hidden />
+        <div className="card__main">
+          <div className="card__head">
+            <span className="card__title">第三季度预算说明.pdf</span>
+            <span className="card__loc">第 12 页</span>
+          </div>
+          <p className="card__snippet">
+            研发投入占总预算的 <em>34%</em>，较上一季度上升 6 个百分点；
+            其中人力成本占研发投入的七成，设备采购与云服务各占一成半。
+          </p>
+          <div className="card__meta">
+            <span className="card__path">D:\Documents\预算\第三季度预算说明.pdf</span>
+            <span>2.4 MB</span>
+            <span>2026-07-14</span>
+          </div>
+        </div>
+        <span className="card__score">0.92</span>
+      </article>
+    </div>
   );
 }

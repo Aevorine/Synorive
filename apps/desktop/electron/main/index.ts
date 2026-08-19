@@ -12,6 +12,7 @@ import { ClipboardWatcher } from './clipboard.js';
 import {
   launchScreenCapture,
   registerHotkeys,
+  unregisterAllHotkeys,
   type HotkeyReport,
 } from './hotkeys.js';
 import { PeekWindow } from './peek.js';
@@ -326,6 +327,23 @@ function registerIpc(): void {
   ipcMain.handle(IPC.windowClose, () => win?.close());
   ipcMain.handle(IPC.windowIsMaximized, () => win?.isMaximized() ?? false);
 
+  /**
+   * 界面整体缩放。
+   *
+   * 🔴 **每个窗口都要设，不能只设主窗口。** 浮窗（随手研究）和渲染代理
+   *    也是 BrowserWindow —— 只设主窗口的话，用户放大到 150% 之后
+   *    浮窗还是原大小，看起来像"这个窗口没跟上"。
+   *
+   * 🔴 夹在 0.5~3 之间。setZoomFactor 收到 0 或负数会直接抛，
+   *    而调用方（渲染层）传什么完全取决于设置文件，设置文件是可以被手改的。
+   */
+  ipcMain.handle(IPC.windowSetZoom, (_e, factor: number) => {
+    const f = Math.min(3, Math.max(0.5, Number(factor) || 1));
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.setZoomFactor(f);
+    }
+  });
+
   // 设置
   ipcMain.handle(IPC.settingsGet, () => settings);
   ipcMain.handle(IPC.settingsPatch, (_e, patch: Partial<AppSettings>) => applyPatch(patch));
@@ -549,6 +567,39 @@ function registerIpc(): void {
   // F7：把**真实**注册结果交给界面。设置页显示的必须是实际生效的键，
   // 不是我们希望生效的那个 —— 显示错的比不显示更糟
   ipcMain.handle(IPC.hotkeyReport, () => hotkeyReport);
+
+  /**
+   * 改键。**先真的注册一次再落盘。**
+   *
+   * 🔴 只把新键写进设置的话，用户看到"保存成功"，按下去却没反应 ——
+   *    而他没有任何线索。这里试注册失败就原样回滚并把失败原因报回界面。
+   */
+  ipcMain.handle(
+    IPC.hotkeySet,
+    async (_e, id: string, accelerator: string): Promise<{ ok: boolean; error?: string }> => {
+      const key = id === 'focus-search' ? 'focusSearch' : id === 'screenshot-search' ? 'screenshot' : null;
+      if (!key) return { ok: false, error: `不认识的快捷键项：${id}` };
+
+      const before = settings.hotkeys ?? {};
+      const next = { ...before, [key]: accelerator.trim() };
+      settings = patchSettings({ hotkeys: next });
+      applyHotkeys();
+
+      const row = hotkeyReport.find((r) => r.id === id);
+      // 用了备选键 = 首选没抢到。对"我刚指定了这个键"来说，那就是失败
+      if (!row?.active || (accelerator.trim() && row.usedFallback)) {
+        settings = patchSettings({ hotkeys: before });
+        applyHotkeys();
+        broadcast(IPC.settingsChanged, settings);
+        return {
+          ok: false,
+          error: `${accelerator} 抢不到，多半被别的程序占着（输入法、截图工具、录屏软件最常见）。已经保持原样。`,
+        };
+      }
+      broadcast(IPC.settingsChanged, settings);
+      return { ok: true };
+    },
+  );
   // A4：命令面板里也能触发截图，不是只有快捷键那一条路
   ipcMain.handle(IPC.screenshotCapture, () => launchScreenCapture());
 
@@ -655,6 +706,50 @@ function registerIpc(): void {
   );
 }
 
+/**
+ * 按当前设置（重新）注册全局快捷键。
+ *
+ * 🔴 **先注销再注册。** `globalShortcut.register()` 对一个已经被**自己**
+ *    占着的组合会直接失败 —— 改键时不先注销，就会出现"改成 A 成功了，
+ *    再改回原来那个键却说抢不到"这种莫名其妙的现象。
+ *
+ * 🔴 **注册结果必须留下来给界面看。** register() 抢不到时返回 false 而不抛，
+ *    失败是静默的 —— 用户按了没反应，日志干干净净，他唯一能得出的结论
+ *    是"这功能坏了"。
+ */
+function applyHotkeys(): void {
+  unregisterAllHotkeys();
+  const custom = settings.hotkeys ?? {};
+  hotkeyReport = registerHotkeys([
+    {
+      id: 'focus-search',
+      label: '任何时候唤起搜索',
+      accelerator: custom.focusSearch?.trim() || 'Alt+Space',
+      fallbacks: ['CommandOrControl+Alt+Space', 'CommandOrControl+Shift+Space'],
+      run: () => {
+        showWindow();
+        win?.webContents.send(IPC.engineEvent, { type: 'ui.focus-search' });
+      },
+    },
+    {
+      id: 'screenshot-search',
+      label: '截图直搜',
+      accelerator: custom.screenshot?.trim() || 'CommandOrControl+Alt+S',
+      fallbacks: ['CommandOrControl+Shift+Alt+S'],
+      run: () => {
+        void launchScreenCapture();
+      },
+    },
+  ]);
+  for (const r of hotkeyReport) {
+    if (!r.active) {
+      console.warn(`[hotkey] 「${r.label}」一个都没抢到，试过：${r.tried.join(' / ')}`);
+    } else if (r.usedFallback) {
+      console.warn(`[hotkey] 「${r.label}」退到了 ${r.active}（首选被别的软件占了）`);
+    }
+  }
+}
+
 // ── 生命周期 ─────────────────────────────────────────────────
 
 app.whenReady().then(() => {
@@ -715,34 +810,7 @@ app.whenReady().then(() => {
   // F7 全局唤起 + A4 截图直搜。**注册结果要留下来**：
   // 界面上要显示"你想要的 Alt+空格被别的软件占了，现在用的是 Ctrl+Alt+空格"，
   // 不然用户按了没反应，永远查不出为什么
-  hotkeyReport = registerHotkeys([
-    {
-      id: 'focus-search',
-      label: '任何时候唤起搜索',
-      accelerator: 'Alt+Space',
-      fallbacks: ['CommandOrControl+Alt+Space', 'CommandOrControl+Shift+Space'],
-      run: () => {
-        showWindow();
-        win?.webContents.send(IPC.engineEvent, { type: 'ui.focus-search' });
-      },
-    },
-    {
-      id: 'screenshot-search',
-      label: '截图直搜',
-      accelerator: 'CommandOrControl+Alt+S',
-      fallbacks: ['CommandOrControl+Shift+Alt+S'],
-      run: () => {
-        void launchScreenCapture();
-      },
-    },
-  ]);
-  for (const r of hotkeyReport) {
-    if (!r.active) {
-      console.warn(`[hotkey] 「${r.label}」一个键都没抢到，试过：${r.tried.join(' / ')}`);
-    } else if (r.usedFallback) {
-      console.warn(`[hotkey] 「${r.label}」退到了 ${r.active}（首选被别的软件占了）`);
-    }
-  }
+  applyHotkeys();
 
   if (!trayOnly) showWindow();
 

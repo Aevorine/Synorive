@@ -12,6 +12,10 @@ export const IPC = {
   windowMaximizeToggle: 'window:maximize-toggle',
   windowClose: 'window:close',
   windowIsMaximized: 'window:is-maximized',
+  /**
+   * 界面整体缩放。走浏览器级 zoom —— 设计令牌全是 px，改根字号是空操作。
+   */
+  windowSetZoom: 'window:set-zoom',
   windowStateChanged: 'window:state-changed',
 
   // ── 设置 ────────────────────────────────────────────────
@@ -67,6 +71,12 @@ export const IPC = {
   hotkeyReport: 'hotkey:report',
   /** A4 手动触发一次截图直搜（快捷键之外，命令面板里也能点） */
   screenshotCapture: 'hotkey:screenshot',
+  /**
+   * 改键。**先真的注册一次再落盘** —— `globalShortcut.register()` 抢不到时
+   * 返回 false 而不抛异常，光把新键写进设置的话，用户看到"保存成功"，
+   * 按下去却没反应，而且他没有任何线索。
+   */
+  hotkeySet: 'hotkey:set',
 
   /**
    * E5 把一段 HTML 打成 PDF，且**保留可点的引用锚点**。

@@ -59,6 +59,11 @@ export function defaultSettings(): AppSettings {
     defaultInputMode: 'ask',
     // B7：默认不钉任何东西 —— 钉什么是用户自己的使用习惯，猜不出来
     pinnedNav: [],
+    // 空 = 用内置的按使用频率排的顺序。用户拖过之后才写具体值
+    navOrder: [],
+    uiScale: 100,
+    // 空 = 用内置默认键（Alt+Space / Ctrl+Alt+S）
+    hotkeys: { focusSearch: '', screenshot: '' },
     // D1：默认没有自存预设，内置那五个（均衡/求准/求全/看最近/深读）够用了
     savedPresets: [],
     // A5：默认不归属任何项目。**不自动建一个「默认项目」** ——

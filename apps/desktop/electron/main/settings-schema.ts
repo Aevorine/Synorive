@@ -70,6 +70,13 @@ export const AppSettingsSchema = z.object({
   startPage: z.enum(['today', 'search']),
   defaultInputMode: z.enum(['ask', 'find']),
   pinnedNav: z.array(z.string()),
+  // 🔴 新加的字段一律 .optional()：老 settings.json 里没有它们，
+  //    不给 optional 会让整份配置校验失败，表现是"升级后设置全被重置成默认"
+  navOrder: z.array(z.string()).optional(),
+  uiScale: z.union([z.literal(100), z.literal(125), z.literal(150)]).optional(),
+  hotkeys: z
+    .object({ focusSearch: z.string().optional(), screenshot: z.string().optional() })
+    .optional(),
   savedPresets: z.array(SavedRankingPresetSchema),
   activeProjectId: z.string().nullable(),
   offloadHeavyWork: z.boolean(),

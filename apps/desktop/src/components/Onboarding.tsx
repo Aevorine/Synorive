@@ -37,6 +37,49 @@ export function Onboarding({
   const [step, setStep] = useState(0);
   const [open, setOpen] = useState(false);
 
+  /**
+   * 三步。**放在所有 hook 之前定义。**
+   *
+   * 🔴 原来它在 `if (!open) return null` 之后 —— 而下面那个算高亮位置的
+   *    effect 引用了它。`open` 为假的那一次渲染根本走不到 steps 的赋值，
+   *    effect 闭包却已经建好了：一旦执行顺序变一点，就是一个
+   *    "Cannot access 'steps' before initialization" 的运行时崩溃。
+   *    现在无条件先定义，彻底没有这条路。
+   */
+  const steps = [
+    {
+      /**
+       * 每一步指向界面上**真实存在**的那个元素。
+       *
+       * 🔴 选择器写错了不能崩、也不能空等 —— 找不到就退回"只显示卡片、
+       *    不画高亮框"。引导本身找不到目标是我们的问题，不该让用户
+       *    对着一个卡在那儿的遮罩。
+       */
+      spot: '.sidebar__item[aria-label="分析中心"]',
+      icon: FolderPlus,
+      title: '先给它一点东西',
+      body: '拖一个文件夹进来 —— 文档、代码、图片、视频混在一起也行，它会自己分类。索引在后台跑，界面不会卡。',
+      action: '选一个文件夹',
+      run: onAddFolder,
+    },
+    {
+      spot: '.sidebar__item[aria-label="搜索"]',
+      icon: Search,
+      title: '用你自己的话搜',
+      body: '不用记文件名。描述内容就行：「上次那个讲预算的表格」「有猫的那张图」。视频能定位到第几秒。',
+      action: '去搜一下',
+      run: onGoSearch,
+    },
+    {
+      spot: '.sidebar__item[aria-label="设置"]',
+      icon: ShieldCheck,
+      title: '这两个开关要知道在哪',
+      body: '「联网搜索」和「云端推理」是分开的两个闸：前者泄露你在查什么，后者泄露你有什么。默认都关着，要开自己开。',
+      action: '看一眼隐私开关',
+      run: onGoPrivacy,
+    },
+  ];
+
   useEffect(() => {
     if (itemCount == null) return; // 还没问出来，先不判断
     const done = localStorage.getItem(KEY) === '1';
@@ -57,31 +100,53 @@ export function Onboarding({
     setOpen(false);
   }
 
+  /**
+   * 这一步要圈的那个元素在屏幕上的位置。null = 没找到（就不画框）。
+   *
+   * 窗口尺寸变化、侧栏收起展开都要重算 —— 位置写死的话换个分辨率
+   * 框就飘到别处，比不画框还糟。
+   */
+  const [spot, setSpot] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setSpot(null);
+      return;
+    }
+    const sel = steps[step]?.spot;
+    const measure = () => {
+      const el = sel ? document.querySelector(sel) : null;
+      if (!el) {
+        setSpot(null);
+        return;
+      }
+      const r = el.getBoundingClientRect();
+      const pad = 4;
+      setSpot({
+        left: r.left - pad,
+        top: r.top - pad,
+        width: r.width + pad * 2,
+        height: r.height + pad * 2,
+      });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    // 侧栏收起/展开是个 CSS 过渡，量早了拿到的是过渡中间的尺寸
+    const t = setTimeout(measure, 260);
+    return () => {
+      window.removeEventListener('resize', measure);
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, step]);
+
   if (!open) return null;
 
-  const steps = [
-    {
-      icon: FolderPlus,
-      title: '先给它一点东西',
-      body: '拖一个文件夹进来 —— 文档、代码、图片、视频混在一起也行，它会自己分类。索引在后台跑，界面不会卡。',
-      action: '选一个文件夹',
-      run: onAddFolder,
-    },
-    {
-      icon: Search,
-      title: '用你自己的话搜',
-      body: '不用记文件名。描述内容就行：「上次那个讲预算的表格」「有猫的那张图」。视频能定位到第几秒。',
-      action: '去搜一下',
-      run: onGoSearch,
-    },
-    {
-      icon: ShieldCheck,
-      title: '这两个开关要知道在哪',
-      body: '「联网搜索」和「云端推理」是分开的两个闸：前者泄露你在查什么，后者泄露你有什么。默认都关着，要开自己开。',
-      action: '看一眼隐私开关',
-      run: onGoPrivacy,
-    },
-  ];
   // `steps[step]` 在 TS 的 noUncheckedIndexedAccess 下是可能 undefined 的。
   // 兜到第 0 步而不是加 `!` —— 真出现越界时显示第一步，
   // 总好过整个引导白屏而没人知道为什么
@@ -89,6 +154,15 @@ export function Onboarding({
 
   return (
     <div className="syn-onb-mask" role="dialog" aria-modal="true" aria-label="首次使用引导">
+      {/* 把这一步说的那个按钮圈出来。位置从真实元素算，窗口一变就重算 ——
+          写死坐标的话换个分辨率、收一下侧栏，框就飘到别处去了 */}
+      {spot && (
+        <div
+          className="syn-onb-spot"
+          style={{ left: spot.left, top: spot.top, width: spot.width, height: spot.height }}
+          aria-hidden
+        />
+      )}
       <section className="syn-onb">
         <button type="button" className="syn-onb-x" onClick={close} aria-label="跳过引导" title="跳过引导">
           <X size={16} aria-hidden />

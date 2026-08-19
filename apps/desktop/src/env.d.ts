@@ -16,6 +16,8 @@ export interface SynoriveApi {
     maximizeToggle: () => Promise<void>;
     close: () => Promise<void>;
     isMaximized: () => Promise<boolean>;
+    /** 界面整体缩放。1 = 100%。走浏览器级 zoom，所有窗口一起设 */
+    setZoom: (factor: number) => Promise<void>;
     onStateChanged: (cb: (s: WindowState) => void) => Unsubscribe;
   };
   settings: {
@@ -78,6 +80,8 @@ export interface SynoriveApi {
       { id: string; label: string; active: string | null; usedFallback: boolean; tried: string[] }[]
     >;
     screenshot: () => Promise<{ ok: boolean; note: string }>;
+    /** 改键。ok:false 时 error 里写清为什么抢不到；设置已回滚 */
+    set: (id: string, accelerator: string) => Promise<{ ok: boolean; error?: string }>;
   };
   /** E5 引用可点的 PDF。`ok:false` + 无 `error` = 用户取消了保存，不是失败 */
   doc: {

@@ -1141,3 +1141,72 @@
   background: var(--syn-color-danger-subtle);
   color: var(--syn-color-danger);
 }
+
+/* ── 设置里的实时预览 ────────────────────────────────────
+   用的是真的 .card 类名，所以密度/字体/缩放怎么变它都跟着变。
+   包一层下沉底色 + 一个「预览」角标，避免被当成真结果去点。 */
+
+.preview {
+  position: relative;
+  margin-top: var(--syn-space-sm);
+  padding: var(--syn-space-sm);
+  background: var(--syn-color-bg-sunken);
+  border: 1px dashed var(--syn-color-border-strong);
+  border-radius: var(--syn-radius-lg);
+  overflow: hidden;
+}
+
+.preview__tag {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 1px var(--syn-space-xs);
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  background: var(--syn-color-bg-hover);
+  border-bottom-left-radius: var(--syn-radius-md);
+}
+
+.preview .card {
+  border-bottom: none;
+  background: var(--syn-color-bg-elevated);
+  border-radius: var(--syn-radius-md);
+}
+
+/* ── 改键 ────────────────────────────────────────────────── */
+
+.hk__spacer {
+  flex: 1;
+}
+
+/* 正在等你按键：用主色边框而不是背景色 ——
+   背景色会让它看起来像"已经设好了" */
+.hk__capturing {
+  border-color: var(--syn-color-primary);
+  color: var(--syn-color-primary);
+  min-width: unset;
+  padding-inline: var(--syn-space-sm);
+}
+
+.hk__reset {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--syn-radius-md);
+  color: var(--syn-color-text-muted);
+}
+
+.hk__reset:hover {
+  background: var(--syn-color-bg-hover);
+  color: var(--syn-color-text);
+}
+
+.hk__saveerr {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  margin-top: var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-danger);
+}

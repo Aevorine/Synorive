@@ -59,15 +59,28 @@ def make_corpus(root: Path, n: int, size: int = 900) -> int:
 # ── A14 崩溃恢复 ────────────────────────────────────────────
 
 
+def _workdir(tag: str) -> Path:
+    """
+    每次跑一个**全新**的临时目录。
+
+    🔴 原来用的是固定路径（`%TEMP%/synorive_a18`）且开头 `shutil.rmtree(work)`。
+       在 Windows 上这会周期性地炸成
+       `PermissionError: [WinError 32] 另一个程序正在使用此文件` ——
+       上一次跑剩下的 SQLite 句柄还没释放（摄取流水线开的工作线程各有一条连接，
+       而 `db.close()` **只关调用它的那个线程**那一条）。
+       症状是"单跑这个测试通过、跟别的一起跑就挂"，且挂的是测试自己的清理逻辑，
+       和被测代码毫无关系 —— 排查起来极其费劲。
+       现在：目录每次唯一 + 收尾用 `db.close_all()` 真正释放文件。
+    """
+    return Path(tempfile.mkdtemp(prefix=f"synorive_{tag}_"))
+
+
 def test_a14_crash_recovery() -> None:
     print("=" * 76)
     print("A14 崩溃恢复 —— 分析中强杀进程，库文件不能损坏")
     print("=" * 76)
 
-    work = Path(tempfile.gettempdir()) / "synorive_a14"
-    if work.exists():
-        shutil.rmtree(work)
-    work.mkdir(parents=True)
+    work = _workdir("a14")
     corpus = work / "corpus"
     n = make_corpus(corpus, 400)
     print(f"  语料 {n} 个文件")
@@ -186,7 +199,7 @@ def test_a10_memory() -> None:
     print("A10 内存占用 —— 10 万条索引下 ≤1.5 GB")
     print("=" * 76)
 
-    scale_db = Path(tempfile.gettempdir()) / "synorive_a10" / "scale.db"
+    scale_db = _workdir("a10") / "scale.db"
     if not scale_db.exists():
         print("  先造 10 万块的库（复用规模测试的造法）…")
         scale_db.parent.mkdir(parents=True, exist_ok=True)
@@ -289,6 +302,7 @@ def _build_scale_db(path: Path, items: int, chunks_per: int, dim: int) -> None:
     db.close()
 
 
+
 # ── A18 断网 ────────────────────────────────────────────────
 
 
@@ -319,10 +333,7 @@ def test_a18_offline() -> None:
     from synorive.store.db import Database
     from synorive.store.repository import Repository
 
-    work = Path(tempfile.gettempdir()) / "synorive_a18"
-    if work.exists():
-        shutil.rmtree(work)
-    work.mkdir(parents=True)
+    work = _workdir("a18")
     corpus = work / "corpus"
     make_corpus(corpus, 30)
 
@@ -363,7 +374,9 @@ def test_a18_offline() -> None:
         socket.socket = real_socket  # type: ignore[assignment]
         socket.create_connection = real_create_conn  # type: ignore[assignment]
         socket.getaddrinfo = real_getaddrinfo  # type: ignore[assignment]
-        db.close()
+        # close_all 而不是 close：摄取流水线的工作线程各持一条连接，
+        # 只关当前线程那条的话文件还锁着，rmtree 会静默失败
+        db.close_all()
         shutil.rmtree(work, ignore_errors=True)
 
 

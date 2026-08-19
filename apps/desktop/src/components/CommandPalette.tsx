@@ -27,12 +27,16 @@ import {
 import { PAGE_TITLES, useApp, type PageId } from '../lib/store';
 import { useSearch } from '../lib/useSearch';
 import { api } from '../lib/api';
+import { fuzzyScore } from '../lib/pinyinMatch';
 
 interface Cmd {
   id: string;
   label: string;
-  /** 拼音首字母，中文标签必填 */
-  py: string;
+  /**
+   * 手写拼音首字母。**可选** —— 默认从标签自动算（见 lib/pinyinMatch.ts）。
+   * 只在自动算的结果不好用时才写（多音字、缩写、英文命令想加个中文别名）。
+   */
+  py?: string;
   hint?: string;
   group: string;
   icon: typeof Command;
@@ -42,30 +46,22 @@ interface Cmd {
 }
 
 /**
- * 模糊匹配：子序列即可（打 wjgl 能命中 wjglq）。
- * 返回 null 表示不匹配，数字越小越靠前。
+ * 模糊匹配。全拼和首字母都认：打 `qingli` 或 `qlczt` 都能命中「清理重复图」。
+ *
+ * 🔴 拼音串**从标签算出来**，不再是每条命令手写一个 `py` 字段。
+ *    手写那套的问题不在于麻烦，在于**它会被忘** —— 新加一条命令忘了写 py，
+ *    那条就永远搜不到；不报错、不告警，只是打拼音时它不出现。
+ *    `py` 字段还留着（可选），只在自动算不准时手动覆盖。
  */
 function score(q: string, cmd: Cmd): number | null {
+  const auto = fuzzyScore(q, cmd.label, cmd.hint);
+  if (!cmd.py) return auto;
+  // 手写覆盖：命中就给一个和"首字母命中"同档的分
   const s = q.trim().toLowerCase();
-  if (!s) return 0;
-
-  const label = cmd.label.toLowerCase();
   const py = cmd.py.toLowerCase();
-  const hint = (cmd.hint ?? '').toLowerCase();
-
-  if (label.startsWith(s)) return 0;
-  if (py.startsWith(s)) return 1;
-  if (label.includes(s)) return 2;
-  if (py.includes(s)) return 3;
-  if (hint.includes(s)) return 5;
-
-  // 子序列：把 py 当成一串首字母，允许跳着打
-  let i = 0;
-  for (const ch of py) {
-    if (ch === s[i]) i++;
-    if (i === s.length) return 4;
-  }
-  return null;
+  const manual = py.startsWith(s) ? 2 : py.includes(s) ? 4 : null;
+  if (manual === null) return auto;
+  return auto === null ? manual : Math.min(auto, manual);
 }
 
 export function CommandPalette() {

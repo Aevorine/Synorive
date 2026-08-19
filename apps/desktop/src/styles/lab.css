@@ -1941,3 +1941,24 @@
   flex: none;
   gap: var(--syn-space-xs);
 }
+
+/* 引导里圈出真实按钮的那个框。
+   用 box-shadow 掏洞而不是改遮罩的 background：掏洞让被圈的元素
+   真的"亮"起来，用户一眼看到要点的是哪个，而不是在暗底上找一个方框。 */
+.syn-onb-spot {
+  position: fixed;
+  border-radius: var(--syn-radius-lg);
+  border: 2px solid var(--syn-color-primary);
+  box-shadow: 0 0 0 9999px var(--syn-color-scrim);
+  pointer-events: none;
+  transition: left var(--syn-dur-normal) var(--syn-ease-standard),
+    top var(--syn-dur-normal) var(--syn-ease-standard),
+    width var(--syn-dur-normal) var(--syn-ease-standard),
+    height var(--syn-dur-normal) var(--syn-ease-standard);
+}
+
+/* 有高亮框时遮罩自己不要再叠一层暗色 —— 叠两层会把被圈的元素也压暗，
+   等于白圈了 */
+.syn-onb-mask:has(.syn-onb-spot) {
+  background: transparent;
+}

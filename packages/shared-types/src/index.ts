@@ -715,6 +715,19 @@ export interface AppSettings {
    * 顺序即显示顺序。
    */
   pinnedNav: string[];
+  /**
+   * 导航栏顺序（存 PageId）。空数组 = 用内置的按使用频率排的顺序。
+   * 里面没有的页面接在后面 —— 加了新页面时不会因为老配置里没有它而消失。
+   */
+  navOrder?: string[];
+  /**
+   * 界面整体缩放：100 / 125 / 150。
+   * 给高分屏和看小字吃力的场景用，比单独调字号统一 ——
+   * 只放大字号会让图标、间距、命中区都对不上。
+   */
+  uiScale?: 100 | 125 | 150;
+  /** 全局快捷键。空串 = 用内置默认值 */
+  hotkeys?: { focusSearch?: string; screenshot?: string };
   /** D1 用户存下来的排序权重组合。空数组 = 还没存过 */
   savedPresets: SavedRankingPreset[];
   /**

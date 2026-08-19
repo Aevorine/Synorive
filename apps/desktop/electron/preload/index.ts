@@ -23,6 +23,8 @@ const api = {
     maximizeToggle: () => ipcRenderer.invoke(IPC.windowMaximizeToggle),
     close: () => ipcRenderer.invoke(IPC.windowClose),
     isMaximized: () => ipcRenderer.invoke(IPC.windowIsMaximized),
+    /** 界面整体缩放。1 = 100%。所有窗口一起设 */
+    setZoom: (factor: number): Promise<void> => ipcRenderer.invoke(IPC.windowSetZoom, factor),
     onStateChanged: (cb: (s: { isMaximized: boolean; isFullScreen: boolean }) => void) =>
       on(IPC.windowStateChanged, cb),
   },
@@ -115,6 +117,12 @@ const api = {
     /** A4 手动拉起系统截图。截完的图由剪贴板哨兵接住 */
     screenshot: (): Promise<{ ok: boolean; note: string }> =>
       ipcRenderer.invoke(IPC.screenshotCapture),
+    /**
+     * 改键。**先真的注册一次再落盘** —— 只写设置的话用户会看到"保存成功"
+     * 而按下去没反应，且没有任何线索。抢不到时回滚并把原因说清楚。
+     */
+    set: (id: string, accelerator: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC.hotkeySet, id, accelerator),
   },
 
   /**

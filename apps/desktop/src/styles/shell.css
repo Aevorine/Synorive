@@ -600,3 +600,31 @@
     min-height: 44px;
   }
 }
+
+/* ── 导航栏拖着换顺序 ────────────────────────────────────── */
+
+.sidebar__slot {
+  position: relative;
+}
+
+/* 正在被拖的那一项：压暗但不隐藏 —— 隐藏会让列表在拖动过程中一直跳 */
+.sidebar__slot--dragging {
+  opacity: 0.4;
+}
+
+/* 松手会落在这一项之前。用一条线而不是整块高亮：
+   高亮块说不清"落在它前面还是后面" */
+.sidebar__slot--over::before {
+  content: '';
+  position: absolute;
+  left: var(--syn-space-xs);
+  right: var(--syn-space-xs);
+  top: -2px;
+  height: 2px;
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-primary);
+}
+
+.sidebar__item--minor {
+  color: var(--syn-color-text-muted);
+}

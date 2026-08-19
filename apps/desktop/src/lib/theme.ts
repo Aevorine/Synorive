@@ -48,9 +48,35 @@ export function applyDensity(density: AppSettings['density']): void {
   document.documentElement.setAttribute('data-density', density);
 }
 
+/**
+ * 界面整体缩放。
+ *
+ * 🔴 **第一版改的是 `<html>` 的 font-size，那是个彻底的空操作。**
+ *    设计令牌里的字号、间距、控件高度**全是 px 字面量**（`--syn-fs-body: 16px`、
+ *    `--syn-space-md: 12px`），没有一处用 rem —— 根字号改了谁也不看。
+ *    测出来的现象是：`data-scale` 属性写上了、设置里也存了，
+ *    而界面一个像素都没动。功能"看起来做完了"，实际零效果。
+ *
+ * 🔴 也不能用 CSS `transform: scale`：它不改变布局尺寸，右边和下边会空出一块。
+ *
+ * 现在走 Electron 的 `webContents.setZoomFactor` —— 就是浏览器 Ctrl+= 那个缩放。
+ * 它在布局层生效，字、图标、间距、命中区一起等比变，`getBoundingClientRect`
+ * 返回的仍是自洽的 CSS 像素，虚拟滚动的测量不受影响。
+ *
+ * `data-scale` 仍然写到 <html> 上，给需要按档位微调的样式留一个钩子。
+ */
+export function applyUiScale(scale: AppSettings['uiScale']): void {
+  const root = document.documentElement;
+  const pct = scale ?? 100;
+  if (pct === 100) root.removeAttribute('data-scale');
+  else root.setAttribute('data-scale', String(pct));
+  void window.synorive.window.setZoom(pct / 100);
+}
+
 export function applyAll(settings: AppSettings, resolved: ResolvedTheme): void {
   applyTheme(resolved);
   applyFontScheme(settings.fontScheme);
   applyEyeComfort(settings.eyeComfort);
   applyDensity(settings.density);
+  applyUiScale(settings.uiScale);
 }

@@ -57,9 +57,13 @@ function tryRegister(keys: string[], run: () => void): { active: string | null; 
   const tried: string[] = [];
   for (const key of keys) {
     tried.push(key);
-    if (globalShortcut.isRegistered(key)) continue;
     let ok = false;
     try {
+      // 🔴 `isRegistered` 也要包在 try 里。它原来在 try 外面 ——
+      //    传进一个语法非法的组合（用户改键时完全可能）时**它自己就抛**，
+      //    异常一路冒到 IPC，界面收到的是一句
+      //    "conversion failure from NotAKey+++"。那不是给人看的话。
+      if (globalShortcut.isRegistered(key)) continue;
       ok = globalShortcut.register(key, run);
     } catch {
       ok = false;

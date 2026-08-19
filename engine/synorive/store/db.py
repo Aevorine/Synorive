@@ -120,6 +120,14 @@ class Database:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
+        #: 所有线程开出来的连接。`close()` 只能关掉**调用它的那个线程**那一条，
+        #: 别的线程那几条谁也碰不到 —— 而 SQLite 的文件锁是**进程级**的，
+        #: 只要还有一条连接活着，这个 .db 文件在 Windows 上就删不掉、
+        #: 也没法安全地拷走做备份。表现是 `shutil.rmtree` 抛
+        #: `PermissionError: [WinError 32] 另一个程序正在使用此文件`，
+        #: 而它离真正的原因（某个工作线程的连接没关）隔着十万八千里。
+        self._all_conns: list[sqlite3.Connection] = []
+        self._conns_lock = threading.Lock()
         self._init_lock = threading.Lock()
         self._initialized = False
         self.capabilities: dict[str, Any] = {}
@@ -166,13 +174,46 @@ class Database:
             conn.execute(pragma)
 
         self._local.conn = conn
+        with self._conns_lock:
+            self._all_conns.append(conn)
         return conn
 
     def close(self) -> None:
+        """只关**当前线程**那一条。别的线程的连接不受影响。"""
         conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
         if conn is not None:
             conn.close()
+            with self._conns_lock:
+                if conn in self._all_conns:
+                    self._all_conns.remove(conn)
             self._local.conn = None
+
+    def close_all(self) -> int:
+        """
+        关掉**所有线程**开出来的连接，真正释放这个 .db 文件。返回关掉几条。
+
+        用在"要对库文件本身动手"的场合：删掉它、拷走做备份、换一个库。
+        `close()` 做不到这件事 —— 它只管调用者那一条，而 SQLite 的文件锁
+        是进程级的，剩下任意一条没关，文件就还锁着。
+
+        🔴 关完之后别的线程再调 `connect()` 会**重新开一条**（这是对的：
+        连接是懒建的）。所以调用方要保证这之后不再有人用这个库，
+        否则它会静默地又把文件锁上。
+        """
+        with self._conns_lock:
+            conns = list(self._all_conns)
+            self._all_conns.clear()
+        n = 0
+        for c in conns:
+            try:
+                c.close()
+                n += 1
+            except sqlite3.Error:
+                # 已经关过 / 正在别的线程里用。关不掉就跳过，
+                # 这个方法的语义是"尽力释放"，不是"保证全部关掉"
+                pass
+        self._local.conn = None
+        return n
 
     # ── 建库 ────────────────────────────────────────────────
 

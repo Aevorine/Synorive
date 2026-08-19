@@ -7,6 +7,7 @@ import {
   PanelLeft,
   Pin,
   PinOff,
+  RotateCcw,
   ScanSearch,
   Search,
   Settings,
@@ -89,6 +90,47 @@ export function SideBar() {
   const pinned = useMemo(() => settings?.pinnedNav ?? [], [settings?.pinnedNav]);
 
   /**
+   * 用户自己拖出来的顺序。
+   *
+   * 🔴 **配置里没有的页面接在后面，不是丢掉。** 用户拖过一次之后 navOrder
+   *    就固定了那几项；将来加了新页面，如果只按 navOrder 渲染，
+   *    新页面会**在导航栏里根本不出现** —— 不报错，用户也不知道有这个功能。
+   *    所以永远是"先按存下来的顺序排，剩下的按内置顺序接在后面"。
+   *
+   * 🔴 配置里有、而代码里已经删掉的页面要过滤掉，否则会渲染一个 undefined。
+   */
+  const ordered = useMemo(() => {
+    const saved = settings?.navOrder ?? [];
+    const known = new Map(NAV.map((n) => [n.id, n]));
+    const out: typeof NAV = [];
+    for (const id of saved) {
+      const n = known.get(id as PageId);
+      if (n) {
+        out.push(n);
+        known.delete(id as PageId);
+      }
+    }
+    for (const n of NAV) if (known.has(n.id)) out.push(n);
+    return out;
+  }, [settings?.navOrder]);
+
+  /** 正在拖的那一项。null = 没在拖 */
+  const [dragId, setDragId] = useState<PageId | null>(null);
+  /** 松手会落到哪一项之前。用来画那条插入线 */
+  const [overId, setOverId] = useState<PageId | null>(null);
+
+  const dropOn = (targetId: PageId) => {
+    const from = dragId;
+    setDragId(null);
+    setOverId(null);
+    if (!from || from === targetId) return;
+    const ids = ordered.map((n) => n.id).filter((id) => id !== from);
+    const at = ids.indexOf(targetId);
+    ids.splice(at < 0 ? ids.length : at, 0, from);
+    void window.synorive.settings.patch({ navOrder: ids });
+  };
+
+  /**
    * 钉 / 取消钉。
    *
    * 直接 patch 设置而不是先改本地 state —— 设置变更会通过 onChanged 广播回来，
@@ -99,16 +141,45 @@ export function SideBar() {
     void window.synorive.settings.patch({ pinnedNav: next });
   };
 
-  const pinnedItems = NAV.filter((n) => pinned.includes(n.id));
+  const pinnedItems = ordered.filter((n) => pinned.includes(n.id));
   // 钉住的从下面那组里拿走 —— 同一个入口出现两次会让人以为是两个东西
-  const restItems = NAV.filter((n) => !pinned.includes(n.id));
+  const restItems = ordered.filter((n) => !pinned.includes(n.id));
 
   const renderItem = (n: { id: PageId; icon: LucideIcon; hint: string }, isPinned: boolean) => (
-    <div key={n.id} className="sidebar__slot">
+    <div
+      key={n.id}
+      className={`sidebar__slot${overId === n.id ? ' sidebar__slot--over' : ''}${
+        dragId === n.id ? ' sidebar__slot--dragging' : ''
+      }`}
+      onDragOver={(e) => {
+        // 🔴 不 preventDefault 的话浏览器根本不认这是个放置目标，
+        //    表现是拖过去光标一直是"禁止"，松手什么都不发生
+        if (!dragId) return;
+        e.preventDefault();
+        setOverId(n.id);
+      }}
+      onDragLeave={() => setOverId((id) => (id === n.id ? null : id))}
+      onDrop={(e) => {
+        e.preventDefault();
+        dropOn(n.id);
+      }}
+    >
       <button
         className={`sidebar__item${page === n.id ? ' sidebar__item--active' : ''}`}
+        // 拖着换顺序。收起态也能拖 —— 那时候正是最想调顺序的时候
+        draggable
+        onDragStart={(e) => {
+          setDragId(n.id);
+          e.dataTransfer.effectAllowed = 'move';
+          // Firefox 不设 data 就不触发 drag 事件；值本身用不上
+          e.dataTransfer.setData('text/plain', n.id);
+        }}
+        onDragEnd={() => {
+          setDragId(null);
+          setOverId(null);
+        }}
         onClick={() => setPage(n.id)}
-        title={`${PAGE_TITLES[n.id]} —— ${n.hint}`}
+        title={`${PAGE_TITLES[n.id]} —— ${n.hint}（可以拖着换顺序）`}
         aria-label={PAGE_TITLES[n.id]}
         aria-current={page === n.id ? 'page' : undefined}
       >
@@ -165,6 +236,19 @@ export function SideBar() {
           />
         )}
       </button>
+
+      {/* 拖乱了要能回去。**只在真的拖过之后才出现** ——
+          没拖过的人看到一个"恢复默认顺序"只会疑惑默认是什么、我改过吗 */}
+      {(settings?.navOrder?.length ?? 0) > 0 && !collapsed && (
+        <button
+          className="sidebar__item sidebar__item--minor"
+          onClick={() => void window.synorive.settings.patch({ navOrder: [] })}
+          title="把导航栏顺序恢复成默认（按使用频率排）"
+        >
+          <RotateCcw className="sidebar__icon" size={16} strokeWidth={1.7} />
+          <span className="sidebar__label">恢复默认顺序</span>
+        </button>
+      )}
 
       <button
         className="sidebar__item"
