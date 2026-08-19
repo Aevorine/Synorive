@@ -284,9 +284,13 @@ def _split_pdf_sections(pages: list[tuple[int, str]]) -> list[TextSegment]:
 
 
 def _parse_pdf(path: Path) -> ParsedDoc:
-    import fitz  # PyMuPDF，延迟导入
+    # 🔴 用 `pymupdf` 不用 `fitz`：1.28 起 fitz 这个老别名被弃用，
+    #    每次导入都会往 stdout 打一行 warning（打包自检就是被它绊倒的），
+    #    而且下一个大版本会直接删掉 —— 到那时 PDF 解析会静默变成
+    #    "这个 PDF 读不出内容"，没有报错、没有线索。
+    import pymupdf  # 延迟导入：只有真的遇到 PDF 才付这个加载成本
 
-    doc = fitz.open(str(path))
+    doc = pymupdf.open(str(path))
     try:
         pages: list[tuple[int, str]] = []
         total = 0

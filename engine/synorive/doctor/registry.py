@@ -376,10 +376,11 @@ PIP_PACKAGES: dict[str, tuple[str, ...]] = {
 }
 
 #: 装完之后 import 这些名字来确认真的能用 —— 只看 pip 退出码是不够的。
-#: 探针名和 PIP_PACKAGES 里的包名往往不一样（pymupdf → fitz、python-docx → docx），
+#: 探针名和 PIP_PACKAGES 里的包名往往不一样（python-docx → docx、opencv-python → cv2），
+#: pymupdf 用它自己的名字 —— 老别名 fitz 每次导入都打一行弃用警告，下个大版本会没。
 #: 写错的症状同样是"装好了却报没装"。
 IMPORT_PROBES: dict[str, tuple[str, ...]] = {
-    "pkg-docs": ("fitz", "docx", "openpyxl", "pptx"),
+    "pkg-docs": ("pymupdf", "docx", "openpyxl", "pptx"),
     "pkg-ocr": ("rapidocr",),
     "pkg-asr": ("sherpa_onnx",),
     "pkg-web": ("trafilatura",),

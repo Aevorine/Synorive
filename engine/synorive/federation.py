@@ -28,7 +28,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .store.text import to_query
+from .store.text import to_query, to_trigram_query
 
 log = logging.getLogger("synorive.federation")
 
@@ -146,8 +146,12 @@ def _probe(path: Path) -> dict[str, Any]:
         conn.close()
 
 
-def _search_one(path: Path, expr: str, limit: int) -> list[dict[str, Any]]:
-    """在一个副库里跑关键词召回。块级命中优先，回落到标题/路径。"""
+def _search_one(path: Path, expr: str, query_raw: str, limit: int) -> list[dict[str, Any]]:
+    """
+    在一个副库里跑关键词召回，三路：块级分词 → 标题/路径分词 → 标题/路径子串。
+
+    三路的顺序就是精度顺序，靠不同的分数区间保证合并后排序不乱。
+    """
     conn = _open_ro(path)
     try:
         rows = conn.execute(
@@ -174,6 +178,7 @@ def _search_one(path: Path, expr: str, limit: int) -> list[dict[str, Any]]:
             }
             for r in rows
         }
+        # 标题/路径的分词命中
         if len(hits) < limit:
             for r in conn.execute(
                 """
@@ -198,6 +203,50 @@ def _search_one(path: Path, expr: str, limit: int) -> list[dict[str, Any]]:
                         "score": -float(r["score"]),
                     },
                 )
+        # 🔴 **子串兜底这一路不能省。** 中文分词会把「预算表」切成一个词，
+        #    于是搜「预算」在分词索引上一条都命中不了 —— 而那个文件就摆在那儿。
+        #    主库靠语义那一路把它捞回来，副库没有语义，只剩这条 trigram。
+        #    少了它，副库会在最常见的一类查询上表现为"明明有却搜不到"。
+        #
+        #    ⚠️ 这一路的覆盖面要说准，别夸大：`items_tri` **只索引标题和路径**，
+        #    不索引正文；而且 sqlite 的 trigram 要求查询 ≥3 个字符。
+        #    所以副库真正的边界是：
+        #      · 正文里的词按分词后的整词匹配 —— 搜「预算」找不到正文里的「预算表」
+        #      · 标题/路径可以按子串匹配，但查询得有 3 个字以上
+        #    主库靠语义那一路补上第一条，副库没有那一路，这就是它的天花板。
+        #    界面上照实写了这两句，不写的话用户只会觉得"这个功能时灵时不灵"。
+        tri = to_trigram_query(query_raw)
+        if tri and len(hits) < limit:
+            try:
+                for r in conn.execute(
+                    """
+                    SELECT i.id, i.title, i.locator, i.modality, i.content_time, i.created_at,
+                           i.snippet AS chunk, bm25(items_tri) AS score
+                    FROM items_tri
+                    JOIN items i ON i.rowid = items_tri.rowid
+                    WHERE items_tri MATCH ?
+                    ORDER BY score LIMIT ?
+                    """,
+                    (tri, limit),
+                ).fetchall():
+                    hits.setdefault(
+                        str(r["id"]),
+                        {
+                            "itemId": str(r["id"]),
+                            "title": str(r["title"] or "") or str(r["locator"] or ""),
+                            "locator": str(r["locator"] or ""),
+                            "modality": str(r["modality"] or ""),
+                            "at": r["content_time"] or r["created_at"],
+                            "snippet": (str(r["chunk"] or "")[:240]) or None,
+                            # 子串命中排在分词命中之后：它精度低，
+                            # 让它插到前面会把真正相关的结果挤下去
+                            "score": -float(r["score"]) - 1000.0,
+                        },
+                    )
+            except sqlite3.OperationalError:
+                # 老库可能没有 items_tri 这张表。少一路而已，不该整次搜索失败
+                pass
+
         return sorted(hits.values(), key=lambda h: -float(h["score"]))[:limit]
     finally:
         conn.close()
@@ -226,7 +275,7 @@ def search(repo: Any, query: str, limit: int = 30) -> dict[str, Any]:
     for r in libs:
         label, path = str(r["label"]), Path(str(r["db_path"]))
         try:
-            hits = _search_one(path, expr, PER_LIB_LIMIT)
+            hits = _search_one(path, expr, query, PER_LIB_LIMIT)
         except (sqlite3.Error, OSError) as e:
             log.warning("副库 %s 搜索失败：%s", label, e)
             reports.append({"id": str(r["id"]), "label": label, "ok": False, "count": 0,

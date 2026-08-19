@@ -360,10 +360,12 @@ async function main() {
   ];
   if (!SLIM) mods.push('numpy', 'onnxruntime');
   // extra 装了就必须 import 得到 —— 每个 extra 挑一个最有代表性的模块名。
-  // **模块名和包名经常不一样**（pymupdf→fitz、python-docx→docx、
-  // python-pptx→pptx、opencv-python→cv2），只查包名等于没查
+  // **模块名和包名经常不一样**（python-docx→docx、python-pptx→pptx、
+  // opencv-python→cv2），只查包名等于没查。
+  // pymupdf 的老别名 `fitz` 别再用了 —— 1.28 起它每次导入都往 stdout
+  // 打一行 warning，会把下面这个"输出必须正好是 ok"的自检直接判死
   const EXTRA_PROBE = {
-    docs: ['fitz', 'docx', 'openpyxl', 'pptx', 'trafilatura'],
+    docs: ['pymupdf', 'docx', 'openpyxl', 'pptx', 'trafilatura'],
     sync: ['cryptography'],
     // sherpa_onnx 是语音转写。2026-08-03 才被声明进 media —— 在那之前
     // 它一直只是"碰巧装在开发机上"，探针里当然也没有

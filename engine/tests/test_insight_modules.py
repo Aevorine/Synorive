@@ -382,6 +382,75 @@ def test_联邦_能从副库里搜到并标明来自哪个库(tmp_path: Path) ->
     assert out["libraries"][0]["ok"] is True and out["libraries"][0]["count"] == 1
 
 
+def test_联邦_标题里的片段要能命中(tmp_path: Path) -> None:
+    """
+    🔴 这是实测冒烟时才暴露出来的：中文分词把「季度预算表」切成整词，
+       搜「季度预算」在分词索引上一条都命中不了 —— 而那个文件就摆在那儿。
+       主库靠语义那一路捞回来，副库没有语义，只剩 trigram 子串这一条。
+       注意它**只覆盖标题和路径**（items_tri 就只索引这两列），正文不在内。
+    """
+    main = _repo(tmp_path, "main.db")
+    side = _repo(tmp_path, "side.db")
+    _add(side, "s1", title="季度预算表")
+    _seed_fts(side, "s1", "季度预算表", "季度预算表在这里")
+    conn = side.db.connect()
+    row = conn.execute("SELECT rowid FROM items WHERE id = 's1'").fetchone()
+    conn.execute(
+        "INSERT INTO items_tri (rowid, title, locator) VALUES (?,?,?)",
+        (row["rowid"], "季度预算表", "D:/x/s1.md"),
+    )
+    conn.commit()
+    side.db.close_all()
+
+    federation.register(main, str(tmp_path / "side.db"), "副库")
+    out = federation.search(main, "季度预算")
+    assert [h["title"] for h in out["hits"]] == ["季度预算表"]
+
+
+def test_联邦_少于三个字的片段查不到_这是硬限制不是bug(tmp_path: Path) -> None:
+    """
+    🔴 **这一条钉的是"做不到"，不是"做到了"。**
+       子串那一路走 sqlite 的 trigram 索引，它要求查询**至少 3 个字符**，
+       所以「预算」这种两字片段落在「预算表」中间时确实找不回来。
+       写成测试是为了让它明确是**已知边界**，而不是某天被当成新 bug 查半天 ——
+       界面上也照实写了。（主库靠语义那一路捞这类，副库没有那一路。）
+    """
+    main = _repo(tmp_path, "main.db")
+    side = _repo(tmp_path, "side.db")
+    _add(side, "s1", title="季度预算表")
+    _seed_fts(side, "s1", "季度预算表", "季度预算表在这里")
+    conn = side.db.connect()
+    row = conn.execute("SELECT rowid FROM items WHERE id = 's1'").fetchone()
+    conn.execute("INSERT INTO items_tri (rowid, title, locator) VALUES (?,?,?)",
+                 (row["rowid"], "季度预算表", "D:/x/s1.md"))
+    conn.commit()
+    side.db.close_all()
+
+    federation.register(main, str(tmp_path / "side.db"), "副库")
+    assert federation.search(main, "预算")["hits"] == []
+
+
+def test_联邦_子串命中排在分词命中之后(tmp_path: Path) -> None:
+    """子串精度低，插到前面会把真正相关的结果挤下去。"""
+    main = _repo(tmp_path, "main.db")
+    side = _repo(tmp_path, "side.db")
+    _add(side, "exact", title="报告")
+    _seed_fts(side, "exact", "报告", "这是一份报告")
+    _add(side, "sub", title="报告表格汇总")
+    conn = side.db.connect()
+    row = conn.execute("SELECT rowid FROM items WHERE id = 'sub'").fetchone()
+    conn.execute(
+        "INSERT INTO items_tri (rowid, title, locator) VALUES (?,?,?)",
+        (row["rowid"], "报告表格汇总", "D:/x/sub.md"),
+    )
+    conn.commit()
+    side.db.close_all()
+
+    federation.register(main, str(tmp_path / "side.db"), "副库")
+    titles = [h["title"] for h in federation.search(main, "报告")["hits"]]
+    assert titles[0] == "报告"
+
+
 def test_联邦_副库连不上要单独报出来而不是静悄悄返回空(tmp_path: Path) -> None:
     """🔴 "没命中"和"连不上"处理方式完全不同，混成一个空列表用户就卡住了。"""
     main = _repo(tmp_path, "main.db")
