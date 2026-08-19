@@ -146,7 +146,239 @@ export const api = {
    */
   questions: (itemId: string, limit = 20) =>
     call<ItemQuestions>(`/api/items/${itemId}/questions?limit=${limit}`),
+
+  /**
+   * 提案 33 证据链：给一组资料出一份"能复核"的来源清单。
+   *
+   * 🔴 引擎会**重新读盘算一次哈希**再和入库时的指纹比对，所以条数多、
+   *    文件大的时候会慢几秒。这是它全部价值所在，不能为了快而跳过。
+   */
+  evidenceChain: (itemIds: string[], opts: { note?: string; markdown?: boolean } = {}) =>
+    call<EvidenceChain>('/api/evidence/chain', {
+      method: 'POST',
+      body: JSON.stringify({
+        itemIds,
+        note: opts.note ?? '',
+        format: opts.markdown ? 'markdown' : 'json',
+      }),
+    }),
+
+  /** 提案 34 快照。**不是备份**，只记清单，救不回删掉的文件 */
+  snapshots: {
+    list: (limit = 50) => call<Snapshot[]>(`/api/snapshots?limit=${limit}`),
+    take: (label = '') =>
+      call<Snapshot>('/api/snapshots', { method: 'POST', body: JSON.stringify({ label }) }),
+    remove: (id: string) => call<{ ok: boolean }>(`/api/snapshots/${id}`, { method: 'DELETE' }),
+    diff: (id: string, other?: string) =>
+      call<SnapshotDiff>(
+        `/api/snapshots/${id}/diff${other ? `?other=${encodeURIComponent(other)}` : ''}`,
+      ),
+  },
+
+  /** 提案 35 人物关系时间线 */
+  relations: {
+    entities: (q = '', kind = '', limit = 40) => {
+      const p = new URLSearchParams({ q, kind, limit: String(limit) });
+      return call<RelationEntity[]>(`/api/relations/entities?${p}`);
+    },
+    timeline: (entityId: string, bucket: RelationBucket = 'month', kinds: string[] = []) => {
+      const p = new URLSearchParams({ bucket });
+      if (kinds.length) p.set('kinds', kinds.join(','));
+      return call<RelationTimeline>(`/api/relations/${encodeURIComponent(entityId)}/timeline?${p}`);
+    },
+  },
+
+  /** 提案 36 每日简报 */
+  briefing: (windowDays = 7) => call<Briefing>(`/api/briefing?windowDays=${windowDays}`),
+
+  /** 提案 37 多库联邦检索。副库只有关键词这一路（keywordOnly） */
+  federation: {
+    libs: () => call<FederatedLib[]>('/api/federation/libs'),
+    add: (dbPath: string, label = '') =>
+      call<{ id: string; label: string; dbPath: string; itemCount: number }>(
+        '/api/federation/libs',
+        { method: 'POST', body: JSON.stringify({ dbPath, label }) },
+      ),
+    remove: (id: string) =>
+      call<{ ok: boolean }>(`/api/federation/libs/${id}`, { method: 'DELETE' }),
+    toggle: (id: string, on: boolean) =>
+      call<{ ok: boolean; enabled: boolean }>(`/api/federation/libs/${id}/enabled?on=${on}`, {
+        method: 'POST',
+      }),
+    search: (query: string, limit = 30) =>
+      call<FederatedSearch>('/api/federation/search', {
+        method: 'POST',
+        body: JSON.stringify({ query, limit }),
+      }),
+  },
+
+  /**
+   * 提案 38 语音提问。**录音只在本机转写**，不发往任何服务器。
+   *
+   * 🔴 这里不能走 `call()` —— 那个函数写死了 Content-Type: application/json，
+   *    传文件必须让浏览器自己带 multipart 的 boundary，否则后端解不出来，
+   *    症状是永远 422 而前端只看到一句"请求失败"。
+   */
+  voice: {
+    status: () => call<VoiceStatus>('/api/voice/status'),
+    transcribe: async (wav: Blob): Promise<VoiceResult> => {
+      const port = enginePort();
+      if (port == null) throw new EngineUnavailable();
+      const fd = new FormData();
+      fd.append('file', wav, 'q.wav');
+      const r = await fetch(`http://127.0.0.1:${port}/api/voice/transcribe`, {
+        method: 'POST',
+        body: fd,
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        throw new Error(`${r.status}${t ? `：${t.slice(0, 200)}` : ''}`);
+      }
+      return (await r.json()) as VoiceResult;
+    },
+  },
 };
+
+// ── 提案 33-38 的返回类型 ────────────────────────────────────
+// 字段名和 engine/synorive/{evidence,snapshots,relations,briefing,federation}.py
+// 严格一致。对不上的症状是界面上那一块永远空着，而且不报错。
+
+export type EvidenceStatus = 'unchanged' | 'changed' | 'missing' | 'unverifiable';
+
+export interface EvidenceSource {
+  itemId: string;
+  title: string;
+  locator: string;
+  modality?: string;
+  status: EvidenceStatus;
+  note?: string;
+  ingestedAt?: string | null;
+  storedFingerprint?: string;
+  recheckedFingerprint?: string;
+  fullFileHashed?: boolean;
+  sizeBytes?: number;
+}
+
+export interface EvidenceChain {
+  generatedAt: string;
+  note: string;
+  sources: EvidenceSource[];
+  summary: Record<string, number>;
+  markdown?: string;
+}
+
+export interface Snapshot {
+  id: string;
+  label: string;
+  takenAt: string;
+  itemCount: number;
+  auto: boolean;
+}
+
+export interface SnapshotRow {
+  itemId: string;
+  title: string;
+  locator: string;
+  fingerprint?: string;
+  wasFingerprint?: string;
+  wasId?: string;
+  nowId?: string;
+}
+
+export interface SnapshotDiff {
+  base: string;
+  other: string;
+  counts: { added: number; removed: number; changed: number; reingested: number };
+  added: SnapshotRow[];
+  removed: SnapshotRow[];
+  changed: SnapshotRow[];
+  reingested: SnapshotRow[];
+  truncated: boolean;
+}
+
+export type RelationBucket = 'day' | 'week' | 'month' | 'quarter' | 'year';
+
+export interface RelationEntity {
+  id: string;
+  kind: string;
+  name: string;
+  mentionCount: number;
+}
+
+export interface RelationTimeline {
+  entity: RelationEntity;
+  bucket: RelationBucket;
+  buckets: {
+    at: string;
+    count: number;
+    /** 这一桶里有多少条是拿"入库时间"凑的 —— 界面要据此打问号 */
+    estimated: number;
+    peers: { id: string; kind: string; name: string; count: number }[];
+    peerTotal: number;
+  }[];
+  changes: { at: string; appeared: string[]; disappeared: string[] }[];
+}
+
+export interface BriefingSection {
+  key: string;
+  title: string;
+  why: string;
+  total: number;
+  items: { id: string; title: string; locator: string; modality: string; at?: string | null }[];
+  entities?: { id: string; kind: string; name: string; recent: number; previous: number; lift: number }[];
+}
+
+export interface Briefing {
+  generatedAt: string;
+  windowDays: number;
+  sections: BriefingSection[];
+}
+
+export interface FederatedLib {
+  id: string;
+  label: string;
+  dbPath: string;
+  enabled: boolean;
+  reachable: boolean;
+  itemCount: number;
+  problem: string | null;
+}
+
+export interface FederatedSearch {
+  query: string;
+  hits: {
+    itemId: string;
+    title: string;
+    locator: string;
+    modality: string;
+    at?: string | null;
+    snippet?: string | null;
+    score: number;
+    libraryId: string;
+    library: string;
+  }[];
+  libraries: { id: string; label: string; ok: boolean; count: number; problem: string | null }[];
+  /** 恒为 true：副库没有语义召回也没有重排，界面必须把这句写在结果上方 */
+  keywordOnly: boolean;
+}
+
+export interface VoiceStatus {
+  available: boolean;
+  vad: boolean;
+  model: string;
+  local: boolean;
+  reason: string | null;
+  note: string;
+}
+
+export interface VoiceResult {
+  text: string;
+  empty: boolean;
+  segments: number;
+  /** 恒为 false：识别难免出错，直接拿去搜用户会以为是搜索坏了 */
+  autoSearch: boolean;
+}
+
 
 export interface ItemQuestions {
   itemId: string;

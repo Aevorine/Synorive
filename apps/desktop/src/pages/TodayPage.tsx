@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { SearchHit } from '@synorive/shared-types';
 import { api } from '../lib/api';
+import { BriefingPanel } from '../components/BriefingPanel';
 import { labApi, type WatchItem } from '../lib/labApi';
 import { projectApi, type ResearchProject } from '../lib/webApi';
 import { useApp } from '../lib/store';
@@ -160,6 +161,17 @@ export function TodayPage() {
             <kbd className="kbd">K</kbd>
           </span>
         </button>
+
+        {/* 提案 36：主动把"你可能忘了的东西"端上来。
+            下面那些卡片报的是"现在有什么"，这一块报的是"你还没处理什么" */}
+        <BriefingPanel
+          onOpen={(it) => {
+            // 在资源管理器里定位而不是直接打开 —— 简报里端上来的很多是
+            // 用户已经忘了的东西，先让他看见它在哪，比直接用默认程序拉起来稳妥
+            void api.recordOpen(it.id);
+            void window.synorive.sys.reveal(it.locator);
+          }}
+        />
 
         <div className="syn-grid syn-grid--wide today__grid">
           {/* ── 到期的订阅 ───────────────────────────────── */}

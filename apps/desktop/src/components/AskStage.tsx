@@ -1,3 +1,4 @@
+import { VoiceButton } from './VoiceButton';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CornerDownLeft, FileSearch, Loader2, MessageCircleQuestion, Search, X } from 'lucide-react';
 import type { InputMode } from '@synorive/shared-types';
@@ -339,6 +340,17 @@ export function AskStage() {
               可以直接把文件、图片、链接拖进来
             </span>
             <span className="stage__spacer" />
+
+            {/* 提案 38：说一句话代替打字。转写全在本机做，录音不出这台电脑；
+                识别结果只填进输入框，**不替用户按下回车** —— 认错了的话
+                他会以为是搜索坏了，而他根本没机会看到自己被识别成了什么 */}
+            <VoiceButton
+              onText={(t) => {
+                setQuery(query.trim() ? `${query.trim()} ${t}` : t);
+                taRef.current?.focus();
+              }}
+            />
+
             {query.length > 0 && (
               <span className="stage__count" aria-label={`已输入 ${query.length} 字`}>
                 {query.length} 字

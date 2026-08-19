@@ -1,3 +1,4 @@
+import { EvidencePanel } from './EvidencePanel';
 import { useState } from 'react';
 import { Check, Columns2, Copy, FileDown, FileText, Loader2, X } from 'lucide-react';
 import { applyRedactions, findSensitive, summarize } from '../lib/redact';
@@ -240,6 +241,11 @@ export function ComposeBar({ onCompare }: { onCompare?: (ids: string[]) => void 
           </button>
         )}
       </div>
+
+      {/* 提案 33：发出去之前，把每份来源重新读一遍、重算哈希，
+          确认它和入库时是同一份东西。半年后被问"这句话哪来的"时，
+          能拿出来的就是这份清单 */}
+      <EvidencePanel itemIds={picked.map((h) => h.item.id)} />
     </div>
   );
 }

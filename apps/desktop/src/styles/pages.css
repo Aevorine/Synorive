@@ -1285,3 +1285,336 @@
   color: var(--syn-color-text-muted);
   line-height: var(--syn-lh-relaxed);
 }
+
+/* ── 提案 33-38 的界面 ────────────────────────────────────────
+   全部只用既有的 token，不引新色值、不写死 px 字号 ——
+   界面统一这件事一旦破一次口子，之后每加一个功能都会再破一次。 */
+
+/* 33 出稿前的来源核对 */
+.evi {
+  margin-top: var(--syn-space-md);
+}
+
+.evi__out {
+  margin-top: var(--syn-space-sm);
+}
+
+.evi__verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-success);
+}
+
+.evi__verdict--bad {
+  color: var(--syn-color-danger);
+}
+
+.evi__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xs);
+}
+
+.evi__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-xs) var(--syn-space-sm);
+  border-radius: var(--syn-radius-sm);
+  font-size: var(--syn-fs-caption);
+  border-left: 2px solid transparent;
+}
+
+.evi__row--ok { border-left-color: var(--syn-color-success); }
+.evi__row--bad {
+  border-left-color: var(--syn-color-danger);
+  background: var(--syn-color-danger-subtle);
+}
+.evi__row--warn { border-left-color: var(--syn-color-warning); }
+
+.evi__tag {
+  flex: 0 0 auto;
+  color: var(--syn-color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.evi__title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evi__note {
+  flex: 0 1 auto;
+  color: var(--syn-color-text-muted);
+}
+
+/* 34 快照 */
+.snap__list,
+.snap__difflist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.snap__row {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-xs) 0;
+  border-bottom: 1px solid var(--syn-color-border);
+}
+
+.snap__label {
+  flex: 0 1 auto;
+  font-weight: var(--syn-fw-medium);
+}
+
+.snap__meta {
+  flex: 1 1 auto;
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.snap__diff {
+  margin-top: var(--syn-space-md);
+  padding: var(--syn-space-md);
+  background: var(--syn-color-bg-sunken);
+  border-radius: var(--syn-radius-lg);
+}
+
+.snap__difflist li {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  padding: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 35 人物关系时间线 */
+.rel__cands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--syn-space-xs);
+  margin-bottom: var(--syn-space-md);
+}
+
+.rel__changes ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rel__changes li {
+  display: flex;
+  gap: var(--syn-space-sm);
+  font-size: var(--syn-fs-caption);
+  padding: 2px 0;
+}
+
+.rel__at {
+  flex: 0 0 auto;
+  min-width: 7ch;
+  color: var(--syn-color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.rel__in { color: var(--syn-color-success); }
+.rel__out { color: var(--syn-color-text-muted); }
+
+.rel__track {
+  list-style: none;
+  margin: var(--syn-space-md) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-sm);
+}
+
+.rel__slot {
+  border-top: 1px solid var(--syn-color-border);
+  padding-top: var(--syn-space-xs);
+}
+
+.rel__slothead {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+}
+
+.rel__bar {
+  height: 6px;
+  min-width: 2px;
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-primary);
+}
+
+.rel__guess {
+  color: var(--syn-color-warning);
+  display: inline-flex;
+}
+
+.rel__peers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--syn-space-xs);
+  margin-top: var(--syn-space-xs);
+  padding-left: 7ch;
+}
+
+/* 36 简报 */
+.brief {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--syn-space-md);
+  margin-bottom: var(--syn-space-lg);
+}
+
+.brief__block {
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+  padding: var(--syn-space-md);
+}
+
+.brief__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-sm);
+  margin-bottom: var(--syn-space-xs);
+}
+
+.brief__title {
+  font-size: var(--syn-fs-card-title);
+  font-weight: var(--syn-fw-semibold);
+  margin: 0;
+}
+
+.brief__count {
+  font-size: var(--syn-fs-micro);
+  color: var(--syn-color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.brief__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.brief__row {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  padding: 3px 0;
+  width: 100%;
+  text-align: left;
+}
+
+.brief__row--btn {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--syn-radius-sm);
+}
+
+.brief__row--btn:hover {
+  background: var(--syn-color-bg-hover);
+}
+
+.brief__name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brief__lift {
+  color: var(--syn-color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 37 别的库 */
+.fed__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fed__row {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  padding: var(--syn-space-xs) 0;
+  border-bottom: 1px solid var(--syn-color-border);
+}
+
+.fed__row--dead {
+  color: var(--syn-color-text-muted);
+}
+
+.fed__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  cursor: pointer;
+}
+
+.fed__meta {
+  flex: 1 1 auto;
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fed__problem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-danger);
+}
+
+/* 38 语音提问 */
+.voice__live {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-danger);
+}
+
+/* 录音时那个点要一直在动 —— 一个悄悄开着麦克风的软件是不能接受的，
+   哪怕录音确实没往外发 */
+.voice__live::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--syn-color-danger);
+  animation: voice-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes voice-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice__live::before { animation: none; }
+}
+
+.voice__err {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-danger);
+}

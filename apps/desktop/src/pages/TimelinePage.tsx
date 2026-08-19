@@ -1,3 +1,4 @@
+import { RelationTimeline } from '../components/RelationTimeline';
 import { useMemo, useState } from 'react';
 import { Clock } from 'lucide-react';
 import type { TimelineBucket } from '@synorive/shared-types';
@@ -138,6 +139,10 @@ export function TimelinePage() {
             ))}
           </div>
         </PageState>
+
+        {/* 提案 35：上面那条轴回答"什么时候有多少东西"，
+            下面这块回答"谁在什么时候和谁一起出现" —— 后者是前者答不了的 */}
+        <RelationTimeline />
       </div>
     </div>
   );

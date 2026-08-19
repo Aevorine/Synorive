@@ -11,6 +11,8 @@ import type {
 import { DbEncryptPanel } from '../components/DbEncryptPanel';
 import { PairingQr } from '../components/PairingQr';
 import { PrivacyFence } from '../components/PrivacyFence';
+import { SnapshotPanel } from '../components/SnapshotPanel';
+import { FederationPanel } from '../components/FederationPanel';
 import { SynonymPanel } from '../components/SynonymPanel';
 import { HotkeyReport } from '../components/HotkeyReport';
 import { ModelPanel } from '../components/ModelPanel';
@@ -490,6 +492,20 @@ export function SettingsPage() {
             hint="内置词表不可能知道「小李」指的是谁。加一对之后，搜任意一边都能命中另一边，改完立刻生效。"
           >
             <SynonymPanel />
+          </Field>
+
+          <Field
+            label="库的快照"
+            hint="记下此刻库里有哪些资料，之后可以对比两个时刻之间变了什么。只记清单不存文件，所以很小——但也因此救不回删掉的东西。"
+          >
+            <SnapshotPanel />
+          </Field>
+
+          <Field
+            label="一次搜多个库"
+            hint="工作一个库、私人一个库、外接硬盘上还有去年那个。登记之后搜索会一次问遍。副库只读打开，而且只走关键词。"
+          >
+            <FederationPanel />
           </Field>
 
           <Toggle

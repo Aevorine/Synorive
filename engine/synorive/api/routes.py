@@ -3094,3 +3094,273 @@ async def metrics_budgets(request: Request) -> dict[str, Any]:
         "note": "目标值来自 G 组 / A 组验收标准；观察值是运行期采样，"
                 "**样本少时抖动很大，不能当基准测试结果用**",
     }
+
+
+# ── 提案 33-37：证据链 / 快照 / 关系时间线 / 简报 / 联邦检索 ──────
+#
+# 这五个都是**只读或只写自己那张表**的分析类功能，和检索主链路无关，
+# 所以各自独立成模块（evidence / snapshots / relations / briefing / federation），
+# 路由这里只做参数校验和错误翻译，不放业务逻辑。
+
+
+class EvidenceRequest(BaseModel):
+    itemIds: list[str] = Field(default_factory=list)
+    note: str = ""
+    #: markdown = 直接给一段可以贴进报告的文字；json = 给界面自己渲染
+    format: str = "json"
+
+
+@router.post("/evidence/chain")
+async def evidence_chain(req: EvidenceRequest, request: Request) -> dict[str, Any]:
+    """
+    提案 33 证据链：对每条来源**重新读盘算一次哈希**，和入库时的指纹比对。
+
+    重算是这个接口的全部价值 —— 只抄库里存的指纹等于自己证明自己。
+    """
+    from .. import evidence
+
+    if len(req.itemIds) > 500:
+        raise HTTPException(400, "一次最多核对 500 条；再多请分批，否则要读几十 GB 的盘")
+    chain = await asyncio.to_thread(evidence.build_chain, _rt(request).repo, req.itemIds, req.note)
+    if req.format == "markdown":
+        chain["markdown"] = evidence.to_markdown(chain)
+    return chain
+
+
+class SnapshotRequest(BaseModel):
+    label: str = ""
+
+
+@router.post("/snapshots")
+async def snapshot_take(req: SnapshotRequest, request: Request) -> dict[str, Any]:
+    """提案 34：拍一张清单快照。**不是备份**，救不回删掉的文件。"""
+    from .. import snapshots
+
+    return await asyncio.to_thread(snapshots.take, _rt(request).repo, req.label, False)
+
+
+@router.get("/snapshots")
+async def snapshot_list(request: Request, limit: int = 50) -> list[dict[str, Any]]:
+    from .. import snapshots
+
+    return await asyncio.to_thread(snapshots.listing, _rt(request).repo, limit)
+
+
+@router.delete("/snapshots/{snapshot_id}")
+async def snapshot_delete(snapshot_id: str, request: Request) -> dict[str, Any]:
+    from .. import snapshots
+
+    ok = await asyncio.to_thread(snapshots.drop, _rt(request).repo, snapshot_id)
+    if not ok:
+        raise HTTPException(404, "没有这张快照")
+    return {"ok": True}
+
+
+@router.get("/snapshots/{snapshot_id}/diff")
+async def snapshot_diff(
+    snapshot_id: str, request: Request, other: str | None = None, limit: int = 200
+) -> dict[str, Any]:
+    """跟另一张快照比；不给 other 就是跟现在比。"""
+    from .. import snapshots
+
+    try:
+        return await asyncio.to_thread(
+            snapshots.diff, _rt(request).repo, snapshot_id, other, limit
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+
+
+@router.get("/relations/entities")
+async def relation_entities(
+    request: Request, q: str = "", kind: str = "", limit: int = 40
+) -> list[dict[str, Any]]:
+    from .. import relations
+
+    return await asyncio.to_thread(relations.find_entities, _rt(request).repo, q, kind, limit)
+
+
+@router.get("/relations/{entity_id}/timeline")
+async def relation_timeline(
+    entity_id: str,
+    request: Request,
+    bucket: str = "month",
+    limit: int = 60,
+    kinds: str = "",
+) -> dict[str, Any]:
+    """
+    提案 35：盯住一个人，看他在各个时期分别跟谁一起出现。
+
+    每个桶带 `estimated` = 这桶里有多少条的时间是拿入库时间凑的 ——
+    界面要据此打问号，否则一次性导入的历史资料会让整条时间线是错的。
+    """
+    from .. import relations
+
+    want = [k for k in kinds.split(",") if k.strip()] or None
+    try:
+        return await asyncio.to_thread(
+            relations.timeline, _rt(request).repo, entity_id, bucket, limit, want
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.get("/briefing")
+async def briefing_today(
+    request: Request, windowDays: int = 7, format: str = "json"
+) -> dict[str, Any]:
+    """提案 36：每天一屏，把你可能忘了的东西端上来。"""
+    from .. import briefing
+
+    if windowDays < 1 or windowDays > 90:
+        raise HTTPException(400, "windowDays 只能是 1-90")
+    brief = await asyncio.to_thread(briefing.build, _rt(request).repo, None, windowDays)
+    if format == "text":
+        brief["text"] = briefing.to_text(brief)
+    return brief
+
+
+class FederatedLibRequest(BaseModel):
+    dbPath: str
+    label: str = ""
+
+
+@router.get("/federation/libs")
+async def federation_list(request: Request) -> list[dict[str, Any]]:
+    """列出副库，顺手探活 —— 硬盘拔了的那个直接标出来。"""
+    from .. import federation
+
+    return await asyncio.to_thread(federation.listing, _rt(request).repo)
+
+
+@router.post("/federation/libs")
+async def federation_add(req: FederatedLibRequest, request: Request) -> dict[str, Any]:
+    from .. import federation
+
+    try:
+        return await asyncio.to_thread(
+            federation.register, _rt(request).repo, req.dbPath, req.label
+        )
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.delete("/federation/libs/{lib_id}")
+async def federation_remove(lib_id: str, request: Request) -> dict[str, Any]:
+    from .. import federation
+
+    if not await asyncio.to_thread(federation.unregister, _rt(request).repo, lib_id):
+        raise HTTPException(404, "没有这个副库")
+    return {"ok": True}
+
+
+@router.post("/federation/libs/{lib_id}/enabled")
+async def federation_toggle(lib_id: str, request: Request, on: bool = True) -> dict[str, Any]:
+    from .. import federation
+
+    if not await asyncio.to_thread(federation.set_enabled, _rt(request).repo, lib_id, on):
+        raise HTTPException(404, "没有这个副库")
+    return {"ok": True, "enabled": on}
+
+
+class FederatedSearchRequest(BaseModel):
+    query: str
+    limit: int = 30
+
+
+@router.post("/federation/search")
+async def federation_search(req: FederatedSearchRequest, request: Request) -> dict[str, Any]:
+    """
+    提案 37：一次问遍所有登记过的库。
+
+    🔴 副库**只有关键词**这一路，没有语义召回也没有重排 ——
+       向量得由同一个模型算出来才可比。返回里的 keywordOnly=true 就是提醒界面
+       必须把这件事写在结果上方。
+    """
+    from .. import federation
+
+    return await asyncio.to_thread(
+        federation.search, _rt(request).repo, req.query, max(1, min(req.limit, 100))
+    )
+
+
+# ── 提案 38：语音提问 ────────────────────────────────────────
+#
+# 🔴 **只用本地模型，绝不把录音发出去。**
+#    浏览器自带的 SpeechRecognition 走的是厂商云服务 —— 对一个
+#    "东西全在你自己电脑上"的产品来说，把用户说的话传出去是原则性问题。
+#    所以这里复用入库流程已经在用的那套本地转写模型（sense-voice），
+#    模型没装就明说"这个功能用不了"，**不偷偷退回云端**。
+#
+# 🔴 **录音一转写完立刻删。** 临时 wav 不进库、不留在磁盘上。
+
+
+@router.get("/voice/status")
+async def voice_status(request: Request) -> dict[str, Any]:
+    """语音提问能不能用。界面用它决定麦克风按钮是亮着还是灰着。"""
+    from ..analyze.transcribe import Transcriber
+
+    rt = _rt(request)
+    tr = Transcriber(rt.config.model_dir / "sense-voice", rt.config.model_dir / "vad")
+    ok = tr.available()
+    return {
+        "available": ok,
+        "vad": tr.vad_available(),
+        "model": tr.model_id,
+        "local": True,
+        "reason": None if ok else "本地语音模型还没装（设置 → 体检 里可以装）",
+        "note": "录音只在本机转写，不上传；转完立刻删除临时文件",
+    }
+
+
+#: 语音提问一句话最多这么长。60 秒 16kHz 单声道 = 约 1.9 MB。
+#: 超过这个长度基本不是"提问"而是误触，转写还要等很久。
+VOICE_MAX_BYTES = 4 * 1024 * 1024
+
+
+@router.post("/voice/transcribe")
+async def voice_transcribe(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+    """
+    把一段录音转成文字，交给界面填进搜索框。
+
+    **不自动发起搜索** —— 识别难免出错，直接拿错的词去搜，用户会以为是搜索坏了。
+    先把字填进去让他看一眼，是这里唯一说得通的交互。
+    """
+    from ..analyze.transcribe import Transcriber
+
+    rt = _rt(request)
+    tr = Transcriber(rt.config.model_dir / "sense-voice", rt.config.model_dir / "vad")
+    if not tr.available():
+        raise HTTPException(503, "本地语音模型还没装，语音提问用不了（设置 → 体检 里可以装）")
+
+    raw = await file.read()
+    if len(raw) > VOICE_MAX_BYTES:
+        raise HTTPException(413, "录音太长了，语音提问一次最多 60 秒左右")
+    if len(raw) < 1024:
+        raise HTTPException(400, "没录到声音（麦克风被静音了？）")
+
+    tmp = Path(rt.config.data_dir) / "tmp" / f"voice-{uuid.uuid4().hex}.wav"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        tmp.write_bytes(raw)
+        try:
+            utts = await asyncio.to_thread(tr.transcribe, tmp)
+        except ValueError as e:
+            # 格式不对是最常见的一类失败，原样把要求告诉前端
+            raise HTTPException(400, str(e)) from e
+        text = "".join(u.text for u in utts).strip()
+        return {
+            "text": text,
+            "empty": not text,
+            "segments": len(utts),
+            # 🔴 明确告诉界面：别拿它直接去搜，先让用户过一眼
+            "autoSearch": False,
+        }
+    finally:
+        # 转完就删。留在磁盘上的录音是这个功能唯一会造成的隐私增量
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError as e:
+            log.warning("临时录音删不掉：%s", e)
