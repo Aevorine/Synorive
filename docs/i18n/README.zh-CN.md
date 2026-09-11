@@ -8,24 +8,24 @@
 然后多引擎搜全网、主动找打脸材料，出一份**每一行都是逐字原文并挂着出处**的简报。
 
 全离线可用，文件永远不离开你的机器。
-自带 **24 个 MCP 工具**给 Claude Code。
+自带 **26 个 MCP 工具**给 Claude Code。
 
 [English](../../README.md) · **简体中文** · [Français](README.fr.md) · [Español](README.es.md) · [Русский](README.ru.md) · [العربية](README.ar.md)
 
-[![下载](https://img.shields.io/badge/download-v0.1.5-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![下载](https://img.shields.io/badge/download-v0.1.8-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![许可证](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](../../LICENSE)
 [![平台](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![引擎](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](../../engine)
 [![桌面端](https://img.shields.io/badge/desktop-Electron%2041%20%2B%20React%2019-0F4C8C)](../../apps/desktop)
 [![离线](https://img.shields.io/badge/offline-100%25-1E9E76)](#几个不显然的设计决定)
-[![MCP](https://img.shields.io/badge/MCP-24%20tools-C8871B)](../../mcp)
+[![MCP](https://img.shields.io/badge/MCP-26%20tools-C8871B)](../../mcp)
 
 ### ⬇️ 下载
 
 | | |
 |---|---|
-| **Windows 安装包** | [`Synorive-Setup-0.1.5.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 自带 Python 运行时，**应用内自动更新** |
-| **Windows 便携版** | [`Synorive-0.1.5-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 免安装；这种形式不支持自动更新 |
+| **Windows 安装包** | [`Synorive-Setup-0.1.8.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 自带 Python 运行时，**应用内自动更新** |
+| **Windows 便携版** | [`Synorive-0.1.8-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) —— 免安装；这种形式不支持自动更新 |
 | **安卓** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) —— 瘦客户端，通过局域网连你电脑上的引擎 |
 
 **不需要你装 Python。** 解释器和引擎的全部依赖都在安装包里，
@@ -53,7 +53,7 @@
 | 🌐 | **多引擎联网搜索** —— cn.bing / 百度 / 360 / Mojeek / 维基百科 / Reddit；自建 SearXNG 后 Google 与 DuckDuckGo 也能用 |
 | 🛡 | **主动找打脸证据** —— 反向搜辟谣材料、把一条说法溯源到最早出处、标出已撤稿的论文 |
 | 📋 | **只摘录不改写的简报** —— 每一行都是逐字原文并挂着出处。有分歧的说法**并排放着，不替你选** |
-| 🔌 | **24 个 MCP 工具给 Claude Code** —— 让你的 agent 直接检索你的库、替你核查一个说法 |
+| 🔌 | **26 个 MCP 工具给 Claude Code** —— 让你的 agent 直接检索你的库、替你核查一个说法 |
 | 🔒 | **隐私围栏** —— 联网搜索和云端推理是**两个独立开关**，因为前者泄露"我在查什么"，后者泄露"我有什么" |
 | ❓ | **问一句，答案全是原文** —— 答案**只由你文件里已经存在的句子拼成**，每句带出处。不生成、不改写，一个字都不润色 |
 | 📝 | **一键成稿** —— 挑几条结果，直接出 Markdown / 纯文本 / PDF，带编号引用和点得动的锚点 |
@@ -188,7 +188,7 @@ npm run pack:win         # 打 Windows 安装包 + 便携版
 
 ```bash
 npm run version:check      # 四处版本号是不是一致
-npm run version:set 0.1.5  # 一条命令改完四处，别手动改
+npm run version:set 0.1.8  # 一条命令改完四处，别手动改
 npm run android:keystore   # 首次：生成安卓 release 签名密钥库（放仓库外）
 npm run release            # 出两端产物，**不上传**
 npm run release:publish    # 出产物并创建 GitHub Release（要 gh 已登录）
@@ -237,12 +237,13 @@ node scripts/install-claude-integration.mjs
 
 装完新开一个 Claude Code 会话，问「我之前存过关于 X 的东西吗」就会自动触发检索。
 
-**24 个工具：**
+**26 个工具：**
 
 - **本地库** —— `search` / `ingest` / `analyze` / `get_content` / `similar` / `timeline` /
   `graph` / `status` / `questions`
 - **联网** —— `web_search` / `research` / `scholar` / `read_url` / `web_engines` / `verify` /
   `unified_search`
+- **反查** —— `reverse_image`（一张图在网上还出现在哪）、`reverse_video`（多帧以图搜图聚合找视频原始来源）
 - **文献** —— `scholar_review`（分主题综述，只摘录不改写）、`scholar_table`（同一指标横向抽表）、
   `citations`（共被引找奠基论文）、`harvest`（批量下开放全文并入库，默认干跑）
 - **核对与记忆** —— `check_numbers`（数字回原文逐个核对）、`memory`（这个话题以前查过什么）

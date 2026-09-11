@@ -10,24 +10,24 @@ activement les contre-preuves, et obtenez une synthèse où **chaque ligne est u
 mot pour mot avec sa source**.
 
 Fonctionne entièrement hors ligne. Vos fichiers ne quittent jamais votre machine.
-Fournit **24 outils MCP** pour Claude Code.
+Fournit **26 outils MCP** pour Claude Code.
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · **Français** · [Español](README.es.md) · [Русский](README.ru.md) · [العربية](README.ar.md)
 
-[![Télécharger](https://img.shields.io/badge/download-v0.1.5-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![Télécharger](https://img.shields.io/badge/download-v0.1.8-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![Licence](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](../../LICENSE)
 [![Plateforme](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![Moteur](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](../../engine)
 [![Bureau](https://img.shields.io/badge/desktop-Electron%2041%20%2B%20React%2019-0F4C8C)](../../apps/desktop)
 [![Hors ligne](https://img.shields.io/badge/offline-100%25-1E9E76)](#décisions-de-conception-non-évidentes)
-[![MCP](https://img.shields.io/badge/MCP-24%20tools-C8871B)](../../mcp)
+[![MCP](https://img.shields.io/badge/MCP-26%20tools-C8871B)](../../mcp)
 
 ### ⬇️ Téléchargement
 
 | | |
 |---|---|
-| **Installateur Windows** | [`Synorive-Setup-0.1.5.exe`](https://github.com/Aevorine/Synorive/releases/latest) — runtime Python inclus, **mise à jour automatique dans l'application** |
-| **Windows portable** | [`Synorive-0.1.5-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — sans installation ; la mise à jour automatique n'est pas disponible dans cette forme |
+| **Installateur Windows** | [`Synorive-Setup-0.1.8.exe`](https://github.com/Aevorine/Synorive/releases/latest) — runtime Python inclus, **mise à jour automatique dans l'application** |
+| **Windows portable** | [`Synorive-0.1.8-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — sans installation ; la mise à jour automatique n'est pas disponible dans cette forme |
 | **Android** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) — client léger, dialogue avec le moteur de votre PC via le réseau local |
 
 **Aucune installation de Python requise.** L'interpréteur et toutes les dépendances du moteur
@@ -57,7 +57,7 @@ Thème sombre : [capture d'écran](../screenshots/research-dark.png)
 | 🌐 | **Recherche web multi-moteurs** — Bing / Baidu / 360 / Mojeek / Wikipédia, plus Google et DuckDuckGo via un SearXNG auto-hébergé |
 | 🛡 | **Cherche activement les contre-preuves** — recherche les démentis, remonte une affirmation à sa source la plus ancienne, signale les articles rétractés |
 | 📋 | **Synthèses par extraction uniquement** — chaque ligne est une citation littérale avec sa source. Les affirmations contradictoires sont présentées **côte à côte, sans trancher** |
-| 🔌 | **24 outils MCP pour Claude Code** — laissez votre agent fouiller votre bibliothèque et vérifier des affirmations à votre place |
+| 🔌 | **26 outils MCP pour Claude Code** — laissez votre agent fouiller votre bibliothèque et vérifier des affirmations à votre place |
 | 🔒 | **Barrière de confidentialité** — la recherche web et l'inférence dans le cloud sont **deux interrupteurs séparés**, car l'une révèle *ce que vous demandez* et l'autre *ce que vous possédez* |
 | ❓ | **Posez une question, obtenez des réponses citées** — la réponse est assemblée *uniquement* à partir de phrases qui existent déjà dans vos fichiers, chacune avec sa source. Rien n'est généré, rien n'est reformulé |
 | 📝 | **Brouillon en un clic** — choisissez les résultats voulus, obtenez un brouillon Markdown / texte brut / PDF avec des citations numérotées et des ancres cliquables |
@@ -213,7 +213,7 @@ Le bureau et Android vérifient tous deux les mises à jour via les **GitHub Rel
 
 ```bash
 npm run version:check      # les quatre numéros de version sont-ils cohérents ?
-npm run version:set 0.1.5  # change les quatre d'un coup — ne les modifiez jamais à la main
+npm run version:set 0.1.8  # change les quatre d'un coup — ne les modifiez jamais à la main
 npm run android:keystore   # première fois : générer le keystore Android (conservé hors du dépôt)
 npm run release            # construire les deux artefacts, SANS envoi
 npm run release:publish    # construire et créer une GitHub Release (gh doit être connecté)
@@ -268,12 +268,14 @@ node scripts/install-claude-integration.mjs
 Ouvrez ensuite une nouvelle session Claude Code et demandez « ai-je enregistré quelque chose à
 propos de X ? » — la recherche se déclenche automatiquement.
 
-**Les 24 outils :**
+**Les 26 outils :**
 
 - **Bibliothèque locale** — `search` / `ingest` / `analyze` / `get_content` / `similar` /
   `timeline` / `graph` / `status` / `questions`
 - **Web** — `web_search` / `research` / `scholar` / `read_url` / `web_engines` / `verify` /
   `unified_search`
+- **Recherche inversée** — `reverse_image` (où cette image apparaît-elle ailleurs sur le web),
+  `reverse_video` (remonter à la source originale d'une vidéo en comparant plusieurs images clés)
 - **Littérature** — `scholar_review` (revue thématique, extraction seule), `scholar_table`
   (une même mesure sur plusieurs articles), `citations` (co-citation pour trouver les articles
   fondateurs), `harvest` (récupération en masse du texte intégral en accès ouvert, simulation par défaut)

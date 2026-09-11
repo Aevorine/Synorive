@@ -9,17 +9,17 @@
 **كل سطر فيه اقتباس حرفي مرفق بمصدره**.
 
 يعمل دون اتصال بالكامل. ملفاتك لا تغادر جهازك أبدًا.
-يوفّر **٢٤ أداة MCP** لـ Claude Code.
+يوفّر **٢٦ أداة MCP** لـ Claude Code.
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [Français](README.fr.md) · [Español](README.es.md) · [Русский](README.ru.md) · **العربية**
 
-[![تنزيل](https://img.shields.io/badge/download-v0.1.5-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![تنزيل](https://img.shields.io/badge/download-v0.1.8-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![الرخصة](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](../../LICENSE)
 [![المنصة](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![المحرك](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](../../engine)
 [![سطح المكتب](https://img.shields.io/badge/desktop-Electron%2041%20%2B%20React%2019-0F4C8C)](../../apps/desktop)
 [![دون اتصال](https://img.shields.io/badge/offline-100%25-1E9E76)](#قرارات-تصميم-غير-بديهية)
-[![MCP](https://img.shields.io/badge/MCP-24%20tools-C8871B)](../../mcp)
+[![MCP](https://img.shields.io/badge/MCP-26%20tools-C8871B)](../../mcp)
 
 </div>
 
@@ -29,8 +29,8 @@
 
 | | |
 |---|---|
-| **مثبِّت Windows** | [`Synorive-Setup-0.1.5.exe`](https://github.com/Aevorine/Synorive/releases/latest) — بيئة تشغيل Python مضمَّنة، **تحديث تلقائي داخل التطبيق** |
-| **Windows محمول** | [`Synorive-0.1.5-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — بلا تثبيت؛ التحديث التلقائي غير متاح في هذه الصيغة |
+| **مثبِّت Windows** | [`Synorive-Setup-0.1.8.exe`](https://github.com/Aevorine/Synorive/releases/latest) — بيئة تشغيل Python مضمَّنة، **تحديث تلقائي داخل التطبيق** |
+| **Windows محمول** | [`Synorive-0.1.8-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — بلا تثبيت؛ التحديث التلقائي غير متاح في هذه الصيغة |
 | **أندرويد** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) — عميل خفيف، يتصل بالمحرك على حاسوبك عبر الشبكة المحلية |
 
 **لا حاجة إلى تثبيت Python.** المفسِّر وكل اعتماديات المحرك مشحونة داخل المثبِّت، لذا يعمل التطبيق
@@ -60,7 +60,7 @@
 | 🌐 | **بحث ويب متعدد المحركات** — Bing و Baidu و 360 و Mojeek وويكيبيديا، ومعها Google و DuckDuckGo عبر خادم SearXNG ذاتي الاستضافة |
 | 🛡 | **يبحث عمدًا عن الأدلة المضادة** — يبحث عن التفنيدات، ويتتبّع الادّعاء إلى أقدم مصدر له، ويؤشّر على الأبحاث المسحوبة |
 | 📋 | **موجزات بالاقتباس فقط** — كل سطر اقتباس حرفي مرفق بمصدره. الادّعاءات المتعارضة تُعرض **جنبًا إلى جنب دون حسم** |
-| 🔌 | **٢٤ أداة MCP لـ Claude Code** — دع وكيلك يبحث في مكتبتك ويتحقق من الادّعاءات نيابة عنك |
+| 🔌 | **٢٦ أداة MCP لـ Claude Code** — دع وكيلك يبحث في مكتبتك ويتحقق من الادّعاءات نيابة عنك |
 | 🔒 | **سياج الخصوصية** — البحث على الويب والاستدلال السحابي **مفتاحان منفصلان**، لأن الأول يكشف *عمّا تسأل* والثاني يكشف *ما تملك* |
 | ❓ | **اطرح سؤالاً واحصل على إجابات مقتبسة** — تُجمَّع الإجابة *فقط* من جُمل موجودة فعلاً في ملفاتك، كل جملة مع مصدرها. لا شيء يُولَّد ولا شيء تُعاد صياغته |
 | 📝 | **مسودة بنقرة واحدة** — اختر النتائج التي تريدها واحصل على مسودة بصيغة Markdown أو نص عادي أو PDF مع اقتباسات مرقّمة ومراسٍ قابلة للنقر |
@@ -216,7 +216,7 @@ npm run pack:win         # مثبِّت Windows + النسخة المحمولة
 
 ```bash
 npm run version:check      # هل أرقام الإصدار الأربعة متطابقة؟
-npm run version:set 0.1.5  # يغيّر الأربعة دفعة واحدة — لا تعدّلها يدويًا أبدًا
+npm run version:set 0.1.8  # يغيّر الأربعة دفعة واحدة — لا تعدّلها يدويًا أبدًا
 npm run android:keystore   # أول مرة فقط: توليد مخزن مفاتيح إصدار أندرويد (يُحفظ خارج المستودع)
 npm run release            # بناء المنتجَين دون رفع
 npm run release:publish    # البناء وإنشاء GitHub Release (يتطلب تسجيل دخول gh)
@@ -277,12 +277,14 @@ node scripts/install-claude-integration.mjs
 
 بعدها افتح جلسة جديدة في Claude Code واسأل «هل حفظتُ شيئًا عن كذا؟» — يُستدعى البحث تلقائيًا.
 
-**الأدوات الـ٢٤:**
+**الأدوات الـ٢٦:**
 
 - **المكتبة المحلية** — `search` / `ingest` / `analyze` / `get_content` / `similar` / `timeline` /
   `graph` / `status` / `questions`
 - **الويب** — `web_search` / `research` / `scholar` / `read_url` / `web_engines` / `verify` /
   `unified_search`
+- **البحث العكسي** — `reverse_image` (أين تظهر هذه الصورة أيضًا على الويب)، و`reverse_video`
+  (تتبّع مقطع فيديو إلى مصدره الأصلي بمطابقة عدّة إطارات مفتاحية)
 - **الأدبيات** — `scholar_review` (مراجعة موضوعية، اقتباس فقط)، و`scholar_table` (مقياس واحد عبر
   أبحاث متعددة)، و`citations` (الاستشهاد المشترك للعثور على الأبحاث التأسيسية)، و`harvest`
   (جلب النصوص الكاملة مفتوحة الوصول بالجملة إلى المكتبة، وهو تشغيل تجريبي افتراضيًا)

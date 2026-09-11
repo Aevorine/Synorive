@@ -9,24 +9,24 @@ Then search the open web across many engines, hunt for counter-evidence, and get
 where **every single line is a verbatim quote with its source**.
 
 Runs fully offline. Your files never leave your machine.
-Ships **24 MCP tools** for Claude Code.
+Ships **26 MCP tools** for Claude Code.
 
 **English** · [简体中文](docs/i18n/README.zh-CN.md) · [Français](docs/i18n/README.fr.md) · [Español](docs/i18n/README.es.md) · [Русский](docs/i18n/README.ru.md) · [العربية](docs/i18n/README.ar.md)
 
-[![Download](https://img.shields.io/badge/download-v0.1.5-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
+[![Download](https://img.shields.io/badge/download-v0.1.8-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-1E9E76)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0F4C8C)](https://github.com/Aevorine/Synorive/releases/latest)
 [![Engine](https://img.shields.io/badge/engine-Python%203.13%20%2B%20FastAPI-1E9E76)](engine)
 [![Desktop](https://img.shields.io/badge/desktop-Electron%2041%20%2B%20React%2019-0F4C8C)](apps/desktop)
 [![Offline](https://img.shields.io/badge/works-fully%20offline-1E9E76)](#design-decisions-that-are-not-obvious)
-[![MCP](https://img.shields.io/badge/MCP-24%20tools-C8871B)](mcp)
+[![MCP](https://img.shields.io/badge/MCP-26%20tools-C8871B)](mcp)
 
 ### ⬇️ Download
 
 | | |
 |---|---|
-| **Windows installer** | [`Synorive-Setup-0.1.5.exe`](https://github.com/Aevorine/Synorive/releases/latest) — Python runtime bundled, **in-app auto-update** |
-| **Windows portable** | [`Synorive-0.1.5-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — no install; auto-update not available for this form |
+| **Windows installer** | [`Synorive-Setup-0.1.8.exe`](https://github.com/Aevorine/Synorive/releases/latest) — Python runtime bundled, **in-app auto-update** |
+| **Windows portable** | [`Synorive-0.1.8-portable.exe`](https://github.com/Aevorine/Synorive/releases/latest) — no install; auto-update not available for this form |
 | **Android** | [`app-release.apk`](https://github.com/Aevorine/Synorive/releases/latest) — thin client, talks to the engine on your PC over LAN |
 
 **No Python installation required.** The interpreter and every engine dependency ship inside the
@@ -55,7 +55,7 @@ Dark theme: [screenshot](docs/screenshots/research-dark.png)
 | 🌐 | **Multi-engine web search** — Bing / Baidu / 360 / Mojeek / Wikipedia / Reddit, plus Google and DuckDuckGo through a self-hosted SearXNG |
 | 🛡 | **Actively hunts for counter-evidence** — searches for debunkings, traces a claim back to its earliest source, flags retracted papers |
 | 📋 | **Extract-only briefings** — every line is a verbatim quote with its source. Conflicting claims are shown **side by side, undecided** |
-| 🔌 | **24 MCP tools for Claude Code** — let your agent search your own library and verify claims for you |
+| 🔌 | **26 MCP tools for Claude Code** — let your agent search your own library and verify claims for you |
 | 🔒 | **Privacy fence** — web search and cloud inference are two *separate* switches, because one leaks *what you ask* and the other leaks *what you have* |
 | ❓ | **Ask a question, get quoted answers** — the answer is assembled *only* from sentences that already exist in your files, each with its source. Nothing is generated, nothing is reworded |
 | 📝 | **One-click draft** — pick the results you want, get a Markdown / plain-text / PDF draft with numbered citations and clickable anchors |
@@ -209,7 +209,7 @@ Desktop and Android both check for updates against this repository's **GitHub Re
 
 ```bash
 npm run version:check      # are all four version numbers in sync?
-npm run version:set 0.1.5  # change all four at once — never edit them by hand
+npm run version:set 0.1.8  # change all four at once — never edit them by hand
 npm run android:keystore   # first time only: generate the Android release keystore (kept outside the repo)
 npm run release            # build both artifacts, do NOT upload
 npm run release:publish    # build and create a GitHub Release (requires gh to be logged in)
@@ -262,12 +262,14 @@ node scripts/install-claude-integration.mjs
 Open a fresh Claude Code session afterwards and ask "did I save anything about X?" — retrieval
 fires automatically.
 
-**The 24 tools:**
+**The 26 tools:**
 
 - **Local library** — `search` / `ingest` / `analyze` / `get_content` / `similar` / `timeline` /
   `graph` / `status` / `questions`
 - **Web** — `web_search` / `research` / `scholar` / `read_url` / `web_engines` / `verify` /
   `unified_search`
+- **Reverse search** — `reverse_image` (where else does this picture appear online),
+  `reverse_video` (trace a clip back to its original source by matching several keyframes)
 - **Literature** — `scholar_review` (thematic review, extract-only), `scholar_table` (one metric
   across many papers), `citations` (co-citation to find the foundational papers), `harvest`
   (bulk-fetch open-access full text into the library, dry-run by default)
