@@ -31,13 +31,41 @@ const ANDROID = !args.has('--desktop-only');
 const version = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
 const tag = `v${version}`;
 
+/**
+ * 把「正在跑这个脚本的 node」所在的目录顶到 PATH 最前面。
+ *
+ * 🔴 Windows 上 `shell: true` 起的是 `cmd.exe`，它读的是 **系统 PATH**，
+ * 不一定等于你当前 shell 的 PATH。node 装在 portable 目录、nvm 目录、
+ * 或从 Git Bash / 某个 IDE 内置终端启动时，`cmd.exe` 里 `node` 是找不到的：
+ *
+ *     > node ../../scripts/build-integrity.mjs && node ../../scripts/bundle-python.mjs
+ *     'node' 不是内部或外部命令，也不是可运行的程序或批处理文件。
+ *
+ * 报错指向 `prepack:runtime` 这个 npm script，看起来像 package.json 写错了，
+ * 其实跟 package.json 一点关系没有 —— 换成 `npm run pack:win` 手跑也一样。
+ * 把 `process.execPath` 的目录顶上去，`cmd.exe` 里的 `node` 就一定是
+ * 正在执行本脚本的那一个，版本也必然一致。
+ */
+function nodeAwareEnv(env) {
+  const nodeDir = dirname(process.execPath);
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+  const merged = { ...process.env, ...(env ?? {}) };
+  const current = merged[pathKey] ?? '';
+  const parts = current.split(sep).filter(Boolean);
+  if (!parts.some((p) => p.replace(/[\\/]+$/, '').toLowerCase() === nodeDir.replace(/[\\/]+$/, '').toLowerCase())) {
+    merged[pathKey] = [nodeDir, ...parts].join(sep);
+  }
+  return merged;
+}
+
 function run(cmd, cmdArgs, cwd, env) {
   console.log(`\n▶ ${cmd} ${cmdArgs.join(' ')}`);
   const r = spawnSync(cmd, cmdArgs, {
     cwd: cwd ?? ROOT,
     stdio: 'inherit',
     shell: true,
-    ...(env ? { env: { ...process.env, ...env } } : {}),
+    env: nodeAwareEnv(env),
   });
   if (r.status !== 0) {
     console.error(`✗ 失败（退出码 ${r.status}）：${cmd} ${cmdArgs.join(' ')}`);

@@ -16,10 +16,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "prepack:runtime": "node ../../scripts/build-integrity.mjs && node ../../scripts/bundle-python.mjs",
-    "pack:dir": "npm run prepack:runtime && npm run build && electron-builder --dir",
-    "pack:win": "npm run prepack:runtime && npm run build && electron-builder --win",
-    "pack:win:slim": "node ../../scripts/build-integrity.mjs && node ../../scripts/bundle-python.mjs --slim && npm run build && electron-builder --win",
-    "publish:win": "npm run prepack:runtime && npm run build && electron-builder --win --publish always"
+    "pack:dir": "node ../../scripts/build-integrity.mjs && node ../../scripts/bundle-python.mjs && node ../../scripts/ensure-fonts.mjs && electron-vite build && electron-builder --dir",
+    "pack:win": "node ../../scripts/build-integrity.mjs && node ../../scripts/bundle-python.mjs && node ../../scripts/ensure-fonts.mjs && electron-vite build && electron-builder --win",
+    "pack:win:slim": "node ../../scripts/build-integrity.mjs && node ../../scripts/bundle-python.mjs --slim && node ../../scripts/ensure-fonts.mjs && electron-vite build && electron-builder --win",
+    "publish:win": "node ../../scripts/build-integrity.mjs && node ../../scripts/bundle-python.mjs && node ../../scripts/ensure-fonts.mjs && electron-vite build && electron-builder --win --publish always"
   },
   "dependencies": {
     "@synorive/design-tokens": "*",
