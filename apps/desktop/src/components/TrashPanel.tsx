@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, Loader2, RotateCcw, Trash2 } from 'lucide-react';
 import { labApi, type TrashEntry } from '../lib/labApi';
+import { useApp } from '../lib/store';
 import { VirtualList } from './VirtualList';
 
 /**
@@ -33,9 +34,21 @@ export function TrashPanel() {
     }
   };
 
+  /**
+   * 🔴 **等引擎 ready 再拉，ready 时重新拉一遍。**
+   *
+   * 原来依赖数组是 `[]`：挂载那一帧引擎端口还没设进 `lib/api.ts`
+   * （`App.tsx` 要一串 await 跑完才 setEnginePort），`trashList()` 抛
+   * EngineUnavailable → `entries` 一直是 null → 界面**永远停在"读取中…"**
+   * 的转圈上。设置页是保持挂载的标签页，切走切回也不会重挂，
+   * 所以这一屏这一整次会话都转不完。
+   */
+  const engineReady = useApp((s) => s.engine?.lifecycle === 'ready');
   useEffect(() => {
+    if (!engineReady) return;
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engineReady]);
 
   const restore = async (id: string) => {
     setBusyId(id);
@@ -67,9 +80,15 @@ export function TrashPanel() {
       <div className="trash">
         {err ? (
           <p className="field__hint">读取回收站失败：{err}</p>
-        ) : (
+        ) : engineReady ? (
           <p className="field__hint">
             <Loader2 size={13} className="spin" strokeWidth={2} /> 读取中…
+          </p>
+        ) : (
+          /* 说清楚在等谁。只写"读取中…"的话，引擎起不来时这里会一直转，
+             而转圈和坏掉长得一模一样 */
+          <p className="field__hint">
+            <Loader2 size={13} className="spin" strokeWidth={2} /> 等引擎起来再读回收站…
           </p>
         )}
       </div>

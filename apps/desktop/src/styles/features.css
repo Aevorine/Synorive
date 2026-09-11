@@ -1,0 +1,543 @@
+/**
+ * 本轮新增功能的样式 —— C2 命令面板 v2 / C4 阅读器 / C6 全键盘 / C8 拖拽万物
+ * ====================================================================
+ * 🔴 **色值和字号一律走 `var(--syn-*)` 令牌**，一个字面量都不写。
+ *    `scripts/check-hardcoded-style.mjs` 会拦，但更重要的是：
+ *    多一个地方能定义颜色，"界面统一"就靠自觉了，而自觉在第三个人手上必然失效。
+ *
+ * 🔴 **这里不覆盖任何已有类的既有规则。** 只定义本轮新加的类。
+ *    三栏网格（`.syn-work*`）、`.syn-prose`、`.syn-fluid` 都由样式层那位
+ *    在别的文件里提供，这里一个字都不碰 —— 两处定义同一个类，
+ *    最后谁赢取决于 import 顺序，那是最难查的一类样式 bug。
+ *
+ * 🔴 搜索结果 `.card` 的内边距也不碰：虚拟滚动的行高是写死的（68/114/142），
+ *    padding 一变就会把元信息那行裁掉。仓库里记着这个坑栽过两次。
+ */
+
+/* ══════════════════════════════════════════════════════════
+   C6 焦点环 —— 全键盘操作的地基
+   ══════════════════════════════════════════════════════════
+   `global.css` 已经给了全局的 `:focus-visible` 描边。这里补的是
+   本轮新增控件里那些**默认没有可见焦点**的（`<a>` 当按钮用、
+   自定义 role="option" 的行），以及一条更粗的"键盘正在这儿"的提示。
+
+   ⚠️ 用 `:focus-visible` 不是 `:focus` —— 鼠标点一下就套个框
+      是纯噪声，而且会让用户以为自己选中了什么。 */
+
+.syn-outline__item:focus-visible,
+.syn-srclist__item:focus-visible,
+.syn-cite__mark:focus-visible,
+.palette__item:focus-visible,
+.syn-ks__close:focus-visible {
+  outline: 2px solid var(--syn-color-border-focus);
+  outline-offset: 2px;
+  border-radius: var(--syn-radius-sm);
+}
+
+/* 键盘正在这一层里走的时候，把整个容器轻轻标出来。
+   没有它的话，Tab 进一个滚动区之后不知道自己在哪一块里 */
+.syn-work__rail:focus-within,
+.syn-srclist:focus-within {
+  box-shadow: var(--syn-shadow-focus);
+  border-radius: var(--syn-radius-md);
+}
+
+/* 跳过去之后闪一下。用在设置项定位、答案分段定位、出处回跳 */
+@keyframes syn-flash-kf {
+  0% { background: var(--syn-color-primary-subtle); }
+  100% { background: transparent; }
+}
+.syn-flash {
+  animation: syn-flash-kf 1.4s var(--syn-ease-exit);
+  border-radius: var(--syn-radius-sm);
+}
+
+/* 「说不清就说清楚」用的诊断字体：不是错误（不用红），
+   但要明显区别于正文，让人知道这是软件在解释自己 */
+.syn-diag {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+  font-style: italic;
+}
+
+/* ══════════════════════════════════════════════════════════
+   C4 阅读器 —— 大纲 / 出处清单 / 公式 / 引用悬浮
+   ══════════════════════════════════════════════════════════ */
+
+/* ── 左细栏的大纲 ────────────────────────────── */
+.syn-outline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+}
+
+.syn-outline__item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-xs);
+  width: 100%;
+  padding: var(--syn-space-xxs) var(--syn-space-xs);
+  border: none;
+  background: transparent;
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-normal);
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--syn-radius-sm);
+  /* 大纲条目常常是一整个标题，细栏放不下 —— 截断而不是撑破栏宽 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background var(--syn-dur-fast) var(--syn-ease-standard);
+}
+
+.syn-outline__item:hover {
+  background: var(--syn-color-bg-hover);
+  color: var(--syn-color-text);
+}
+
+.syn-outline__n {
+  flex: none;
+  min-width: 1.4em;
+  color: var(--syn-color-text-muted);
+  font-family: var(--syn-ff-tabular);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 右细栏的出处清单 ────────────────────────── */
+.syn-srclist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-space-xxs);
+}
+
+.syn-srclist__item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-xs);
+  width: 100%;
+  padding: var(--syn-space-xxs) var(--syn-space-xs);
+  border: none;
+  background: transparent;
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-normal);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: var(--syn-radius-sm);
+  transition: background var(--syn-dur-fast) var(--syn-ease-standard);
+}
+
+.syn-srclist__item:hover {
+  background: var(--syn-color-bg-hover);
+  color: var(--syn-color-text);
+}
+
+.syn-srclist__n {
+  flex: none;
+  min-width: 1.6em;
+  color: var(--syn-color-text-muted);
+  font-family: var(--syn-ff-tabular);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 标题最多两行 —— 一行截断会让一堆同前缀的论文标题看起来一模一样，
+   不截又会让一条占掉半个细栏 */
+.syn-srclist__name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.syn-srclist__site,
+.syn-srclist__more {
+  display: block;
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+
+.syn-srclist__more {
+  padding: var(--syn-space-xxs) var(--syn-space-xs);
+}
+
+/* ── 公式 ──────────────────────────────────── */
+/* 行内公式跟着正文走，只在基线上做微调；
+   ⚠️ 不设 font-size —— KaTeX 自己按 em 缩放，
+      在这里再压一次会让公式比正文小一号，读起来像脚注 */
+.syn-math {
+  /* 长公式在窄栏里必须能横向滚，否则会把整栏撑破，
+     而撑破的表现是"整页出现横向滚动条"，比公式看不全糟得多 */
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: baseline;
+}
+
+.syn-math--block {
+  display: block;
+  margin: var(--syn-space-sm) 0;
+  padding: var(--syn-space-xs) 0;
+}
+
+/* 排不出来时的兜底：原样显示源码，并且**长得像代码**，
+   让用户一眼知道"这是原始写法"而不是"这软件乱码了" */
+.syn-math--raw {
+  font-family: var(--syn-ff-mono);
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-warning);
+  background: var(--syn-color-warning-subtle);
+  padding: 0 var(--syn-space-xxs);
+  border-radius: var(--syn-radius-sm);
+}
+
+/* ── 引用悬浮预览 ────────────────────────────── */
+.syn-cite {
+  position: relative;
+  display: inline-block;
+}
+
+.syn-cite__mark {
+  border: none;
+  background: transparent;
+  padding: 0 var(--syn-space-xxs);
+  color: var(--syn-color-primary);
+  font-family: var(--syn-ff-tabular);
+  font-size: var(--syn-fs-caption);
+  font-variant-numeric: tabular-nums;
+  vertical-align: super;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.syn-cite__mark:hover {
+  color: var(--syn-color-primary-hover);
+  text-decoration: underline;
+}
+
+/* 🔴 `:focus-within` 和 `:hover` 都要能唤出浮层 ——
+   只挂 hover 的话，用键盘走到这里的人永远看不到预览，
+   而"全键盘可达"是本轮的验收项 */
+.syn-cite__pop {
+  position: absolute;
+  bottom: calc(100% + var(--syn-space-xxs));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--syn-z-tooltip);
+  display: none;
+  width: max-content;
+  max-width: 34em;
+  padding: var(--syn-space-sm);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-md);
+  box-shadow: var(--syn-shadow-lg);
+  font-size: var(--syn-fs-caption);
+  line-height: var(--syn-lh-relaxed);
+  white-space: normal;
+  text-align: left;
+  vertical-align: baseline;
+}
+
+.syn-cite:hover .syn-cite__pop,
+.syn-cite:focus-within .syn-cite__pop {
+  display: block;
+}
+
+.syn-cite__poptitle {
+  display: block;
+  margin-bottom: var(--syn-space-xxs);
+  color: var(--syn-color-text);
+  font-weight: var(--syn-fw-semibold);
+}
+
+.syn-cite__popbody {
+  display: block;
+  color: var(--syn-color-text-secondary);
+}
+
+.syn-cite__popurl {
+  display: block;
+  margin-top: var(--syn-space-xxs);
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+  word-break: break-all;
+}
+
+/* ══════════════════════════════════════════════════════════
+   C2 命令面板 v2 的补充
+   ══════════════════════════════════════════════════════════
+   基础样式在 shell.css，这里只加 v2 新出现的两样：
+   真正的分组容器，和每一条右边的快捷键标签。 */
+
+.palette__section {
+  display: contents;
+}
+
+/* 快捷键标签推到最右边，和 hint 分开 —— 混在一起的话
+   一条命令里会出现两段灰字，谁也不知道哪段是键 */
+.palette__itemkbd {
+  margin-left: auto;
+  flex: none;
+}
+
+/* ══════════════════════════════════════════════════════════
+   C6 快捷键速查表
+   ══════════════════════════════════════════════════════════ */
+
+.syn-ks__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--syn-z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--syn-space-xl);
+  background: var(--syn-color-scrim);
+}
+
+.syn-ks {
+  display: flex;
+  flex-direction: column;
+  width: min(56rem, 100%);
+  max-height: 100%;
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-lg);
+  box-shadow: var(--syn-shadow-xl);
+  overflow: hidden;
+}
+
+.syn-ks__head {
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-md) var(--syn-space-lg);
+  border-bottom: 1px solid var(--syn-color-border);
+}
+
+.syn-ks__title {
+  margin: 0;
+  font-family: var(--syn-ff-display);
+  font-size: var(--syn-fs-section-title);
+  font-weight: var(--syn-fw-semibold);
+  color: var(--syn-color-text);
+}
+
+.syn-ks__spacer { flex: 1; }
+
+.syn-ks__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--syn-d-control);
+  height: var(--syn-d-control);
+  border: none;
+  background: transparent;
+  color: var(--syn-color-text-secondary);
+  border-radius: var(--syn-radius-sm);
+  cursor: pointer;
+}
+
+.syn-ks__close:hover {
+  background: var(--syn-color-bg-hover);
+  color: var(--syn-color-text);
+}
+
+.syn-ks__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--syn-space-md) var(--syn-space-lg);
+  /* 两列：一屏放得下全部快捷键，滚动着找快捷键是很别扭的一件事 */
+  columns: 2;
+  column-gap: var(--syn-space-xl);
+}
+
+.syn-ks__group {
+  break-inside: avoid;
+  margin-bottom: var(--syn-space-lg);
+}
+
+.syn-ks__grouptitle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-xs);
+  margin: 0 0 var(--syn-space-xs);
+  font-size: var(--syn-fs-caption);
+  font-weight: var(--syn-fw-semibold);
+  color: var(--syn-color-text-muted);
+  text-transform: none;
+  letter-spacing: var(--syn-ls-wide);
+}
+
+/* 「实时读取，不是写死的」那个小标 —— 它是这张表可信的理由，
+   所以要看得见，但不能抢过分组标题 */
+.syn-ks__live {
+  padding: 0 var(--syn-space-xxs);
+  border-radius: var(--syn-radius-sm);
+  background: var(--syn-color-success-subtle);
+  color: var(--syn-color-success);
+  font-size: var(--syn-fs-micro);
+  font-weight: var(--syn-fw-normal);
+  letter-spacing: var(--syn-ls-normal);
+}
+
+.syn-ks__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--syn-space-xs);
+  padding: var(--syn-space-xxs) 0;
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+  line-height: var(--syn-lh-normal);
+}
+
+.syn-ks__what { flex: 1; }
+
+.syn-ks__keys {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  white-space: nowrap;
+}
+
+.syn-ks__plus {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+
+.syn-ks__dead {
+  color: var(--syn-color-danger);
+  font-size: var(--syn-fs-caption);
+}
+
+.syn-ks__note {
+  color: var(--syn-color-warning);
+  font-size: var(--syn-fs-micro);
+}
+
+.syn-ks__trouble {
+  margin: var(--syn-space-xs) 0 0;
+  padding: var(--syn-space-xs);
+  background: var(--syn-color-warning-subtle);
+  border-radius: var(--syn-radius-sm);
+  color: var(--syn-color-text-secondary);
+  font-size: var(--syn-fs-micro);
+  line-height: var(--syn-lh-relaxed);
+}
+
+.syn-ks__foot {
+  padding: var(--syn-space-sm) var(--syn-space-lg);
+  border-top: 1px solid var(--syn-color-border);
+  background: var(--syn-color-bg-sunken);
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-micro);
+}
+
+/* ══════════════════════════════════════════════════════════
+   C8 拖拽万物
+   ══════════════════════════════════════════════════════════ */
+
+.syn-drop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--syn-z-overlay);
+  display: grid;
+  grid-template-rows: 1fr 1fr 1fr;
+  /* 🔴 必须 none：挂着的话，鼠标一进这一层就等于"离开了下面的元素"，
+     dragleave/dragenter 会疯狂互相触发，高亮层每帧闪一次 */
+  pointer-events: none;
+  background: var(--syn-color-scrim);
+}
+
+.syn-drop__what {
+  position: absolute;
+  top: var(--syn-space-md);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--syn-space-xxs);
+  padding: var(--syn-space-xs) var(--syn-space-lg);
+  border-radius: var(--syn-radius-pill);
+  background: var(--syn-color-bg-elevated);
+  box-shadow: var(--syn-shadow-lg);
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-emphasis);
+}
+
+.syn-drop__sub {
+  color: var(--syn-color-text-muted);
+  font-size: var(--syn-fs-caption);
+}
+
+.syn-drop__zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--syn-space-xxs);
+  margin: var(--syn-space-sm);
+  border: 2px dashed var(--syn-color-border-strong);
+  border-radius: var(--syn-radius-lg);
+  color: var(--syn-color-text-secondary);
+  transition:
+    background var(--syn-dur-fast) var(--syn-ease-standard),
+    border-color var(--syn-dur-fast) var(--syn-ease-standard);
+}
+
+/* 🔴 当前落点必须**一眼可辨**。三格长得差不多的话，
+   "松在哪就按哪一格处理"这句话等于没说 —— 用户不知道自己在哪一格 */
+.syn-drop__zone--on {
+  background: var(--syn-color-primary-subtle);
+  border-color: var(--syn-color-primary);
+  border-style: solid;
+  color: var(--syn-color-text);
+}
+
+.syn-drop__title {
+  font-size: var(--syn-fs-section-title);
+  font-family: var(--syn-ff-display);
+}
+
+.syn-drop__hint {
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-muted);
+}
+
+/* 待提交的入库：倒计时 + 撤销。
+   🔴 摆在屏幕正下方正中、盖在一切之上 —— 一个藏在角落里的撤销
+      等于没有撤销，而那正是"误拖造成不可逆后果"的实际发生方式 */
+.syn-drop__pending,
+.syn-drop__toast {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--syn-z-toast);
+  display: flex;
+  align-items: center;
+  gap: var(--syn-space-sm);
+  max-width: min(48rem, calc(100vw - var(--syn-space-xl)));
+  padding: var(--syn-space-sm) var(--syn-space-lg);
+  background: var(--syn-color-bg-elevated);
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-pill);
+  box-shadow: var(--syn-shadow-xl);
+  color: var(--syn-color-text);
+  font-size: var(--syn-fs-caption);
+}
+
+.syn-drop__pending {
+  bottom: calc(var(--syn-layout-status-bar) + var(--syn-space-lg));
+  border-color: var(--syn-color-primary);
+}
+
+.syn-drop__toast {
+  bottom: var(--syn-layout-status-bar);
+  margin-bottom: var(--syn-space-sm);
+}

@@ -183,6 +183,21 @@ export class PeekWindow {
       return { action: 'deny' };
     });
 
+    /**
+     * 🔴 **和主窗口保持一致：浮窗自己绝不导航到外部站点。**
+     *
+     * 只有 `setWindowOpenHandler` 是挡不住 `location.href = …` 和
+     * `<a target="_self">` 的 —— 那条路走成了，这个**不可聚焦、置顶、
+     * 无边框、显示在所有工作区之上**的小窗会变成一个外部页面的容器，
+     * 而它长得完全像应用自己的一部分。外链照旧交给系统浏览器。
+     */
+    win.webContents.on('will-navigate', (e, url) => {
+      const devServer = process.env.ELECTRON_RENDERER_URL;
+      if (devServer && url.startsWith(devServer)) return;
+      e.preventDefault();
+      if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+    });
+
     const devUrl = process.env.ELECTRON_RENDERER_URL;
     if (isDev && devUrl) {
       void win.loadURL(`${devUrl}#peek`);

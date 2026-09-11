@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { SearchHit } from '@synorive/shared-types';
 import { api } from '../lib/api';
+import { rememberOpen } from '../lib/recentFiles';
 import { BriefingPanel } from '../components/BriefingPanel';
 import { labApi, type WatchItem } from '../lib/labApi';
 import { projectApi, type ResearchProject } from '../lib/webApi';
@@ -169,6 +170,7 @@ export function TodayPage() {
             // 在资源管理器里定位而不是直接打开 —— 简报里端上来的很多是
             // 用户已经忘了的东西，先让他看见它在哪，比直接用默认程序拉起来稳妥
             void api.recordOpen(it.id);
+            rememberOpen({ id: it.id, title: it.title, locator: it.locator }); // C2「最近打开」
             void window.synorive.sys.reveal(it.locator);
           }}
         />

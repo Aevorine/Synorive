@@ -1,16 +1,29 @@
 /**
- * E13 命令面板
+ * C2 命令面板 v2
  * ============================================================
- * Ctrl+Shift+P 打开，敲几个字直接执行。
+ * Ctrl+Shift+P（或 Ctrl+P）打开，敲几个字直接执行。
  *
- * 为什么不用 Ctrl+K：这个应用的 Ctrl+K 和 `/` 已经给了全局搜索框（验收标准 B5）。
- * 抢过来会毁掉一个用得更频繁的快捷键 —— 命令面板是"偶尔用一次"，
- * 搜索框是"一直在用"。
+ * ⚠️ **没有把它挪到 Ctrl+K。** 这个应用的 Ctrl+K 和 `/` 已经给了主输入区
+ *    （验收标准 B5，`TopBar.GlobalHotkeys` 里那段注释写了原因）。
+ *    命令面板是"偶尔用一次"，主输入区是"一直在用"，抢过来是净亏。
+ *    v2 补的是 **Ctrl+P**（VS Code 的快速打开），少按一个键，且不抢谁的。
  *
- * 🔑 中文标签必须支持拼音首字母。
- *    「文件管理器」这种标签，用户不可能切到中文输入法再打全名去找一个命令 ——
- *    那比直接用鼠标点还慢，功能就废了。所以每条命令手工标了 py（wjglq）。
- *    手工写二十来条的成本，远低于引一个拼音库。
+ * v1 → v2 改了四件事：
+ *
+ *   ① **排序内核换掉了**。v1 只有 `pinyinMatch.fuzzyScore` 的七八个粗档，
+ *      同一档里几十条命令之间没有先后 —— 打两个字之后候选顺序看起来像随机的。
+ *      v2 叠了 `lib/fuzzy.ts` 的子序列匹配（连续命中加权、词首加权），
+ *      同档之内也排得出来。**中文照样走拼音**，两把尺子换算到同一个量纲再取大。
+ *
+ *   ② **搜得到的东西多了三类**：全部设置项（`lib/settingsIndex.ts`）、
+ *      最近打开的文件、最近搜过的词。原来面板只认"功能入口"，
+ *      而用户真正想不起来的恰恰是"上午那个 PDF 叫什么"。
+ *
+ *   ③ **真的分组了**。v1 的 `lastGroup` 是顺着打分后的列表比对上一条的组名 ——
+ *      而排序是按分数的，同一组会被别的组隔开，于是"跳转"这个小标题
+ *      在一屏里反复出现三四次。v2 先排序、再按组首次出现的顺序聚拢。
+ *
+ *   ④ **记住最近用过的**，下次排前面（衰减，不是永久置顶）。
  *
  * ⚠️ 列表项用 onMouseMove 而不是 onMouseEnter 接管选中：
  *    按快捷键唤起时，光标常常正停在列表将要出现的位置，enter 会立刻触发、
@@ -20,7 +33,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BellPlus, Brain, Clipboard, Command, Crop, FileDiff, FileDown, FilePlus2,
+  BellPlus, Brain, Clipboard, Clock, Command, Crop, FileDiff, FileDown, FilePlus2,
   FlaskConical, FolderPlus, Gauge, Library, Moon, RefreshCw,
   Search as SearchIcon, Settings as SettingsIcon, ShieldQuestion, Sun, Trash2,
 } from 'lucide-react';
@@ -28,6 +41,10 @@ import { PAGE_TITLES, useApp, type PageId } from '../lib/store';
 import { useSearch } from '../lib/useSearch';
 import { api } from '../lib/api';
 import { fuzzyScore } from '../lib/pinyinMatch';
+import { fuzzyMatch, pinyinRankToScore } from '../lib/fuzzy';
+import { SETTINGS_INDEX, requestSettingsFocus } from '../lib/settingsIndex';
+import { recentFiles, rememberOpen } from '../lib/recentFiles';
+import { suggest as suggestQueries } from '../lib/queryHistory';
 
 interface Cmd {
   id: string;
@@ -43,25 +60,89 @@ interface Cmd {
   run: () => void | Promise<void>;
   /** 条件不满足时置灰并说明原因，而不是藏起来 —— 藏起来用户会以为没这功能 */
   disabledReason?: string;
+  /** 这条命令自己的快捷键，显示在右侧。**只写真的绑了的**，写假的比不写糟 */
+  keys?: string;
+}
+
+// ────────────────────────────────────────────────────────────
+// 「最近用过的排前面」
+// ────────────────────────────────────────────────────────────
+// 🔴 **是加权不是置顶。** 永久置顶的话，某天误点了一条几乎不用的命令，
+//    它会在列表最上面待到天荒地老。这里用和 `queryHistory` 同一套
+//    时间衰减：一周不用，权重折半。
+
+const RECENT_KEY = 'syn.paletteRecent.v1';
+/** 半衰期：7 天不用，加权折半 */
+const RECENT_HALF_LIFE_MS = 7 * 24 * 60 * 60 * 1000;
+/** 最近用过最多能加多少分。压不过一次实打实的前缀命中（那是 100+） */
+const RECENT_MAX_BOOST = 22;
+
+function readRecent(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY);
+    if (!raw) return {};
+    const o = JSON.parse(raw) as Record<string, number>;
+    return o && typeof o === 'object' ? o : {};
+  } catch {
+    return {};
+  }
+}
+
+function markUsed(id: string): void {
+  try {
+    const o = readRecent();
+    o[id] = Date.now();
+    // 只留最近 40 条，不然这个对象会一直长
+    const keep = Object.entries(o)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 40);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(Object.fromEntries(keep)));
+  } catch {
+    // 记不住只是下次排序差一点，绝不能影响这条命令本身
+  }
+}
+
+function recentBoost(used: Record<string, number>, id: string, now: number): number {
+  const at = used[id];
+  if (!at) return 0;
+  const age = Math.max(0, now - at) / RECENT_HALF_LIFE_MS;
+  return RECENT_MAX_BOOST * Math.pow(0.5, age);
 }
 
 /**
- * 模糊匹配。全拼和首字母都认：打 `qingli` 或 `qlczt` 都能命中「清理重复图」。
+ * 一条命令对当前输入的匹配分。**越大越好**，null = 不匹配。
  *
- * 🔴 拼音串**从标签算出来**，不再是每条命令手写一个 `py` 字段。
- *    手写那套的问题不在于麻烦，在于**它会被忘** —— 新加一条命令忘了写 py，
- *    那条就永远搜不到；不报错、不告警，只是打拼音时它不出现。
- *    `py` 字段还留着（可选），只在自动算不准时手动覆盖。
+ * 两把尺子取大值：
+ *   直接匹配（`lib/fuzzy.ts`）—— 英文命令、文件名、搜过的词靠它
+ *   拼音匹配（`lib/pinyinMatch.ts`）—— 中文标签靠它
+ * hint 和分组名也参与，但**打折**：命中说明文字不该压过命中标题。
  */
-function score(q: string, cmd: Cmd): number | null {
-  const auto = fuzzyScore(q, cmd.label, cmd.hint);
-  if (!cmd.py) return auto;
-  // 手写覆盖：命中就给一个和"首字母命中"同档的分
-  const s = q.trim().toLowerCase();
-  const py = cmd.py.toLowerCase();
-  const manual = py.startsWith(s) ? 2 : py.includes(s) ? 4 : null;
-  if (manual === null) return auto;
-  return auto === null ? manual : Math.min(auto, manual);
+function matchScore(q: string, cmd: Cmd): number | null {
+  if (!q) return 0;
+  let best = -1;
+
+  const direct = fuzzyMatch(q, cmd.label);
+  if (direct) best = Math.max(best, direct.score);
+
+  if (cmd.hint) {
+    const h = fuzzyMatch(q, cmd.hint);
+    if (h) best = Math.max(best, h.score * 0.55);
+  }
+  const g = fuzzyMatch(q, cmd.group);
+  if (g) best = Math.max(best, g.score * 0.45);
+
+  const py = pinyinRankToScore(fuzzyScore(q, cmd.label, cmd.hint));
+  if (py !== null) best = Math.max(best, py);
+
+  // 手写 py 覆盖：命中就给一个和"首字母前缀"同档的分
+  if (cmd.py) {
+    const s = q.trim().toLowerCase();
+    const py2 = cmd.py.toLowerCase();
+    if (py2.startsWith(s)) best = Math.max(best, 88);
+    else if (py2.includes(s)) best = Math.max(best, 66);
+  }
+
+  return best >= 0 ? best : null;
 }
 
 export function CommandPalette() {
@@ -73,9 +154,22 @@ export function CommandPalette() {
   const focusSearch = useApp((s) => s.focusSearch);
   const setPreset = useSearch((s) => s.setPreset);
   const toggleExplain = useSearch((s) => s.toggleExplain);
+  const setQuery = useSearch((s) => s.setQuery);
 
   const [q, setQ] = useState('');
   const [sel, setSel] = useState(0);
+  /**
+   * 面板每次打开时把「最近文件 / 最近搜索」快照一份。
+   *
+   * 🔴 **不能在渲染里直接读 localStorage** —— 那会让每敲一个键都去读一次盘，
+   *    而且列表会在用户打字的过程中自己变（另一个窗口刚打开了个文件）。
+   */
+  const [recent, setRecent] = useState<{
+    files: ReturnType<typeof recentFiles>;
+    queries: ReturnType<typeof suggestQueries>;
+    used: Record<string, number>;
+  }>({ files: [], queries: [], used: {} });
+
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -127,9 +221,10 @@ export function CommandPalette() {
         id: 'stage:ask',
         label: '问一句话',
         py: 'wyjh',
-        hint: '展开大输入区，回一段带出处的答案（Ctrl+K）',
+        hint: '展开大输入区，回一段带出处的答案',
         group: '检索',
         icon: SearchIcon,
+        keys: 'Ctrl+K',
         run: () => {
           useApp.getState().setInputMode('ask');
           useApp.getState().openStage();
@@ -139,9 +234,10 @@ export function CommandPalette() {
         id: 'stage:find',
         label: '找东西',
         py: 'zdx',
-        hint: '展开大输入区，回结果列表（Ctrl+Shift+K）',
+        hint: '展开大输入区，回结果列表',
         group: '检索',
         icon: SearchIcon,
+        keys: 'Ctrl+Shift+K',
         run: () => {
           useApp.getState().setInputMode('find');
           useApp.getState().openStage();
@@ -151,10 +247,24 @@ export function CommandPalette() {
         id: 'search:focus',
         label: '跳到搜索框',
         py: 'tdssk',
-        hint: '也可以直接按 / 或 Ctrl+K',
         group: '检索',
         icon: SearchIcon,
+        keys: '/',
         run: () => focusSearch(),
+      },
+      {
+        id: 'help:shortcuts',
+        label: '快捷键速查表',
+        py: 'kjjscb',
+        hint: '显示当前真正生效的按键，含被别的软件抢走后换用的备选键',
+        group: '检索',
+        icon: Command,
+        keys: '?',
+        // 🔴 花括号是必需的：`dispatchEvent` 返回 boolean，
+        //    写成表达式体的话返回值类型对不上 `run: () => void | Promise<void>`
+        run: () => {
+          window.dispatchEvent(new CustomEvent('syn:shortcut-sheet'));
+        },
       },
       {
         id: 'preset:balanced', label: '排序改为「均衡」', py: 'pxjh',
@@ -382,26 +492,105 @@ export function CommandPalette() {
         run: async () => { if (settings?.dataDir) await window.synorive.sys.openPath(settings.dataDir); },
       },
     );
-    return list;
-  }, [setPage, focusSearch, setPreset, toggleExplain, settings, ready]);
 
-  const matched = useMemo(() => {
-    const withScore = commands
-      .map((c) => ({ c, s: score(q, c) }))
-      .filter((x): x is { c: Cmd; s: number } => x.s !== null);
-    withScore.sort((a, b) => a.s - b.s);
-    return withScore.map((x) => x.c);
-  }, [commands, q]);
+    // ── 全部设置项 ────────────────────────────────────
+    // 跳过去 + 滚到那一条 + 闪一下。只跳到设置页顶部是不够的 ——
+    // 那页有一千三百行，用户还得自己找
+    for (const e of SETTINGS_INDEX) {
+      list.push({
+        id: `setting:${e.section}:${e.label}`,
+        label: e.isSection ? `设置：${e.label}` : e.label,
+        hint: e.isSection ? '设置里的一整块' : `设置 › ${e.section}${e.hint ? ` · ${e.hint}` : ''}`,
+        group: '设置',
+        icon: SettingsIcon,
+        run: () => {
+          setPage('settings');
+          requestSettingsFocus(e.label);
+        },
+      });
+    }
+
+    // ── 最近打开的文件 ────────────────────────────────
+    for (const f of recent.files) {
+      list.push({
+        id: `recent-file:${f.id}`,
+        label: f.title,
+        hint: f.locator,
+        group: '最近打开',
+        icon: Clock,
+        run: () => {
+          rememberOpen(f); // 再打开一次，时间刷到最新
+          void api.recordOpen(f.id).catch(() => {
+            /* 记录热度失败不该挡住打开 */
+          });
+          if (f.source === 'link') void window.synorive.sys.openExternal(f.locator);
+          else void window.synorive.sys.openPath(f.locator);
+        },
+      });
+    }
+
+    // ── 最近搜过的词 ──────────────────────────────────
+    for (const r of recent.queries) {
+      list.push({
+        id: `recent-query:${r.q}`,
+        label: r.q,
+        hint: `再搜一次（用过 ${r.n} 次）`,
+        group: '最近搜索',
+        icon: SearchIcon,
+        run: () => {
+          useApp.getState().setInputMode('find');
+          setPage('search');
+          setQuery(r.q);
+        },
+      });
+    }
+
+    return list;
+  }, [setPage, focusSearch, setPreset, toggleExplain, setQuery, settings, ready, recent]);
+
+  /**
+   * 排序 + 真正的分组。
+   *
+   * 🔴 先按分数排全表，**再**按"组第一次出现的顺序"把同组的聚到一起。
+   *    v1 是边渲染边比上一条的组名，而列表是按分数排的 ——
+   *    同一个小标题会在一屏里出现三四次。
+   */
+  const groups = useMemo(() => {
+    const now = Date.now();
+    const scored: { c: Cmd; s: number }[] = [];
+    for (const c of commands) {
+      const base = matchScore(q, c);
+      if (base === null) continue;
+      scored.push({ c, s: base + recentBoost(recent.used, c.id, now) });
+    }
+    scored.sort((a, b) => b.s - a.s);
+
+    const order: string[] = [];
+    const bucket = new Map<string, Cmd[]>();
+    for (const { c } of scored) {
+      let arr = bucket.get(c.group);
+      if (!arr) {
+        arr = [];
+        bucket.set(c.group, arr);
+        order.push(c.group);
+      }
+      arr.push(c);
+    }
+    return order.map((g) => ({ group: g, items: bucket.get(g)! }));
+  }, [commands, q, recent.used]);
+
+  /** 键盘导航用的扁平序 —— 必须和渲染顺序**一模一样**，否则回车执行的不是高亮那条 */
+  const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
   // 打开时重置。不重置的话上次的搜索词还留着，
   // 用户按下快捷键看到的是一份被过滤过的列表，会以为命令少了。
   useEffect(() => {
-    if (open) {
-      setQ('');
-      setSel(0);
-      // 等面板真的挂上去再抢焦点，否则 focus 会打在还没渲染的节点上
-      requestAnimationFrame(() => inputRef.current?.focus());
-    }
+    if (!open) return;
+    setQ('');
+    setSel(0);
+    setRecent({ files: recentFiles(12), queries: suggestQueries('', 8), used: readRecent() });
+    // 等面板真的挂上去再抢焦点，否则 focus 会打在还没渲染的节点上
+    requestAnimationFrame(() => inputRef.current?.focus());
   }, [open]);
 
   useEffect(() => setSel(0), [q]);
@@ -416,28 +605,42 @@ export function CommandPalette() {
 
   const exec = async (c: Cmd) => {
     if (c.disabledReason) return;
+    markUsed(c.id);
     setOpen(false);
     await c.run();
   };
 
   const onKey = (e: React.KeyboardEvent) => {
+    const n = flat.length;
     if (e.key === 'Escape') {
       e.preventDefault();
       setOpen(false);
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSel((i) => (matched.length ? (i + 1) % matched.length : 0));
+      setSel((i) => (n ? (i + 1) % n : 0));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setSel((i) => (matched.length ? (i - 1 + matched.length) % matched.length : 0));
+      setSel((i) => (n ? (i - 1 + n) % n : 0));
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setSel(0);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      setSel(Math.max(0, n - 1));
+    } else if (e.key === 'PageDown') {
+      e.preventDefault();
+      setSel((i) => Math.min(n - 1, i + 8));
+    } else if (e.key === 'PageUp') {
+      e.preventDefault();
+      setSel((i) => Math.max(0, i - 8));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      const c = matched[sel];
+      const c = flat[sel];
       if (c) void exec(c);
     }
   };
 
-  let lastGroup = '';
+  let running = -1;
 
   return (
     <div className="palette__backdrop" onMouseDown={() => setOpen(false)}>
@@ -448,47 +651,56 @@ export function CommandPalette() {
             ref={inputRef}
             className="palette__input"
             value={q}
-            placeholder="敲命令名或拼音首字母，比如 wjglq"
+            placeholder="命令名 / 拼音首字母 / 设置项 / 最近打开的文件，比如 wjglq"
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={onKey}
             spellCheck={false}
+            aria-label="命令面板搜索框"
           />
           <kbd className="palette__kbd">Esc</kbd>
         </div>
 
-        <div className="palette__list" ref={listRef}>
-          {matched.length === 0 && (
-            <div className="palette__empty">没有匹配的命令</div>
-          )}
-          {matched.map((c, i) => {
-            const head = c.group !== lastGroup ? ((lastGroup = c.group), c.group) : null;
-            const Icon = c.icon;
-            return (
-              <div key={c.id}>
-                {head && <div className="palette__group">{head}</div>}
-                <button
-                  className={`palette__item${i === sel ? ' palette__item--sel' : ''}${
-                    c.disabledReason ? ' palette__item--off' : ''
-                  }`}
-                  data-sel={i === sel ? '1' : '0'}
-                  onMouseMove={() => setSel(i)}
-                  onClick={() => void exec(c)}
-                  disabled={!!c.disabledReason}
-                >
-                  <Icon size={15} strokeWidth={1.7} className="palette__icon" />
-                  <span className="palette__label">{c.label}</span>
-                  {c.hint && !c.disabledReason && <span className="palette__hint">{c.hint}</span>}
-                  {c.disabledReason && <span className="palette__hint">{c.disabledReason}</span>}
-                </button>
-              </div>
-            );
-          })}
+        <div className="palette__list" ref={listRef} role="listbox" aria-label="命令列表">
+          {flat.length === 0 && <div className="palette__empty">没有匹配的命令</div>}
+          {groups.map((g) => (
+            <div key={g.group} className="palette__section">
+              <div className="palette__group">{g.group}</div>
+              {g.items.map((c) => {
+                running += 1;
+                const i = running;
+                const Icon = c.icon;
+                return (
+                  <button
+                    key={c.id}
+                    className={`palette__item${i === sel ? ' palette__item--sel' : ''}${
+                      c.disabledReason ? ' palette__item--off' : ''
+                    }`}
+                    data-sel={i === sel ? '1' : '0'}
+                    role="option"
+                    aria-selected={i === sel}
+                    onMouseMove={() => setSel(i)}
+                    onClick={() => void exec(c)}
+                    disabled={!!c.disabledReason}
+                  >
+                    <Icon size={15} strokeWidth={1.7} className="palette__icon" />
+                    <span className="palette__label">{c.label}</span>
+                    {c.hint && !c.disabledReason && <span className="palette__hint">{c.hint}</span>}
+                    {c.disabledReason && <span className="palette__hint">{c.disabledReason}</span>}
+                    {c.keys && <kbd className="palette__kbd palette__itemkbd">{c.keys}</kbd>}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </div>
 
         <div className="palette__foot">
           <kbd className="palette__kbd">↑↓</kbd> 选择
           <kbd className="palette__kbd">Enter</kbd> 执行
-          <span className="palette__footnote">{matched.length} / {commands.length} 条命令</span>
+          <kbd className="palette__kbd">Home/End</kbd> 首尾
+          <span className="palette__footnote">
+            {flat.length} / {commands.length} 条
+          </span>
         </div>
       </div>
     </div>

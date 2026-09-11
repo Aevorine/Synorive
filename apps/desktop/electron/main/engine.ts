@@ -30,6 +30,34 @@ const HEALTH_POLL_MS = 100;
 /** 最多自动重启几次 —— 到顶就停手报错，不无限重试 */
 const MAX_RESTARTS = 5;
 
+/**
+ * 🔴 **密钥类参数要不要继续同时写进 argv。**
+ *
+ * Windows 任务管理器加一列「命令行」，或者任何一个能跑
+ * `Get-CimInstance Win32_Process` 的东西，都能看到子进程的完整 argv ——
+ * 包括 `--pairing-token <局域网令牌>` 和 `--web-key brave=<付费 Key>`。
+ * `SYNORIVE_DB_KEY` 早就因为这个理由走了环境变量（见 EngineLaunchOptions.dbKey），
+ * 这两个是同一个问题的漏网之鱼。
+ *
+ * 现在两条路一起走：**环境变量已经在传了**，argv 暂时保留，
+ * 因为引擎侧（`engine/synorive/main.py`）还没有读这两个环境变量的代码，
+ * 现在就把 argv 拿掉的话，局域网配对和付费搜索会**静默失效**
+ * （引擎照常启动，只是永远说"没有配置 API Key"）。
+ *
+ * ⚠️ **引擎侧支持之后，把这个常量改成 false，命令行泄露才算真的关掉。**
+ *    改之前它必须是 true。引擎侧要读的名字见下面 `secretEnv()`。
+ */
+const ENGINE_ARGV_SECRET_COMPAT: boolean = true;
+
+/** 局域网配对令牌的环境变量名。引擎侧要读的就是这个 */
+const ENV_PAIRING_TOKEN = 'SYNORIVE_PAIRING_TOKEN';
+/**
+ * 联网搜索各家的 Key / 端点。值是一个 JSON 对象串：
+ * `{"brave":"xxx","searxng":"http://127.0.0.1:8888"}`
+ * —— 和 `--web-key id=值` 表达的是同一张表，只是不经过命令行。
+ */
+const ENV_WEB_KEYS = 'SYNORIVE_WEB_KEYS';
+
 type Listener = (state: EngineProcessState) => void;
 type EventListener = (event: unknown) => void;
 
@@ -51,6 +79,12 @@ export interface EngineLaunchOptions {
   enableFaceClustering: boolean;
   /** 投喂目录时自动跳过 .env/私钥/credentials.json 这类敏感文件，默认开 */
   sensitiveGuardEnabled: boolean;
+  /**
+   * B6：批量摄取/分析线程主动调成 Windows 后台优先级
+   * （SetThreadPriority THREAD_MODE_BACKGROUND_BEGIN），系统繁忙时让路给
+   * 正在处理的搜索请求。默认开，可在设置里关（怀疑优先级调整导致问题时）。
+   */
+  backgroundIndexingLowPriority: boolean;
   /** A16：开了就把引擎的监听地址从 127.0.0.1 换成 0.0.0.0，局域网里的安卓端才连得上 */
   lanPairingEnabled: boolean;
   /** 局域网配对令牌，非本机请求必须带这个（见 --pairing-token） */
@@ -61,8 +95,10 @@ export interface EngineLaunchOptions {
    * 🔴 **走环境变量传给子进程，绝不做成命令行参数。** argv 在同一台机器上
    *    是任何用户都能看到的（任务管理器加一列"命令行"就行）——
    *    把解开整个资料库的口令摆在那儿，加密就白做了。
-   *    顺带说明：`--pairing-token` 现在还是走 argv 的，那是个**已经存在**的
-   *    同类问题，只是它的影响面小得多（局域网令牌，不是整库钥匙）。
+   *    顺带说明：配对令牌和联网搜索 Key 现在也走环境变量了
+   *    （`SYNORIVE_PAIRING_TOKEN` / `SYNORIVE_WEB_KEYS`），
+   *    argv 里那两份只是引擎侧还没支持时的兼容副本，
+   *    见 `ENGINE_ARGV_SECRET_COMPAT`。
    */
   dbKey: string;
   /**
@@ -355,6 +391,22 @@ export class EngineManager {
     });
   }
 
+  /**
+   * 密钥类配置的环境变量。空值不传 —— 传一个空串会让引擎侧分不清
+   * 「没配」和「配了个空的」，那是两种不同的处置。
+   */
+  private secretEnv(): Record<string, string> {
+    const env: Record<string, string> = {};
+    if (this.opts.lanPairingEnabled && this.opts.pairingToken) {
+      env[ENV_PAIRING_TOKEN] = this.opts.pairingToken;
+    }
+    const keys = Object.fromEntries(
+      Object.entries(this.opts.webKeys).filter(([, v]) => !!v),
+    );
+    if (Object.keys(keys).length) env[ENV_WEB_KEYS] = JSON.stringify(keys);
+    return env;
+  }
+
   private async spawnOnce(): Promise<void> {
     const t0 = Date.now();
     this.patch({ lifecycle: 'starting', lastError: null });
@@ -399,8 +451,11 @@ export class EngineManager {
     if (this.opts.enableFaceClustering) args.push('--enable-face-clustering');
     // 默认开的安全闸，关掉必须显式传参数（跟 --no-network 同一个道理）
     if (!this.opts.sensitiveGuardEnabled) args.push('--disable-sensitive-guard');
+    if (!this.opts.backgroundIndexingLowPriority) args.push('--disable-background-priority');
     if (this.opts.lanPairingEnabled) {
-      args.push('--pairing-token', this.opts.pairingToken);
+      // 令牌本身走环境变量（见 ENGINE_ARGV_SECRET_COMPAT）。
+      // 引擎侧支持之前，argv 这条兼容路径还得留着
+      if (ENGINE_ARGV_SECRET_COMPAT) args.push('--pairing-token', this.opts.pairingToken);
       /**
        * 🔴 **开了局域网配对就一并开 TLS。**
        *
@@ -424,8 +479,11 @@ export class EngineManager {
     if (this.opts.verifyLevel) args.push('--verify-level', this.opts.verifyLevel);
     if (this.opts.webEngines.length) args.push('--web-engines', this.opts.webEngines.join(','));
     if (this.opts.trustProfile) args.push('--trust-profile', this.opts.trustProfile);
-    for (const [id, v] of Object.entries(this.opts.webKeys)) {
-      if (v) args.push('--web-key', `${id}=${v}`);
+    // 同上：这张表已经通过 SYNORIVE_WEB_KEYS 传过去了，argv 只是兼容期的副本
+    if (ENGINE_ARGV_SECRET_COMPAT) {
+      for (const [id, v] of Object.entries(this.opts.webKeys)) {
+        if (v) args.push('--web-key', `${id}=${v}`);
+      }
     }
 
     // 令牌和 API Key 都是密钥，日志里必须打码 ——
@@ -456,6 +514,9 @@ export class EngineManager {
         PYTHONNOUSERSITE: '1',
         // 整库加密口令。空串时引擎按明文库走，和以前完全一样
         ...(this.opts.dbKey ? { SYNORIVE_DB_KEY: this.opts.dbKey } : {}),
+        // 局域网令牌 + 联网搜索 Key：和 DB 口令走同一条路，不进 argv。
+        // 引擎侧读到这两个就该优先用它们，argv 里的同名参数只是兼容期的回退
+        ...this.secretEnv(),
       },
       windowsHide: true,
     });

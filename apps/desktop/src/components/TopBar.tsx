@@ -142,8 +142,12 @@ function GlobalHotkeys() {
 
       // E13 命令面板：Ctrl+Shift+P（VS Code 那套）。
       // 不用 Ctrl+K —— 那个给了主输入区，主输入区是一直在用的，
-      // 命令面板是偶尔用一次的，抢过来是净亏
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'p') {
+      // 命令面板是偶尔用一次的，抢过来是净亏。
+      //
+      // C2：再加一个 **Ctrl+P**（VS Code 的快速打开），少按一个键。
+      // 这个键在本应用里没有别的用途（打印走的是导出 PDF 按钮，
+      // 而且 Electron 默认没有绑 Ctrl+P），所以它是白捡的，不抢谁的。
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
         e.preventDefault();
         setCommandPaletteOpen(!useApp.getState().commandPaletteOpen);
       }

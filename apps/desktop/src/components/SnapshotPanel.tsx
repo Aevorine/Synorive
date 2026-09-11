@@ -124,6 +124,7 @@ export function SnapshotPanel() {
                   disabled={busy}
                   onClick={() => wrap(() => api.snapshots.remove(s.id))}
                   title="删掉这张快照"
+                  aria-label="删掉这张快照"
                 >
                   <Trash2 size={13} strokeWidth={1.8} />
                 </button>

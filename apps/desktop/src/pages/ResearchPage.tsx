@@ -20,6 +20,7 @@ import {
   type ResearchOptions,
 } from '../components/ResearchControls';
 import { LinkTrail } from '../components/LinkTrail';
+import { MathText, type CiteSource } from '../components/MathText';
 import { OmniFeed } from '../components/OmniFeed';
 import { ResearchProgress } from '../components/ResearchProgress';
 import { VerificationPanel } from '../components/VerificationPanel';
@@ -416,17 +417,34 @@ export function ResearchPage() {
     const onRecall = scrollTo('.syn-mem', '「以前查过什么」要先有一次深挖结果才会出现');
     const onWatch = scrollTo('.syn-watch', '「订阅」要先有一次深挖结果才会出现');
 
+    /**
+     * C8：从窗口下 1/3 拖进来的文字/网址落到这里。
+     *
+     * 🔴 **只填进输入框，绝不自动发请求。** 联网检索有真实的时间成本、
+     *    对某些引擎还有费用；"拖一下就自动花钱"是不能接受的。
+     *    这条和文件头「三个模式都不是输入即搜」是同一条约定。
+     */
+    const onPrefill = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text?.trim();
+      if (!text) return;
+      setInput(text);
+      setError(null);
+      document.querySelector('.omni')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    };
+
     window.addEventListener('syn:research-run', onRun);
     window.addEventListener('syn:research-export', onExport);
     window.addEventListener('syn:research-save-library', onSaveLibrary);
     window.addEventListener('syn:research-recall', onRecall);
     window.addEventListener('syn:research-watch', onWatch);
+    window.addEventListener('syn:research-prefill', onPrefill);
     return () => {
       window.removeEventListener('syn:research-run', onRun);
       window.removeEventListener('syn:research-export', onExport);
       window.removeEventListener('syn:research-save-library', onSaveLibrary);
       window.removeEventListener('syn:research-recall', onRecall);
       window.removeEventListener('syn:research-watch', onWatch);
+      window.removeEventListener('syn:research-prefill', onPrefill);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, hasResult, researchResult]);
@@ -662,13 +680,42 @@ export function ResearchPage() {
 // 「我自己有的」和「网上说的」之前永远在两个页面里，
 // 而真正有价值的问题恰恰是 **两边对不对得上**。
 // ════════════════════════════════════════════════════════════
+/**
+ * 本地命中的**两种形状**。
+ *
+ * 🔴 引擎的标准检索命中是**嵌套**的（`shared-types` 的 `SearchHit`：
+ *    标题在 `hit.item.title`、摘要在 `hit.highlight`），而这里原来只按
+ *    **扁平**的 `h.title` / `h.snippet` 读。`webApi.ts` 把这个字段声明成
+ *    `results?: unknown[]`，所以 tsc 一个字都不会报 —— 症状是并排视图
+ *    左栏整栏全是「(无标题)」加一片空白，看起来像"本地库里什么都没有"。
+ *
+ * 两种都读，因为 `/api/web/unified` 的本地那半边是否走标准检索路径
+ * 取决于引擎版本，写死任何一种都会在另一种上静默失败。
+ */
+interface LocalHitShape {
+  itemId?: string;
+  id?: string;
+  title?: string;
+  snippet?: string;
+  highlight?: string;
+  item?: { id?: string; title?: string; snippet?: string; locator?: string };
+}
+
+/** 命中片段带 `<em>` 高亮标记，这里只取文字 —— 不往 DOM 里塞 HTML */
+function plainText(s: string | undefined): string {
+  return (s ?? '').replace(/<\/?em>/g, '').trim();
+}
+
+function localTitleOf(h: LocalHitShape): string {
+  return (h.item?.title ?? h.title ?? '').trim();
+}
+
+function localSnippetOf(h: LocalHitShape): string {
+  return plainText(h.highlight) || plainText(h.item?.snippet) || plainText(h.snippet);
+}
+
 function UnifiedView({ data, onClose }: { data: UnifiedResponse; onClose: () => void }) {
-  const local = (data.local.results ?? []) as {
-    itemId?: string;
-    id?: string;
-    title?: string;
-    snippet?: string;
-  }[];
+  const local = (data.local.results ?? []) as LocalHitShape[];
   const web = data.web.results ?? [];
 
   return (
@@ -724,12 +771,33 @@ function UnifiedView({ data, onClose }: { data: UnifiedResponse; onClose: () => 
           {!data.local.error && !local.length && (
             <p className="panel__hint">库里没有相关内容。</p>
           )}
-          {local.map((h) => (
-            <div className="consensuscard" key={h.itemId ?? h.id ?? h.title}>
-              <span className="consensuscard__topic">{h.title || '(无标题)'}</span>
-              <p>{h.snippet}</p>
-            </div>
-          ))}
+          {local.map((h, i) => {
+            const title = localTitleOf(h);
+            const snippet = localSnippetOf(h);
+            const key = h.item?.id ?? h.itemId ?? h.id ?? `local-${i}`;
+            return (
+              <div className="consensuscard" key={key}>
+                <span className="consensuscard__topic">
+                  {title || (
+                    /* 🔴 两种形状都读不到时**说清楚是哪儿不对**，不写"(无标题)"。
+                       "(无标题)" 会被当成"这份资料本来就没名字"，
+                       于是没人会想到去查引擎返回的字段名对不对上。 */
+                    <span className="syn-diag">
+                      这条本地命中里既没有 item.title 也没有 title —— 引擎这次回的字段是：
+                      {Object.keys(h as Record<string, unknown>).join('、') || '（空对象）'}
+                    </span>
+                  )}
+                </span>
+                {snippet ? (
+                  <p>{snippet}</p>
+                ) : (
+                  <p className="syn-diag">
+                    没有摘要（highlight / item.snippet / snippet 三个字段都是空的）
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
 
         <div className="briefingpane">
@@ -872,43 +940,81 @@ function ResearchSplit({
   }
 
   return (
-    <>
-      {/* S5：每一轮问了什么、为什么问。
-          第二轮的查询词是我替用户决定去搜的，他有权知道为什么 ——
-          不说的话，结果里冒出一批他没搜过的东西只会让人困惑 */}
-      {data.rounds && data.rounds.length > 1 && (
-        <div className="rounds">
-          <span className="rounds__title">
-            这次挖了 {data.rounds.length} 轮 —— 第二轮开始的问题是读完前一轮之后自己想出来的
-          </span>
-          {data.rounds.map((r) => (
-            <div className="rounds__item" key={r.round}>
-              <strong>
-                第 {r.round} 轮
-                {r.newResults != null && `（新增 ${r.newResults} 条）`}
-              </strong>
-              {r.skipped && <span className="rounds__why">　{r.skipped}</span>}
-              {r.queries.map((q) => (
-                <span key={q.text}>
-                  <span className="rounds__q">{q.text}</span>
-                  <span className="rounds__why">{q.why}</span>
-                </span>
-              ))}
-            </div>
+    /**
+     * C4 长文三栏：左边大纲/步骤、中间正文、右边出处/证据。
+     *
+     * 网格由样式层提供（`.syn-work` / `.syn-work__rail` / `.syn-work__main`），
+     * 断点全自动，这里**一行 JS 都不写**。
+     *
+     * 🔴 **栏位没内容时整个 `<aside>` 不渲染**，不是渲染一个空的。
+     *    `:empty` 的判定极严格 —— 里面留一个换行文本节点，轨道就不会塌陷，
+     *    用户看到的是一根两百多像素宽的空白柱子。
+     *
+     * 🔴 DOM 顺序必须是 左 → 主 → 右：视觉顺序和读屏顺序都靠它。
+     */
+    <div className="syn-work">
+      {/* ── 左细栏：大纲 / 步骤 ───────────────────────
+          放"这次是怎么查出来的"。它是导航，不是内容 ——
+          所以它在细栏里，而且每一条都能点着跳到正文对应的块 */}
+      <aside className="syn-work__rail syn-work__rail--left" aria-label="大纲与步骤">
+        <div className="syn-work__railtitle">这一份里有什么</div>
+        <nav className="syn-outline">
+          {OUTLINE.map((o) => (
+            <button
+              key={o.anchor}
+              type="button"
+              className="syn-outline__item"
+              onClick={() => jumpTo(o.anchor)}
+              title={`跳到「${o.label}」`}
+            >
+              {o.label}
+            </button>
           ))}
-        </div>
-      )}
+        </nav>
+        {/* S5：每一轮问了什么、为什么问。
+            第二轮的查询词是我替用户决定去搜的，他有权知道为什么 ——
+            不说的话，结果里冒出一批他没搜过的东西只会让人困惑 */}
+        {data.rounds && data.rounds.length > 1 && (
+          <div className="rounds">
+            <span className="rounds__title">
+              这次挖了 {data.rounds.length} 轮 —— 第二轮开始的问题是读完前一轮之后自己想出来的
+            </span>
+            {data.rounds.map((r) => (
+              <div className="rounds__item" key={r.round}>
+                <strong>
+                  第 {r.round} 轮
+                  {r.newResults != null && `（新增 ${r.newResults} 条）`}
+                </strong>
+                {r.skipped && <span className="rounds__why">　{r.skipped}</span>}
+                {r.queries.map((q) => (
+                  <span key={q.text}>
+                    <span className="rounds__q">{q.text}</span>
+                    <span className="rounds__why">{q.why}</span>
+                  </span>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </aside>
 
+      {/* ── 中间：正文 ───────────────────────────── */}
+      <div className="syn-work__main">
       {/* V 组：主动核查。放在简报**上面** ——
           先知道"这批材料有没有人反驳过"，再读结论，顺序反了就白读 */}
-      <VerificationPanel v={data.verification} />
+      <div id="rail-verify">
+        <VerificationPanel v={data.verification} />
+      </div>
 
       {/* V2：一致性矩阵。分歧是一对一对给的，矩阵才看得出"谁总跟别人不一样" */}
-      <ConsistencyMatrix m={data.briefing.matrix} />
+      <div id="rail-matrix">
+        <ConsistencyMatrix m={data.briefing.matrix} />
+      </div>
 
       {/* D2/D5/D6：别照抄的地方。紧跟在核查后面 ——
           它回答的是同一个问题的另外三个侧面（数字对不对、时间对不对、
           这说法本身有没有争议），拆开放会让用户读完简报才想起来核对 */}
+      <div id="rail-numbers" />
       <NumberAudit
         briefing={data.briefing}
         results={data.results as unknown as unknown[]}
@@ -935,7 +1041,7 @@ function ResearchSplit({
         engines={data.engines.filter((e) => e.outcome === 'ok').map((e) => e.id)}
       />
 
-      <div className="briefingsplit">
+      <div className="briefingsplit" id="rail-briefing">
         <div className="briefingpane">
           <div className="briefingpane__head">
             <span className="briefingpane__title">摘录简报</span>
@@ -953,8 +1059,68 @@ function ResearchSplit({
           <GeneratedPanel query={query} briefing={data.briefing} />
         </div>
       </div>
-    </>
+      </div>
+
+      {/* ── 右细栏：出处 / 证据 ───────────────────────
+          🔴 出处必须**一直看得见**，不是折在正文底下的一段附录。
+             并排读的时候「这句话是谁说的」是随时会冒出来的问题，
+             每次都要滚到底再滚回来，人就不查了 —— 而不查的引用等于没有引用。
+          🔴 一条都没有时**整个 aside 不渲染**，不然右边会立一根空白柱子 */}
+      {data.results.length > 0 && (
+        <aside className="syn-work__rail syn-work__rail--right" aria-label="出处与证据">
+          <div className="syn-work__railtitle">
+            读了 {data.fetched} 篇 / 命中 {data.results.length} 条
+            {data.fetchFailed > 0 ? `（${data.fetchFailed} 篇没抓下来）` : ''}
+          </div>
+          <div className="syn-srclist">
+            {data.results.slice(0, 24).map((r, i) => (
+              <a
+                key={r.url}
+                className="syn-srclist__item"
+                href={r.url}
+                title={`${r.title || r.url}\n${r.site ?? ''}\n点：跳到正文里那句摘录　Ctrl+点：用浏览器打开`}
+                onClick={(e) => {
+                  e.preventDefault();
+                  // 先试着跳到正文里那条摘录；找不到才去开浏览器
+                  if (e.ctrlKey || e.metaKey || !highlightSource(r.url)) {
+                    void window.synorive.sys.openExternal(r.url);
+                  }
+                }}
+              >
+                <span className="syn-srclist__n">{i + 1}</span>
+                <span className="syn-srclist__name">{r.title || r.url}</span>
+                {r.site ? <span className="syn-srclist__site">{r.site}</span> : null}
+              </a>
+            ))}
+            {data.results.length > 24 && (
+              <span className="syn-srclist__more">还有 {data.results.length - 24} 条没列出</span>
+            )}
+          </div>
+        </aside>
+      )}
+    </div>
   );
+}
+
+/** 左栏大纲的固定条目。锚点 id 写在中间栏对应的块上 */
+const OUTLINE: { anchor: string; label: string }[] = [
+  { anchor: 'rail-verify', label: '有没有人反驳过' },
+  { anchor: 'rail-matrix', label: '谁跟谁对不上' },
+  { anchor: 'rail-numbers', label: '数字和时间' },
+  { anchor: 'rail-briefing', label: '简报正文' },
+];
+
+/**
+ * 跳到正文里的某一块。
+ *
+ * 🔴 找不到就**什么都不做而不是报错** —— 大纲是固定四条，而中间那几块
+ *    （核查、矩阵）是有数据才渲染的。点了一个空块不该弹错误，
+ *    但也不能假装跳过去了，所以这里返回 false 让调用方自己决定。
+ */
+function jumpTo(anchor: string): void {
+  const el = document.getElementById(anchor);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function ExtractBriefing({ briefing }: { briefing: Briefing }) {
@@ -1048,7 +1214,8 @@ function EvidenceLine({ ev, label, prefix }: { ev: Evidence; label?: string; pre
     <p className="evline" data-src={ev.url ? evAnchorId(ev.url) : undefined}>
       {label && <span className="evline__label">{label}：</span>}
       {prefix && <span className="evline__prefix">{prefix}　</span>}
-      「{ev.text}」
+      {/* C4：摘录里的 `$…$` 排成公式。**一个字都不增删**，排不出来就原样显示源码 */}
+      「<MathText text={ev.text} />」
       {ev.url && (
         <a
           className="evline__src"
@@ -1119,7 +1286,7 @@ function GeneratedPanel({ query, briefing }: { query: string; briefing: Briefing
 
   return (
     <div className="genpanel">
-      <p className="genpanel__text">{renderCitedText(data.text, data.citations)}</p>
+      <p className="genpanel__text">{renderCitedText(data.text, data.citations, briefing)}</p>
       {data.model && <p className="genpanel__model">模型：{data.model}</p>}
       <button className="btn btn--sm" onClick={() => void generate()}>
         重新生成
@@ -1128,55 +1295,80 @@ function GeneratedPanel({ query, briefing }: { query: string; briefing: Briefing
   );
 }
 
-/** 把模型返回的 `[n](url)` 换成真正的可点击链接；纯本地正则渲染，不引入 markdown 库。 */
+/**
+ * C4 引用悬浮预览的**原文片段**从哪来。
+ *
+ * 🔴 **不新造引擎接口。** 片段就在左栏那份摘录简报里（`briefing` 的共识/分歧/
+ *    数字三处都带 `text` 和 `url`），按 URL 对上就行。再去问引擎要一遍
+ *    等于为了一句已经在内存里的话多跑一次网络。
+ *
+ * 对不上时 `excerpt` 是 undefined —— 那是**正常情况**：生成版可能引用了一条
+ * 读了全文但没被摘进简报的来源。`MathText` 的浮层会照实说"这条出处没带原文片段"，
+ * 而不是浮一个空白框让人以为在加载。
+ */
+function excerptsByUrl(briefing: Briefing): Map<string, string> {
+  const m = new Map<string, string>();
+  const put = (url: string | undefined, text: string | undefined) => {
+    if (!url || !text) return;
+    if (!m.has(url)) m.set(url, text.length > 220 ? `${text.slice(0, 220)}…` : text);
+  };
+  for (const c of briefing.consensus) for (const ev of c.evidence) put(ev.url, ev.text);
+  for (const d of briefing.disputes) {
+    for (const c of d.conflicts) {
+      put(c.a.url, c.a.text);
+      put(c.b.url, c.b.text);
+    }
+  }
+  for (const n of briefing.numbers) put(n.url, n.sentence);
+  return m;
+}
+
+/**
+ * 把模型返回的 `[n](url)` 变成**可悬停、可点回左栏**的引用标记；
+ * 正文里的 `$…$` 同时交给 KaTeX 排版。纯本地处理，不引入 markdown 库。
+ *
+ * 🔴 先把 `[n](url)` 归一成 `[n]`，再整段交给 `MathText`。
+ *    不归一的话，`(https://…)` 会原样留在正文里 —— 那是 v1 就有的观感问题：
+ *    一句话里挂着一条几十个字符的裸链接，读不下去。
+ */
 function renderCitedText(
   text: string,
   citations: GeneratedBriefing['citations'],
+  briefing: Briefing,
 ): ReactNode {
   const byN = new Map(citations.map((c) => [c.n, c]));
-  const parts: ReactNode[] = [];
-  const re = /\[(\d+)\]\((https?:\/\/[^)]+)\)/g;
-  let last = 0;
+  // 模型给的链接优先（它就是这句话真正引的那条），citations 里的做兜底
+  const urlByN = new Map<number, string>();
+  const linkRe = /\[(\d+)\]\((https?:\/\/[^)]+)\)/g;
   let m: RegExpExecArray | null;
-  let key = 0;
-  while ((m = re.exec(text))) {
-    if (m.index > last) parts.push(text.slice(last, m.index));
-    const n = Number(m[1]);
-    // 🔴 必须在循环体内建一个新的 const 绑定——onClick 是异步触发的，
-    // 如果直接闭包捕获外层那个会被循环持续重新赋值的 `let m`，
-    // 用户点链接时 `m` 早就变成 null 或指向了最后一次匹配，点哪条链接都不对
-    // 正则里的两个捕获组都不是可选的（没有 `?`），匹配上就必然都有值 ——
-    // 这里的 `!` 是告诉类型检查器这件事，不是绕过刚才修的那个闭包 bug
-    const url = m[2]!;
+  while ((m = linkRe.exec(text))) urlByN.set(Number(m[1]), m[2]!);
+  for (const c of citations) if (!urlByN.has(c.n)) urlByN.set(c.n, c.url);
+
+  const normalized = text.replace(/\[(\d+)\]\((https?:\/\/[^)]+)\)/g, '[$1]');
+  const excerpts = excerptsByUrl(briefing);
+
+  const cites: CiteSource[] = [...urlByN.entries()].map(([n, url]) => {
     const c = byN.get(n);
-    parts.push(
-      <a
-        key={key++}
-        className="citelink"
-        href={url}
-        title={
-          c?.title
-            ? `${c.title}\n点：跳到左栏那句原文并高亮　Ctrl+点：用浏览器打开`
-            : '点：跳到左栏原文　Ctrl+点：用浏览器打开'
+    return {
+      n,
+      title: c?.title,
+      site: c?.site,
+      url,
+      excerpt: excerpts.get(url),
+      onOpen: (e: React.MouseEvent) => {
+        e.preventDefault();
+        // 🔴 P2：默认动作是**跳回左栏的原文**，不是打开浏览器。
+        // 打开浏览器就把"两栏并排随时能对照"这件事丢掉了 ——
+        // 而那正是当初选并排布局的全部理由。
+        // 想去原站的人按 Ctrl 就行，那是次要动作。
+        if (e.ctrlKey || e.metaKey || !highlightSource(url)) {
+          void window.synorive.sys.openExternal(url);
         }
-        onClick={(e) => {
-          e.preventDefault();
-          // 🔴 P2：默认动作是**跳回左栏的原文**，不是打开浏览器。
-          // 打开浏览器就把"两栏并排随时能对照"这件事丢掉了 ——
-          // 而那正是当初选并排布局的全部理由。
-          // 想去原站的人按 Ctrl 就行，那是次要动作。
-          if (e.ctrlKey || e.metaKey || !highlightSource(url)) {
-            void window.synorive.sys.openExternal(url);
-          }
-        }}
-      >
-        [{n}]
-      </a>,
-    );
-    last = re.lastIndex;
-  }
-  if (last < text.length) parts.push(text.slice(last));
-  return parts;
+      },
+    };
+  });
+
+  return <MathText text={normalized} cites={cites} />;
 }
 
 /**
@@ -1228,10 +1420,18 @@ function ScholarList({ papers }: { papers: ScholarPaper[] }) {
             }}
           >
             <div className="webcard__head">
-              <span className="webcard__title">{p.title}</span>
+              {/* C4：论文标题和摘要里的 `$…$` 排成公式 —— arXiv 那批标题里
+                  几乎条条带公式，不排的话满屏都是反斜杠和花括号 */}
+              <span className="webcard__title">
+                <MathText text={p.title} />
+              </span>
               <ArrowUpRight size={13} className="webcard__extlink" strokeWidth={1.8} />
             </div>
-            {p.snippet && <p className="webcard__snippet">{p.snippet}</p>}
+            {p.snippet && (
+              <p className="webcard__snippet">
+                <MathText text={p.snippet} />
+              </p>
+            )}
             <div className="webcard__meta">
               {m.year && <span className="webcard__site">{m.year}</span>}
               {m.venue && <span className="webcard__site">{m.venue}</span>}

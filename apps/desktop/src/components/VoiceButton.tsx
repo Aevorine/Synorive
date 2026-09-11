@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Loader2, Mic, Square } from 'lucide-react';
 import { api } from '../lib/api';
+import { useApp } from '../lib/store';
 import { decodeToMono16k, encodeWav, isSilent } from '../lib/wav';
 
 /**
@@ -34,7 +35,19 @@ export function VoiceButton({ onText }: { onText: (text: string) => void }) {
   const recorder = useRef<MediaRecorder | null>(null);
   const timer = useRef<number | null>(null);
 
+  /**
+   * 🔴 **必须等引擎起来再问，而且引擎起来之后要重新问一遍。**
+   *
+   * 主舞台默认就是展开的（`store.ts` 里 `stageExpanded: true`），所以这个组件
+   * **在首帧就挂载**。而那一刻 `setEnginePort()` 还没跑到（App.tsx 里它排在
+   * 一串 await 后面），`api.voice.status()` 会直接抛 EngineUnavailable，
+   * 落进 catch 变成 `ready = false`；原来的依赖数组是 `[]`，引擎后来起来了也
+   * 不会再问第二遍。表现是：**本机明明装了语音模型，按钮一直灰着，
+   * 悬停还写着「本地语音模型还没装」** —— 不报错，纯粹是句假话。
+   */
+  const engineReady = useApp((s) => s.engine?.lifecycle === 'ready');
   useEffect(() => {
+    if (!engineReady) return;
     let alive = true;
     api.voice
       .status()
@@ -46,11 +59,19 @@ export function VoiceButton({ onText }: { onText: (text: string) => void }) {
       .catch(() => alive && setReady(false));
     return () => {
       alive = false;
-      // 组件被卸载时必须把麦克风放掉，否则系统托盘上的录音指示会一直亮着
+    };
+  }, [engineReady]);
+
+  // 卸载时必须把麦克风放掉，否则系统托盘上的录音指示会一直亮着。
+  // 🔴 单独一个 effect、依赖固定为 []：它必须跟引擎状态无关，
+  //    跟上面那个合在一起的话，引擎状态一变就会把用户正在录的音掐掉
+  useEffect(
+    () => () => {
       recorder.current?.stream.getTracks().forEach((t) => t.stop());
       if (timer.current) window.clearInterval(timer.current);
-    };
-  }, []);
+    },
+    [],
+  );
 
   const stop = () => {
     recorder.current?.state === 'recording' && recorder.current.stop();

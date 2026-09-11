@@ -25,6 +25,7 @@
     "@synorive/design-tokens": "*",
     "@synorive/shared-types": "*",
     "electron-updater": "^6.8.9",
+    "katex": "^0.18.4",
     "qrcode": "1.5.4",
     "zod": "^3.24.1"
   },

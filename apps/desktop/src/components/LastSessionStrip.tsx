@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { History, RotateCw } from 'lucide-react';
 import { api } from '../lib/api';
 import { agoText, loadLastSession, shortLocator, type LastSession } from '../lib/lastSession';
+import { rememberOpen } from '../lib/recentFiles';
 import { useSearch } from '../lib/useSearch';
 import { useApp } from '../lib/store';
 
@@ -71,6 +72,8 @@ export function LastSessionStrip() {
               onClick={() => {
                 // 记一次打开，和正常结果列表一致
                 void api.recordOpen(h.item.id);
+                rememberOpen(h.item); // C2 命令面板的「最近打开」
+
                 if (h.item.source === 'link') {
                   void window.synorive.sys.openExternal(h.item.locator);
                 } else {

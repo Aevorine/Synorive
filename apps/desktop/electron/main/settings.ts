@@ -101,6 +101,9 @@ export function defaultSettings(): AppSettings {
     // 默认开：投喂目录时自动跳过 .env/私钥/credentials.json 这类文件，
     // 不让它们悄悄进搜索库。关掉这道闸是有意的例外操作，不该是默认状态
     sensitiveGuardEnabled: true,
+    // B6：批量摄取/分析线程默认调成后台优先级，系统繁忙时让路给前台搜索。
+    // 关掉是有意的例外操作（怀疑优先级调整导致某些机器上摄取变慢时用）
+    backgroundIndexingLowPriority: true,
     // A16 安卓配对：默认关，开了才会让引擎监听局域网
     lanPairingEnabled: false,
     // 令牌一开机就生成好（哪怕配对功能没开），开配对时不用现等一次生成

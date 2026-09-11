@@ -36,8 +36,31 @@ body {
   line-height: var(--syn-d-line-height, 1.6);
 }
 
+/**
+ * 🔴 **`.page` 自己不加 padding。**
+ *
+ * 左右留白在这套样式里是**子元素**各自负责的，全都读 `--syn-layout-content-pad`：
+ *   .page__meta / .page__body（shell.css）、.filterbar（pages.css）、
+ *   .page__body--flush .results（pages.css）、.searchlayout（search.css）、
+ *   研究页那一串面板（research.css）。
+ * 在 `.page` 上再写一层 padding，等于**两层留白叠加** —— 标准密度下左右各
+ * 24 + 24 = 48px，正文上方还多出 24px。这正是「内容左右、上下都是空白、
+ * 填不满」的直接来源。而且窄屏那条 `@media (max-width:760px)` 只把
+ * `--syn-layout-content-pad` 压到 12px，压不到这一层，所以窄屏也照样多 24px。
+ *
+ * 密度还是要生效，所以把密度接到那个变量上，而不是再加一层 padding。
+ */
 .page {
-  padding: var(--syn-d-content-pad, 24px);
+  --syn-layout-content-pad: var(--syn-d-content-pad, 24px);
+}
+
+/* 窄屏留白减半。上面那行把变量重定义在 `.page` 这一层了，
+   shell.css 里写在 `:root` 上的同名媒体查询覆盖不到它的子树，
+   所以必须在同一层再写一遍，否则窄屏会退回 24px。 */
+@media (max-width: 760px) {
+  .page {
+    --syn-layout-content-pad: 12px;
+  }
 }
 
 .page__header {
@@ -158,14 +181,173 @@ select {
   min-width: 0;
 }
 
-/* 自适应网格：卡片列表统一走它，不再每处各写一遍 minmax */
+/* 自适应网格：卡片列表统一走它，不再每处各写一遍 minmax。
+   gap 走 --syn-d-card-gap（C7）而不是 --syn-d-space-lg ——
+   二维网格的缝同时是横向的，跟一维列表行距共用一个值时，
+   紧凑档下卡片会挤成一面砖墙，宽松档下又会散成一盘沙。 */
 .syn-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: var(--syn-d-space-lg, 16px);
+  gap: var(--syn-d-card-gap, 16px);
 }
 .syn-grid--wide {
   grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+}
+
+/**
+ * ── C1 三栏工作台 ────────────────────────────────────────────
+ *
+ * 用户原话：「页面显示的内容左右，上下都为空白，要求内容填满」。
+ *
+ * 🔴 **不能简单地把 max-width 删掉。** 删掉之后 1920px 的窗口上一行会有
+ *    100 多个汉字，眼睛从行尾扫回行首时**找不到下一行的开头**（回行串行），
+ *    读三段就头晕 —— 而用户同时还要求「长期注视眼睛不疲劳」。
+ *    这两条不矛盾，矛盾的是"只有一列正文"这个前提。
+ *
+ * 做法：正文列保持可读行长，**把空出来的两侧变成有用的栏**：
+ *    左细栏 = 大纲 / 步骤 / 历史（导航类，短标题，216px 够）
+ *    中间   = 正文列（行长受 --syn-layout-prose-measure 约束）
+ *    右细栏 = 出处 / 证据 / 相关（内容类，引文要能读，300px）
+ *
+ * 断点（⚠️ 与 tokens.ts 的 layout.railBreakpoint 是同一组数字，
+ *       @media 吃不了 CSS 变量，只能两边各写一遍，改一处必须改另一处）：
+ *    ≥1600px 三栏 · ≥1200px 两栏（先收右栏）· 以下单栏
+ *  先收右栏不是随手定的：右栏是"读到某句想查出处"时才看的，
+ *  左栏是"我现在在整篇的哪个位置"，后者在窄屏上更救命。
+ *
+ * 栏位塌陷：用 `:has(> …:not(:empty))` 判断，而不是只给栏位写 :empty{display:none}。
+ * 🔴 只写 display:none **不够** —— grid 的**轨道是 grid-template-columns 定义的**，
+ *    元素消失了轨道还在，结果是"栏位不见了但它占的 216px 和那道 gap 还在"，
+ *    表现正是用户抱怨的那种空白，而且更难查（DOM 里那个元素明明是 none）。
+ *    所以轨道本身也要跟着条件走。
+ */
+.syn-work {
+  display: grid;
+  /* 单栏兜底：任何断点/任何栏位组合没命中时都是这个，永远不会塌成 0 */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--syn-d-space-xl, 24px);
+  align-items: start;
+  width: 100%;
+  min-width: 0;
+}
+
+/* 主列。min-width:0 必须写 —— grid 子项默认 min-width:auto，
+   里面有一条长路径或长 URL 就会把整列撑破，把右栏挤出屏幕 */
+.syn-work__main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-space-lg, 16px);
+}
+
+.syn-work__rail {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--syn-d-space-md, 12px);
+  /* 细栏跟着主列一起滚会让"我在哪一节"这个信息滚出视野，
+     所以它自己粘住，并且不超过一屏（超了自己滚） */
+  position: sticky;
+  top: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-size: var(--syn-fs-caption);
+  color: var(--syn-color-text-secondary);
+}
+
+/* 组件层没内容时渲染成空元素也要塌掉，不留白 */
+.syn-work__rail:empty {
+  display: none;
+}
+
+/**
+ * 单栏 / 两栏时右栏的内容不该凭空消失 —— 它掉到正文下面继续显示。
+ * 直接 display:none 会让"出处"在窄窗口上彻底不可达。
+ *
+ * 🔴 **写 `not all and (min-width: …)` 而不是 `max-width: …-1px`。** 实测栽过：
+ *    Windows 显示缩放 125% / 150% 下视口宽度是**小数**（实测 1599.2px）。
+ *    配成 `max-width:1599px` + `min-width:1600px` 时，1599.2 两条都不命中 ——
+ *    出现一条"三栏没出来、降级也没生效"的死区，右栏被自动放置塞进
+ *    下一行第一列，压成 216px 宽的窄柱子。
+ *    `not all and (min-width:1600px)` 与 `min-width:1600px` 是**严格互补**的，
+ *    小数宽度也必然落在其中一边，没有缝。
+ */
+@media not all and (min-width: 1600px) {
+  .syn-work__rail--right {
+    /* 🔴 grid-column 这条不能省（实测栽过）。
+       降级到正文下面时它是 grid 的第三个子项，自动放置会把它塞进
+       **下一行的第一列** —— 1599px 实测 x=0 / 宽 216px，正好是左细栏那一格，
+       出处面板被压成一条 216px 的窄柱子。不报错，只是难看且读不了。
+       1 / -1 = 从第一条网格线拉到最后一条，横跨全部列。 */
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--syn-color-border);
+    padding-top: var(--syn-d-space-md, 12px);
+    position: static;
+    max-height: none;
+  }
+}
+
+/* 同上：与 `min-width: 1200px` 严格互补，不留小数缝 */
+@media not all and (min-width: 1200px) {
+  .syn-work__rail--left {
+    grid-column: 1 / -1;
+    border-bottom: 1px solid var(--syn-color-border);
+    padding-bottom: var(--syn-d-space-md, 12px);
+    position: static;
+    max-height: none;
+  }
+}
+
+/* ≥1200px：出左栏（两栏） */
+@media (min-width: 1200px) {
+  .syn-work:has(> .syn-work__rail--left:not(:empty)) {
+    grid-template-columns: var(--syn-layout-rail-left, 216px) minmax(0, 1fr);
+  }
+}
+
+/* ≥1600px：再出右栏（三栏）。
+   下面两条的先后顺序是有意的：只有右栏时用第一条，两条都有时第二条
+   （两个 :has 串起来特异性更高）覆盖它。写反了会变成"有左栏时右栏不出现"。 */
+@media (min-width: 1600px) {
+  .syn-work:has(> .syn-work__rail--right:not(:empty)) {
+    grid-template-columns: minmax(0, 1fr) var(--syn-layout-rail-right, 300px);
+  }
+
+  .syn-work:has(> .syn-work__rail--left:not(:empty)):has(
+      > .syn-work__rail--right:not(:empty)
+    ) {
+    grid-template-columns:
+      var(--syn-layout-rail-left, 216px)
+      minmax(0, 1fr)
+      var(--syn-layout-rail-right, 300px);
+  }
+}
+
+/* 细栏里的小标题：比正文低一级，别跟正文抢注意力 */
+.syn-work__railtitle {
+  font-size: var(--syn-fs-caption);
+  font-weight: var(--syn-fw-semibold);
+  letter-spacing: var(--syn-ls-wide);
+  color: var(--syn-color-text-muted);
+}
+
+/**
+ * 散文列：行长受约束，但**不写 `margin:0 auto` 把它孤零零丢在中间**。
+ * 放进 .syn-work__main 里时由栏位决定它的位置；
+ * 单独用（还没有细栏的页面）时下面 .asklayout 那条再补 margin-inline:auto。
+ */
+.syn-prose {
+  width: 100%;
+  max-width: var(--syn-layout-prose-measure, 96ch);
+  /* 中文断行不该断出孤字 */
+  text-wrap: pretty;
+}
+
+/* 非散文视图（列表、卡片墙、时间轴）：铺满，只在 4K 超宽屏上兜一个上限 */
+.syn-fluid {
+  width: 100%;
+  max-width: var(--syn-layout-wide-max, 1440px);
 }
 
 /**
@@ -357,30 +539,46 @@ select {
   padding: 0 var(--syn-d-content-pad, 24px) var(--syn-d-content-pad, 24px);
 }
 
+/* 舞台下方的那一片（最近搜过、剪贴板托盘、上次那一屏）。
+   它是**列表**不是散文，所以不吃行长约束 —— 原来跟着输入框一起卡在 960px，
+   1920px 的窗口上两边各空 480px，正是「内容左右都是空白」里最大的一块。
+   输入框本身保持 960（那是"写"的区域，太宽会让人不知道从哪开始打字）。 */
 .page--stage__under {
   display: flex;
   flex-direction: column;
   gap: var(--syn-d-space-lg, 16px);
   width: 100%;
-  max-width: var(--syn-stage-max-width, 960px);
+  max-width: var(--syn-layout-wide-max, 1440px);
   margin: 0 auto;
 }
 
-/* 问答态：单列，最大宽度卡在 820px。
+/* 问答态：散文列。
    ⚠️ 比舞台窄是刻意的 —— 舞台是"写"，一行长一点无所谓；
-      答案是"读"，一行超过 40 个汉字眼睛回行就会找错行。 */
+      答案是"读"，一行超过 40 个汉字眼睛回行就会找错行。
+   原来写死 820px。改成 --syn-layout-prose-measure（96ch）：
+     · 96ch 在小四语境下 = 768px，里面四号的 .ans__text 折算 ≈41 个汉字/行，
+       正好压在上面那条 40 字线上（820px 折算是 44 字，其实已经越线了）
+     · ch 跟着字号走，用户把系统缩放调到 125% 时**每行的字数不变**，
+       写死 px 的话字变大了行还是那么宽，排版会莫名其妙变松
+   margin-inline:auto 只在它**没被放进 .syn-work 栏位里**时才生效：
+   一旦组件层给它配上左右细栏，位置就交给栏位，不再自己居中。 */
 .asklayout {
   display: flex;
   flex-direction: column;
   gap: var(--syn-d-space-lg, 16px);
   width: 100%;
-  max-width: 820px;
-  margin: 0 auto;
+  max-width: var(--syn-layout-prose-measure, 96ch);
+  margin-inline: auto;
   min-height: 0;
   flex: 1;
   overflow-y: auto;
   contain: layout paint;
+  text-wrap: pretty;
 }
+
+/* 放进工作台栏位后仍然在**主列内部**居中（不是靠左贴着细栏）：
+   两侧的空当此时已经被细栏占掉了，正文再贴边反而会跟细栏黏在一起，
+   中间留一点等宽的呼吸位读起来最稳。 */
 
 .asklayout__hits {
   display: flex;

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Globe, Images, Loader2 } from 'lucide-react';
 import { labApi, type ImageLanes as Lanes, type ReverseMulti } from '../lib/labApi';
 
@@ -29,23 +29,43 @@ export function ImageLanes() {
   const [multi, setMulti] = useState<ReverseMulti | null>(null);
   const [multiBusy, setMultiBusy] = useState(false);
 
-  const pick = async () => {
-    const files = await window.synorive.sys.pickFiles();
-    const first = files[0];
-    if (!first) return;
+  const run = useCallback(async (path: string) => {
     setBusy(true);
     setErr(null);
     setData(null);
     setMulti(null);
-    setPicked(first);
+    setPicked(path);
     try {
-      setData(await labApi.imageLanes(first));
+      setData(await labApi.imageLanes(path));
     } catch (e) {
       setErr((e as Error).message);
     } finally {
       setBusy(false);
     }
+  }, []);
+
+  const pick = async () => {
+    const files = await window.synorive.sys.pickFiles();
+    const first = files[0];
+    if (!first) return;
+    await run(first);
   };
+
+  /**
+   * C8：从窗口任意位置拖一张图进来时，`DropEverything` 把路径派到这里。
+   *
+   * 🔴 走事件而不是让拖拽层自己调 `labApi.imageLanes` —— 四路各自的失败
+   *    在这个组件里已经处理好了（哪一路挂了只显示哪一路的错），
+   *    在拖拽层再写一份判失败的逻辑，两份迟早会分叉。
+   */
+  useEffect(() => {
+    const onDropped = (e: Event) => {
+      const path = (e as CustomEvent<{ path?: string }>).detail?.path;
+      if (path) void run(path);
+    };
+    window.addEventListener('syn:image-lanes', onDropped);
+    return () => window.removeEventListener('syn:image-lanes', onDropped);
+  }, [run]);
 
   const runMulti = async () => {
     if (!picked) return;

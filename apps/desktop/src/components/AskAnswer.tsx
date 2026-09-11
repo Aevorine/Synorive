@@ -3,6 +3,7 @@ import { FileText, Lightbulb, Quote, TriangleAlert } from 'lucide-react';
 import type { AskAnswer as AskAnswerData, AskPassage } from '@synorive/shared-types';
 import { api } from '../lib/api';
 import { highlightSegments } from '../lib/heavy.worker';
+import { MathText } from './MathText';
 
 /**
  * A3 答案区 —— 一段一段的逐字摘录 + 出处
@@ -27,17 +28,23 @@ import { highlightSegments } from '../lib/heavy.worker';
  * 这一段没走 Worker：摘录单段 ≤160 字、一次最多 6 段，
  * 过一趟 postMessage 的往返开销比直接算还大。Worker 留给
  * 真正长的文本（`heavy.ts` 的 `highlight()`）。
+ *
+ * C4：非高亮的那些片段过一遍 `MathText`，把 `$…$` 排成公式。
+ * ⚠️ 这**不违反**文件头那条"每个字都在原文里逐字存在" —— 它改的是
+ *    同一串字符的**呈现方式**，不增删一个字；而且排版失败时原样显示源码。
+ *    高亮片段刻意不过 MathText：`<mark>` 里再套公式会让两层强调打架，
+ *    而命中词本身几乎不可能是一整条公式。
  */
 function highlight(text: string, matched: string[]): ReactNode {
   const segs = highlightSegments(text, matched);
-  if (segs.length <= 1) return text;
+  if (segs.length <= 1) return <MathText text={text} />;
   return segs.map((s, i) =>
     s.hit ? (
       <mark key={i} className="syn-hl">
         {s.text}
       </mark>
     ) : (
-      s.text
+      <MathText key={i} text={s.text} />
     ),
   );
 }
@@ -118,7 +125,10 @@ export function AskAnswer({
           const n = sourceIndex.get(p.itemId) ?? 0;
           const loc = locationLabel(p);
           return (
-            <article key={`${p.itemId}-${i}`} className="ans__p">
+            /* C4：`id` 是左细栏那份大纲的落点。用下标而不是 itemId ——
+               同一份资料可能被摘出两段，itemId 会重复，重复 id 的
+               `getElementById` 永远只找得到第一个，点第二条会跳错地方 */
+            <article key={`${p.itemId}-${i}`} id={`ans-p-${i}`} className="ans__p">
               <p className="ans__text syn-selectable">{highlight(p.text, p.matched)}</p>
               <button
                 className="ans__cite"

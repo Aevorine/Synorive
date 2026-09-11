@@ -133,6 +133,7 @@ export function FederationPanel() {
                 disabled={busy}
                 onClick={() => wrap(() => api.federation.remove(l.id))}
                 title="从列表里移除（不会删掉那个库文件）"
+                aria-label={`把「${l.label || l.id}」从联邦列表里移除`}
               >
                 <Trash2 size={13} strokeWidth={1.8} />
               </button>

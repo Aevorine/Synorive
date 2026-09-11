@@ -6,6 +6,7 @@ import {
   type RelationEntity,
   type RelationTimeline as TL,
 } from '../lib/api';
+import { useApp } from '../lib/store';
 
 /**
  * 人物关系时间线（提案 35）
@@ -37,15 +38,29 @@ export function RelationTimeline() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // 打开就先给一批最常出现的，别让用户对着空框想"我该输什么"
+  /**
+   * 打开就先给一批最常出现的，别让用户对着空框想"我该输什么"。
+   *
+   * 🔴 **必须等引擎 ready，而且 ready 之后要重新问一遍。**
+   *    `lib/api.ts` 的 `call()` 在端口还没设进来时直接抛 EngineUnavailable，
+   *    而端口是 `App.tsx` 里一串 await 跑完才 `setEnginePort()` 的 ——
+   *    挂载那一帧必然抛。原来依赖数组是 `[]`，抛完就再也不重试：
+   *    候选人名单永远是空的，一个字的提示都没有，看起来像"这库里没有人物"。
+   */
+  const engineReady = useApp((s) => s.engine?.lifecycle === 'ready');
   useEffect(() => {
+    if (!engineReady) return;
+    let alive = true;
     api.relations
       .entities('', '', 20)
-      .then(setCands)
+      .then((r) => alive && setCands(r))
       .catch(() => {
-        /* 引擎没起来 */
+        /* 引擎起来了还失败，那是真失败；下面的搜索框会把错误显示出来 */
       });
-  }, []);
+    return () => {
+      alive = false;
+    };
+  }, [engineReady]);
 
   const find = useCallback(async () => {
     setErr(null);
@@ -83,7 +98,7 @@ export function RelationTimeline() {
           onKeyDown={(e) => e.key === 'Enter' && void find()}
           placeholder="输名字找人、机构、地点…"
         />
-        <button className="btn btn--sm" onClick={() => void find()} title="按名字查">
+        <button className="btn btn--sm" onClick={() => void find()} title="按名字查" aria-label="按名字查">
           <Search size={13} strokeWidth={1.8} />
         </button>
         {BUCKETS.map((b) => (

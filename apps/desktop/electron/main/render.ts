@@ -85,6 +85,31 @@ let heartbeat: ReturnType<typeof setInterval> | null = null;
 /** 截图共用一个窗口且要 setSize，必须串起来跑。渲染不再走这条队列 */
 let captureQueue: Promise<unknown> = Promise.resolve();
 
+/**
+ * 🔴 **这两类窗口里跑的是任意公网页面，而且 JS 是开着的**（不开就抓不到
+ * 需要渲染的搜索结果，这是这个模块存在的理由）。所以每建一个都要当场上锁：
+ *
+ * ① `setWindowOpenHandler` 一律 deny —— 页面一句 `window.open()` 就能弹出
+ *    一个"从 Synorive 里冒出来的"窗口，用户没有任何办法分辨它不是应用自己的
+ *    界面。`index.ts` 里有全局兜底，这里再显式写一遍：兜底是给以后新加的窗口
+ *    准备的，已知在加载不可信内容的窗口不该依赖兜底。
+ * ② `will-navigate` 只放行 http/https。页面自己发起的跳转到
+ *    `file:///C:/Users/...` 会把本机文件读进这个开着 JS 的上下文里，
+ *    然后 `executeJavaScript('document.documentElement.outerHTML')`
+ *    会把它原样回给引擎 —— 一条完整的本地文件外泄链路。
+ *    http/https 之间的跳转是正常的（搜索引擎的同意页、地区重定向），拦了会真的坏事。
+ */
+function lockdownRemoteWindow(win: BrowserWindow): void {
+  const wc = win.webContents;
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  wc.on('will-navigate', (e, url) => {
+    if (!/^https?:\/\//i.test(url)) {
+      console.warn(`[render] 拦下页面自己发起的跳转：${url}`);
+      e.preventDefault();
+    }
+  });
+}
+
 function getLaneWindow(lane: RenderLane): BrowserWindow {
   if (lane.win && !lane.win.isDestroyed()) return lane.win;
   lane.win = new BrowserWindow({
@@ -96,6 +121,7 @@ function getLaneWindow(lane: RenderLane): BrowserWindow {
       partition: lane.partition, // 和截图窗口、和别的通道都分开，cookie 互不串
     },
   });
+  lockdownRemoteWindow(lane.win);
   return lane.win;
 }
 
@@ -124,6 +150,7 @@ function getCaptureWindow(): BrowserWindow {
       partition: 'render-capture',
     },
   });
+  lockdownRemoteWindow(captureWindow);
   return captureWindow;
 }
 

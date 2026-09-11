@@ -6,6 +6,7 @@ import { ComposeBar } from '../components/ComposeBar';
 import { SearchHistory } from '../components/SearchHistory';
 import { SideBySide } from '../components/SideBySide';
 import { ClipboardTray } from '../components/ClipboardTray';
+import { EvidencePanel } from '../components/EvidencePanel';
 import { LastSessionStrip } from '../components/LastSessionStrip';
 import { QuestionsPanel } from '../components/QuestionsPanel';
 import { SceneStrip } from '../components/SceneStrip';
@@ -19,6 +20,23 @@ import { useAsk } from '../lib/useAsk';
 import { useSearch } from '../lib/useSearch';
 import { useSelection } from '../lib/useSelection';
 import { useApp } from '../lib/store';
+
+/**
+ * 滚到正文里的某个锚点。
+ *
+ * 🔴 找不到就**什么都不做**，不报错也不假装跳过去了 ——
+ *    大纲和正文是两次独立渲染，中间隔着一次异步（答案可能刚被换掉），
+ *    找不到是正常时序，不是故障。
+ */
+function jumpToAnchor(id: string): void {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.remove('syn-flash');
+  void el.offsetWidth;
+  el.classList.add('syn-flash');
+  window.setTimeout(() => el.classList.remove('syn-flash'), 1400);
+}
 
 const STAGE_LABEL: Record<string, string> = {
   instant: '最近打开',
@@ -122,36 +140,89 @@ export function SearchPage() {
           )}
         </div>
 
-        <div className="asklayout">
-          {askError && <div className="banner banner--error">出错了：{askError}</div>}
+        {/* C4 长文三栏。宽屏上原来是一条 768px 的正文居中，两边全是空白 ——
+            那正是用户抱怨的东西。左边放这段答案的骨架（点一下跳到那一段），
+            右边放出处和「核对来源」，中间才是正文。
+            🔴 栏位没内容时**整个 aside 不渲染**：里面留一个空白文本节点，
+               轨道就不会塌陷，用户会看到一根空白柱子。
+            🔴 DOM 顺序必须是 左 → 主 → 右，视觉顺序和读屏顺序都靠它。 */}
+        <div className="syn-work">
+          {!!answer && answer.passages.length > 1 && (
+            <aside className="syn-work__rail syn-work__rail--left" aria-label="这段答案的骨架">
+              <div className="syn-work__railtitle">摘了这 {answer.passages.length} 段</div>
+              <nav className="syn-outline">
+                {answer.passages.map((p, i) => (
+                  <button
+                    key={`${p.itemId}-${i}`}
+                    type="button"
+                    className="syn-outline__item"
+                    onClick={() => jumpToAnchor(`ans-p-${i}`)}
+                    title={`跳到第 ${i + 1} 段（${p.title || p.locator}）`}
+                  >
+                    <span className="syn-outline__n">{i + 1}</span>
+                    {p.title || p.locator}
+                  </button>
+                ))}
+              </nav>
+            </aside>
+          )}
 
-          {askLoading && !answer && (
-            <div className="ans" aria-label="正在读取">
-              <div className="syn-skel syn-skel--line syn-skel--title" />
-              <div className="syn-skel syn-skel--line" />
-              <div className="syn-skel syn-skel--line syn-skel--short" />
+          <div className="syn-work__main">
+            <div className="asklayout syn-prose">
+              {askError && <div className="banner banner--error">出错了：{askError}</div>}
+
+              {askLoading && !answer && (
+                <div className="ans" aria-label="正在读取">
+                  <div className="syn-skel syn-skel--line syn-skel--title" />
+                  <div className="syn-skel syn-skel--line" />
+                  <div className="syn-skel syn-skel--line syn-skel--short" />
+                </div>
+              )}
+
+              {answer && (
+                <AskAnswer
+                  data={answer}
+                  elapsedMs={askMs}
+                  onOpenItem={(id, title) => setAsking({ id, title })}
+                />
+              )}
+
+              {/* 答案下面摊开引擎读过的那几条 —— 用户想自己核对时不用再搜一次。
+                  这也是"只摘录不生成"这条约束能立住的前提：证据必须够得着 */}
+              {askHits.length > 0 && (
+                <section className="asklayout__hits">
+                  <div className="syn-subhead">这几条是我读过的</div>
+                  <SearchResults
+                    hits={askHits}
+                    onAsk={(id, t) => setAsking({ id, title: t })}
+                    onScenes={(id, loc, t, sec) => setScening({ id, locator: loc, title: t, sec })}
+                  />
+                </section>
+              )}
             </div>
-          )}
+          </div>
 
-          {answer && (
-            <AskAnswer
-              data={answer}
-              elapsedMs={askMs}
-              onOpenItem={(id, title) => setAsking({ id, title })}
-            />
-          )}
-
-          {/* 答案下面摊开引擎读过的那几条 —— 用户想自己核对时不用再搜一次。
-              这也是"只摘录不生成"这条约束能立住的前提：证据必须够得着 */}
-          {askHits.length > 0 && (
-            <section className="asklayout__hits">
-              <div className="syn-subhead">这几条是我读过的</div>
-              <SearchResults
-                hits={askHits}
-                onAsk={(id, t) => setAsking({ id, title: t })}
-                onScenes={(id, loc, t, sec) => setScening({ id, locator: loc, title: t, sec })}
-              />
-            </section>
+          {!!answer && answer.sources.length > 0 && (
+            <aside className="syn-work__rail syn-work__rail--right" aria-label="出处与证据">
+              <div className="syn-work__railtitle">读了这 {answer.sources.length} 份</div>
+              <div className="syn-srclist">
+                {answer.sources.map((s, i) => (
+                  <button
+                    key={s.itemId}
+                    type="button"
+                    className="syn-srclist__item"
+                    onClick={() => setAsking({ id: s.itemId, title: s.title })}
+                    title={s.locator}
+                  >
+                    <span className="syn-srclist__n">{i + 1}</span>
+                    <span className="syn-srclist__name">{s.title || s.locator}</span>
+                  </button>
+                ))}
+              </div>
+              {/* 出处旁边就是「核对来源」—— 它要回答的是同一个问题的下一半：
+                  这几份文件从入库到现在有没有被改过。摆在别处用户不会想起来点 */}
+              <EvidencePanel itemIds={answer.sources.map((s) => s.itemId)} />
+            </aside>
           )}
         </div>
 

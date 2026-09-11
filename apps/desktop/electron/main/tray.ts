@@ -35,6 +35,12 @@ function trayIconPath(): string {
 
 export interface TrayCallbacks {
   onShow: () => void;
+  /**
+   * 左键单击托盘图标 = 显示 / 收起来回切。
+   * 🔴 和 `onShow` 分开是有意的：菜单里的「打开主窗口」永远只能是"打开"，
+   *    点了却把窗口收掉，那条菜单项就是在骗人。
+   */
+  onToggle: () => void;
   onSearch: () => void;
   onQuit: () => void;
   onRestartEngine: () => void;
@@ -51,8 +57,21 @@ export class TrayController {
    * 只在侧栏挂角标的话，这些时候自动检查到的更新一个人也看不到。
    */
   private updateState: UpdateState | null = null;
+  /**
+   * 菜单里「快速搜索…」右边显示的键。
+   * 🔴 **必须是真正抢到的那个键，不能写死。** 默认注册的是 Alt+Space，
+   *    抢不到才退到 Ctrl+Alt+Space —— 菜单里印一个用户按了没反应的键，
+   *    比什么都不印更糟。抢不到任何键时就一个也不印。
+   */
+  private searchAccelerator: string | null = null;
 
   constructor(private readonly cb: TrayCallbacks) {}
+
+  /** 由 applyHotkeys() 把**真实**注册结果推进来 */
+  setSearchAccelerator(a: string | null): void {
+    this.searchAccelerator = a;
+    this.rebuild();
+  }
 
   create(clipboardEnabled: boolean): void {
     this.clipboardEnabled = clipboardEnabled;
@@ -70,7 +89,10 @@ export class TrayController {
     this.tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
     this.tray.setToolTip('Synorive');
 
-    this.tray.on('click', () => this.cb.onShow());
+    // 单击 = 来回切（显示 ↔ 收起）；双击 = 一定显示。
+    // Windows 上双击会先发两次 click，两次切换正好抵消，末尾这条
+    // 'double-click' 兜底把窗口留在"显示"上，否则双击的结果是窗口一闪就没了。
+    this.tray.on('click', () => this.cb.onToggle());
     this.tray.on('double-click', () => this.cb.onShow());
 
     this.rebuild();
@@ -97,7 +119,19 @@ export class TrayController {
    */
   private updateLine(): string | null {
     const u = this.updateState;
-    if (!u || !u.latestVersion) return null;
+    if (!u) return null;
+    /**
+     * 🔴 **失败也要显示，而且要排在"跳过的版本"判断前面。**
+     *
+     * 托盘常驻是默认行为，多数时候主窗口是关着的 —— 那正是自动检查
+     * （启动后 20 秒那一次）跑的时候。原来 error 这一支直接 return null，
+     * 于是"检查更新失败"在托盘上**没有任何痕迹**：用户以为自己一直是最新版，
+     * 实际上更新链路已经断了几个月。
+     * 失败时 `latestVersion` 通常是 null，所以这一支必须在下面那个
+     * `!u.latestVersion` 早退之前。
+     */
+    if (u.lifecycle === 'error') return '检查更新失败，点开看原因';
+    if (!u.latestVersion) return null;
     if (u.latestVersion === u.skippedVersion) return null;
     if (u.lifecycle === 'available') return `有新版本 v${u.latestVersion}，点这里去下载`;
     if (u.lifecycle === 'downloaded') return `v${u.latestVersion} 已下载，点这里去安装`;
@@ -133,7 +167,11 @@ export class TrayController {
         : []),
       { type: 'separator' },
       { label: '打开主窗口', click: () => this.cb.onShow() },
-      { label: '快速搜索…', accelerator: 'CommandOrControl+Alt+Space', click: () => this.cb.onSearch() },
+      {
+        label: '快速搜索…',
+        ...(this.searchAccelerator ? { accelerator: this.searchAccelerator } : {}),
+        click: () => this.cb.onSearch(),
+      },
       { type: 'separator' },
       {
         label: '剪贴板哨兵',

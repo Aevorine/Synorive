@@ -8,6 +8,11 @@ import type {
   FontScheme,
   LibraryEntry,
 } from '@synorive/shared-types';
+import {
+  SETTINGS_FOCUS_EVENT,
+  SETTINGS_INDEX,
+  takeSettingsFocus,
+} from '../lib/settingsIndex';
 import { DbEncryptPanel } from '../components/DbEncryptPanel';
 import { PairingQr } from '../components/PairingQr';
 import { PrivacyFence } from '../components/PrivacyFence';
@@ -67,8 +72,69 @@ const EYE_LEVELS: { id: EyeComfortLevel; label: string; hint: string }[] = [
   { id: 'high', label: '强', hint: '最暖，纯文字阅读时用；看图会偏色' },
 ];
 
+/**
+ * C2：命令面板点了某一条设置之后，把它滚过来并闪一下。
+ *
+ * 🔴 **两条路都要有。** 设置页是 `lazy()` 分片：从命令面板跳过来的那一刻
+ *    它**还没挂载**，这时候派出去的事件没人接。所以既订阅事件（已经挂载的情况），
+ *    也在挂载时主动取一次暂存的目标（第一次跳过来的情况）。
+ *    只做事件那条的话，症状是"第一次点没反应、第二次就好了" ——
+ *    这是最难被当成 bug 报上来的一类问题。
+ */
+function useSettingsFocus(ready: boolean): void {
+  useEffect(() => {
+    if (!ready) return;
+
+    const focus = (label: string): void => {
+      // 先按 data-setting 找具体设置项，找不到再按分区标题找
+      let el = document.querySelector<HTMLElement>(`.field[data-setting="${CSS.escape(label)}"]`);
+      if (!el) {
+        el =
+          Array.from(document.querySelectorAll<HTMLElement>('.panel__title')).find(
+            (h) => h.textContent?.trim() === label,
+          ) ?? null;
+      }
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.remove('syn-flash');
+      void el.offsetWidth; // 强制重排，保证连点同一条时动画每次都重放
+      el.classList.add('syn-flash');
+      window.setTimeout(() => el?.classList.remove('syn-flash'), 1800);
+    };
+
+    // 挂载时取一次暂存目标。放进 rAF 是因为这一帧 DOM 还没画完
+    const pendingLabel = takeSettingsFocus();
+    if (pendingLabel) requestAnimationFrame(() => focus(pendingLabel));
+
+    const onEvt = (e: Event) => {
+      const label = (e as CustomEvent<{ label?: string }>).detail?.label;
+      if (label) requestAnimationFrame(() => focus(label));
+    };
+    window.addEventListener(SETTINGS_FOCUS_EVENT, onEvt);
+
+    // 一致性自检：索引里有、页面上找不到的条目在控制台喊出来。
+    // 喊在控制台是刻意的——这是给开发看的漂移告警，不该打扰用户
+    if (import.meta.env.DEV) {
+      const missing = SETTINGS_INDEX.filter((s) => !s.isSection).filter(
+        (s) => !document.querySelector(`.field[data-setting="${CSS.escape(s.label)}"]`),
+      );
+      if (missing.length) {
+        console.warn(
+          '[settingsIndex] 这些条目在设置页上找不到，命令面板点了会没反应：',
+          missing.map((m) => m.label),
+        );
+      }
+    }
+
+    return () => window.removeEventListener(SETTINGS_FOCUS_EVENT, onEvt);
+  }, [ready]);
+}
+
 export function SettingsPage() {
   const settings = useApp((s) => s.settings);
+  // 🔴 Hook 必须在下面那句提前 return 之前调用 —— React 的 Hook 顺序不能随
+  //    渲染分支变化，放到 return 后面会在 settings 从 null 变成有值的那一帧崩掉
+  useSettingsFocus(!!settings);
   if (!settings) return <div className="page"><div className="page__body">加载中…</div></div>;
 
   const patch = (p: Partial<AppSettings>) => void window.synorive.settings.patch(p);
@@ -389,6 +455,7 @@ export function SettingsPage() {
                   <button
                     className="pathlist__remove"
                     title="不再监听（已索引的内容不会删）"
+                    aria-label={`不再监听 ${p}`}
                     onClick={() =>
                       patch({ watchedFolders: settings.watchedFolders.filter((x) => x !== p) })
                     }
@@ -542,6 +609,7 @@ export function SettingsPage() {
                 <button
                   className="pathlist__remove"
                   title="在资源管理器中打开"
+                  aria-label="在资源管理器中打开数据目录"
                   onClick={() => void window.synorive.sys.reveal(settings.dataDir)}
                 >
                   <FolderPlus size={13} strokeWidth={2} />
@@ -1171,7 +1239,11 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div className="field">
+    // C2：`data-setting` 是命令面板「跳到这一条设置」的落点。
+    // 🔴 用属性而不是按 `.field__label` 的文字去找 —— 文字里有全角括号和
+    //    换行缩进，`textContent` 比对会因为空白差异莫名其妙对不上，
+    //    而那种失败是静默的：点了没反应，谁也不知道为什么。
+    <div className="field" data-setting={label}>
       <div className="field__head">
         <span className="field__label">{label}</span>
       </div>

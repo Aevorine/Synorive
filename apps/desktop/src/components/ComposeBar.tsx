@@ -138,6 +138,9 @@ export function ComposeBar({ onCompare }: { onCompare?: (ids: string[]) => void 
             <button
               className="compose__chipx"
               onClick={() => useSelection.getState().remove(h.item.id)}
+              // 纯图标按钮：aria-label 只给读屏软件，鼠标用户看不到。
+              // 悬停要出功能名，就必须再有一个 title
+              title={`从已选里移除「${h.item.title || h.item.locator}」`}
               aria-label={`从已选里移除 ${h.item.title}`}
             >
               <X size={11} strokeWidth={2} />

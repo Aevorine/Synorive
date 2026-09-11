@@ -71,6 +71,7 @@ export function Flashback({
         className="syn-fb-btn"
         disabled={!history.canRedo()}
         title="重做（Ctrl+Shift+Z）"
+        aria-label="重做"
         onClick={() => {
           void history.redo().then((l) => l && setToast(`已重做：${l}`));
         }}

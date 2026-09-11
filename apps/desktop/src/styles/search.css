@@ -476,8 +476,11 @@
   text-overflow: ellipsis;
 }
 
+/* 缩略图尺寸接密度（C7）：紧凑 36 / 标准 46 / 宽松 60。
+   密度这档要真的改变"一屏能看到多少东西"，只改文字间距是改不动的 ——
+   图片才是占高度的大头。 */
 .clip__thumb {
-  max-height: 46px;
+  max-height: var(--syn-d-thumb, 46px);
   max-width: 100%;
   border-radius: var(--syn-radius-md);
   border: 1px solid var(--syn-color-border);

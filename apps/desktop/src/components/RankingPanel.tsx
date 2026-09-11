@@ -132,6 +132,7 @@ export function RankingPanel() {
         <button
           className="ranking__reset"
           title="恢复默认权重"
+          aria-label="恢复默认权重"
           onClick={() => {
             setWeights({ ...DEFAULT_WEIGHTS });
             // setWeights 会把 preset 置成 'custom'，所以恢复默认要在它之后

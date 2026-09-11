@@ -18,8 +18,10 @@
  *
  * ── 这条链路的安全边界，说清楚而不是含糊过去 ──────────────
  *
- * **保护它的是两样东西**：① 全程 HTTPS 拿 GitHub 的 latest.yml 和安装包；
- * ② electron-updater 用 latest.yml 里的 sha512 校验下载下来的 exe，对不上就拒绝装。
+ * **保护它的是三样东西**：① 全程 HTTPS 拿 GitHub 的 latest.yml 和安装包；
+ * ② electron-updater 用 latest.yml 里的 sha512 校验下载下来的 exe，对不上就拒绝装；
+ * ③ 更新源写死在代码里（`setFeedURL`）+ 下载地址白名单 —— 安装目录里那份
+ *    明文 `app-update.yml` 被改掉也劫持不了这条链路。见下面 FEED 的注释。
  *
  * **它没有的是代码签名。** 我们 `signExecutable: false`（没有代码签名证书），
  * 于是 `publisherName` 是空的，electron-updater 的 Authenticode 校验那一步
@@ -42,6 +44,8 @@
 
 import { app } from 'electron';
 import electronUpdater from 'electron-updater';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import type { UpdateState } from '../shared/ipc-contract.js';
 
 // electron-updater 是 CJS 包，而主进程打成 ESM。
@@ -51,6 +55,94 @@ import type { UpdateState } from '../shared/ipc-contract.js';
 const { autoUpdater } = electronUpdater;
 
 type Listener = (s: UpdateState) => void;
+
+/**
+ * 🔴 **更新源写死在代码里，不读 `app-update.yml`。**
+ *
+ * `resources/app-update.yml` 是 asar **外面**的一个明文文件，而
+ * `electron-builder.yml` 里 `perMachine: false` —— 装到的是
+ * `%LOCALAPPDATA%\Programs\Synorive`，那个目录当前用户可写。
+ * 任何以这个用户身份跑起来的程序（包括他自己下的一个小工具）
+ * 把那份 yml 改成 `provider: generic / url: https://攻击者/feed/`，
+ * 用户下次点「检查更新」装上的就是攻击者的 exe。
+ * 而我们 `signExecutable: false`，没有 Authenticode 这道兜底闸。
+ *
+ * `setFeedURL()` 的优先级高于 app-update.yml，写死之后那份文件
+ * 被改成什么样都不再影响这条链路。
+ *
+ * ⚠️ owner/repo 必须和 `electron-builder.yml` 的 `publish:` 一致，
+ *    也和下面 `releaseUrlFor()` / `DOWNLOAD_PAGE` 一致。三处改一处就是坏的。
+ */
+const FEED = { provider: 'github' as const, owner: 'Aevorine', repo: 'Synorive' };
+
+/**
+ * 允许从哪些主机下载安装包。
+ *
+ * GitHub Releases 的实际下载会从 `github.com` 302 到
+ * `objects.githubusercontent.com` / `release-assets.githubusercontent.com`，
+ * 所以两类都要放行；除此之外一律拒绝。
+ * 这是第二道闸：万一 feed 那一层还是被绕过去了（比如 electron-updater
+ * 自身某天改了优先级），下载地址仍然出不了 GitHub。
+ */
+const ALLOWED_UPDATE_HOSTS: RegExp[] = [
+  /^github\.com$/i,
+  /^api\.github\.com$/i,
+  /^(?:[a-z0-9-]+\.)*githubusercontent\.com$/i,
+];
+
+/**
+ * 检查一个下载地址是否可信。
+ * @returns null = 可信；否则是**说得出口的**拒绝原因（会进 state.error）
+ */
+function rejectUpdateUrl(raw: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    // 解析不出来说明它是相对路径（latest.yml 里的 `url:` 多数是文件名），
+    // 那它会拼在我们钉死的 feed 上，本身不构成新的信任来源
+    return null;
+  }
+  if (u.protocol !== 'https:') {
+    return `更新包地址不是 HTTPS（${u.protocol}//${u.host}），已拒绝。`;
+  }
+  if (!ALLOWED_UPDATE_HOSTS.some((re) => re.test(u.hostname))) {
+    return `更新包地址指向 ${u.hostname}，不在允许的下载源里（只认 github.com / *.githubusercontent.com），已拒绝。`;
+  }
+  return null;
+}
+
+/**
+ * 更新日志。
+ *
+ * 🔴 原来是 `autoUpdater.logger = null` —— 托盘常驻是默认行为，
+ *    这时候自动检查失败连界面都没有，日志再关掉就**事后完全查不了**。
+ *    换成写进应用自己的日志文件；写不进去（磁盘满、目录只读）也不能
+ *    让更新流程炸掉，所以每一处都吞异常。
+ */
+function updateLogPath(): string {
+  return join(app.getPath('logs'), 'updater.log');
+}
+
+function writeLog(level: string, args: unknown[]): void {
+  const line =
+    `[${new Date().toISOString()}] ${level} ` +
+    args.map((a) => (a instanceof Error ? `${a.message}\n${a.stack ?? ''}` : String(a))).join(' ');
+  try {
+    mkdirSync(app.getPath('logs'), { recursive: true });
+    appendFileSync(updateLogPath(), line + '\n', 'utf8');
+  } catch {
+    /* 日志写不进去不该让更新失败 */
+  }
+  if (level === 'ERROR' || level === 'WARN') console.warn(`[updater] ${line}`);
+}
+
+const fileLogger = {
+  info: (...a: unknown[]) => writeLog('INFO', a),
+  warn: (...a: unknown[]) => writeLog('WARN', a),
+  error: (...a: unknown[]) => writeLog('ERROR', a),
+  debug: (...a: unknown[]) => writeLog('DEBUG', a),
+};
 
 /** 便携版由 electron-builder 在运行时注入这个环境变量 */
 function portableDir(): string | undefined {
@@ -73,6 +165,11 @@ export class UpdateManager {
   private listeners = new Set<Listener>();
   /** 防止重复点「检查更新」时并发发起 */
   private inFlight = false;
+  /**
+   * 这一版的下载地址被白名单拒了的原因。非空时 `download()` 直接不干活 ——
+   * 光在界面上写一行红字是不够的，按钮还能点就还是会有人点。
+   */
+  private blockedReason: string | null = null;
 
   constructor(skippedVersion: string | null) {
     const unsupportedReason = detectUnsupported();
@@ -145,6 +242,11 @@ export class UpdateManager {
 
   async download(): Promise<void> {
     if (this.state.lifecycle !== 'available') return;
+    // 白名单拒绝过的版本，这里是最后一道闸：不下载、把原因原样留在界面上
+    if (this.blockedReason) {
+      this.patch({ lifecycle: 'error', error: this.blockedReason });
+      return;
+    }
     this.patch({ lifecycle: 'downloading', progressPercent: 0, error: null });
     try {
       await autoUpdater.downloadUpdate();
@@ -172,9 +274,29 @@ export class UpdateManager {
     autoUpdater.autoInstallOnAppQuit = false;
     // 允许 0.1.x 这类 0 开头的版本正常比较；也允许从预发布版升到正式版
     autoUpdater.allowPrerelease = false;
-    autoUpdater.logger = null;
+    autoUpdater.logger = fileLogger;
+
+    // 🔴 必须在任何 checkForUpdates() 之前调用。见 FEED 上面那段说明：
+    //    这一行的作用是让 resources/app-update.yml 被改掉也没用。
+    autoUpdater.setFeedURL(FEED);
 
     autoUpdater.on('update-available', (info) => {
+      // 白名单：latest.yml 里给的每一个下载地址都要过一遍。
+      // 只要有一个出了 GitHub，这一版整个不认 —— 不是"跳过那个文件继续下"
+      const files: Array<{ url?: string }> = Array.isArray(info.files) ? info.files : [];
+      const blocked =
+        files.map((f) => rejectUpdateUrl(String(f.url ?? ''))).find((r) => r !== null) ?? null;
+      this.blockedReason = blocked;
+      if (blocked) {
+        fileLogger.error('拒绝这一版的下载源：', blocked);
+        this.patch({
+          lifecycle: 'error',
+          latestVersion: info.version,
+          lastCheckedAt: new Date().toISOString(),
+          error: blocked,
+        });
+        return;
+      }
       this.patch({
         lifecycle: 'available',
         latestVersion: info.version,

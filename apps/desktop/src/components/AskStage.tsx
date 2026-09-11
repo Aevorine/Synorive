@@ -6,7 +6,6 @@ import { useApp } from '../lib/store';
 import { useSearch } from '../lib/useSearch';
 import { remember, suggest, type QueryRecord } from '../lib/queryHistory';
 import { useAsk } from '../lib/useAsk';
-import { api } from '../lib/api';
 
 /**
  * B1 主舞台 —— 全应用的主输入区
@@ -63,64 +62,52 @@ const MODES: readonly [ModeSpec, ModeSpec] = [
   },
 ];
 
-/** 拖进来的文件直接进分析流水线；拖进来的文字直接填进输入框。 */
-function useWindowDrop(onText: (t: string) => void) {
-  const setPage = useApp((s) => s.setPage);
+/**
+ * 拖到舞台上：**文字**直接填进输入框，**文件**放给全局那一层去处理。
+ *
+ * 🔴 **不再在 window 上挂监听。** C8 的 `DropEverything` 已经在 window 上
+ *    接管了全窗口拖放；这里再挂一份的话，同一次拖文件会被两边**各处理一遍** ——
+ *    全局层排队等 6 秒准备入库，这里已经先斩后奏 ingest 掉了，
+ *    于是那个「撤销」按钮点了也没用。两个 window 监听之间 `stopPropagation`
+ *    是不管用的（同一个目标上的监听器都会跑），所以只能是其中一个不挂。
+ *
+ * 🔴 改成挂在 `.stage` 这个元素上：**文字**这一支 `stopPropagation`，
+ *    事件就到不了 window，全局层看不到它；**文件**这一支什么都不做，
+ *    让它照常冒泡上去，走全局那套"松在哪一格决定做什么 + 可撤销"。
+ */
+function useStageDrop(onText: (t: string) => void) {
   const [dropping, setDropping] = useState(false);
+  const depth = useRef(0);
 
-  useEffect(() => {
-    const prevent = (e: DragEvent) => {
+  const handlers = {
+    onDragEnter: (e: React.DragEvent) => {
+      depth.current += 1;
+      if (!e.dataTransfer.types.includes('Files')) setDropping(true);
+    },
+    onDragLeave: () => {
+      depth.current -= 1;
+      if (depth.current <= 0) {
+        depth.current = 0;
+        setDropping(false);
+      }
+    },
+    onDrop: (e: React.DragEvent) => {
+      depth.current = 0;
+      setDropping(false);
+      // 文件交给全局层：**不 preventDefault、不 stopPropagation**，
+      // 让它继续冒泡到 window
+      if (e.dataTransfer.files.length > 0) return;
+      const text = (
+        e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain')
+      ).trim();
+      if (!text) return;
       e.preventDefault();
       e.stopPropagation();
-    };
-    const onOver = (e: DragEvent) => {
-      prevent(e);
-      if (e.dataTransfer?.types.includes('Files')) setDropping(true);
-    };
-    const onLeave = (e: DragEvent) => {
-      prevent(e);
-      // relatedTarget 为 null 才是真的离开了窗口。
-      // 不判这个的话，鼠标从输入框划到按钮上就会闪一下"松手就开始分析"
-      if (e.relatedTarget === null) setDropping(false);
-    };
-    const onDrop = (e: DragEvent) => {
-      prevent(e);
-      setDropping(false);
-      const files = Array.from(e.dataTransfer?.files ?? []);
-      if (files.length) {
-        // 🔴 拿路径必须走 preload 的 webUtils.getPathForFile：
-        //    Electron 32 起 File.path 被移除了，直接读拿到 undefined 且**不报错**——
-        //    表现是"拖进来什么都没发生"
-        const paths = files
-          .map((f) => {
-            try {
-              return window.synorive.sys.pathForFile(f);
-            } catch {
-              return '';
-            }
-          })
-          .filter(Boolean);
-        if (paths.length) {
-          setPage('analyze');
-          void api.ingest({ targets: paths, source: 'file', recursive: true, priority: 'high' });
-        }
-        return;
-      }
-      const text = e.dataTransfer?.getData('text/plain')?.trim();
-      if (text) onText(text);
-    };
+      onText(text);
+    },
+  };
 
-    window.addEventListener('dragover', onOver);
-    window.addEventListener('dragleave', onLeave);
-    window.addEventListener('drop', onDrop);
-    return () => {
-      window.removeEventListener('dragover', onOver);
-      window.removeEventListener('dragleave', onLeave);
-      window.removeEventListener('drop', onDrop);
-    };
-  }, [onText, setPage]);
-
-  return dropping;
+  return { dropping, handlers };
 }
 
 /** 两态共用的提交逻辑。 */
@@ -198,7 +185,7 @@ export function AskStage() {
     taRef.current?.focus();
   };
 
-  const dropping = useWindowDrop(
+  const { dropping, handlers: dropHandlers } = useStageDrop(
     useCallback(
       (t: string) => {
         setQuery(t);
@@ -221,7 +208,7 @@ export function AskStage() {
   const active = MODES.find((m) => m.id === mode) ?? MODES[0];
 
   return (
-    <div className={`stage${dropping ? ' stage--dropping' : ''}`}>
+    <div className={`stage${dropping ? ' stage--dropping' : ''}`} {...dropHandlers}>
       <div className="stage__inner">
         <h1 className="stage__lead">
           {mode === 'ask' ? '问一句话，从你自己的资料里找答案' : '描述你要找的东西'}
@@ -255,7 +242,7 @@ export function AskStage() {
             value={query}
             rows={6}
             spellCheck={false}
-            placeholder={dropping ? '松手就开始分析' : active.placeholder}
+            placeholder={dropping ? '松手就把这段文字填进来' : active.placeholder}
             aria-label={active.label}
             onChange={(e) => setQuery(e.target.value)}
             onFocus={() => setSugOpen(true)}

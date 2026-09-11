@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
+import { useApp } from '../lib/store';
 
 /**
  * 自定义同义词
@@ -21,18 +22,29 @@ export function SynonymPanel() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  /**
+   * 🔴 **等引擎 ready 再问，ready 时重新问一遍。**
+   *
+   * 原来依赖数组是 `[]`，而挂载那一帧 `lib/api.ts` 的端口还没设进来
+   * （`App.tsx` 要一串 await 跑完才 `setEnginePort()`），`list()` 直接抛
+   * EngineUnavailable → 被空 catch 吞掉 → 列表永远空着。
+   * 原注释里那句"等它起来用户再进这一页就有了"是**错的**：设置页是保持挂载的
+   * 标签页，用户切走再切回来根本不会重新挂载，这个 effect 一辈子只跑一次。
+   */
+  const engineReady = useApp((s) => s.engine?.lifecycle === 'ready');
   useEffect(() => {
+    if (!engineReady) return;
     let alive = true;
     api.synonyms
       .list()
       .then((r) => alive && setItems(r.items))
       .catch(() => {
-        /* 引擎还没起来。等它起来用户再进这一页就有了 */
+        /* 引擎已经 ready 还失败，加词时会把真实错误显示出来 */
       });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [engineReady]);
 
   const add = async () => {
     const x = a.trim();

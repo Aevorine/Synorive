@@ -3,6 +3,8 @@ import { ClipboardPeek } from './components/ClipboardPeek';
 import { EngineSetup } from './components/EngineSetup';
 import { SideBar } from './components/SideBar';
 import { CommandPalette } from './components/CommandPalette';
+import { DropEverything } from './components/DropEverything';
+import { ShortcutSheet } from './components/ShortcutSheet';
 import { Onboarding } from './components/Onboarding';
 import { StatusBar } from './components/StatusBar';
 import { TabBar } from './components/TabBar';
@@ -26,6 +28,11 @@ import './styles/layout.css';
 import './styles/stage.css';
 import './styles/compose.css';
 import './styles/project.css';
+// C2/C4/C6/C8 这一批新东西的样式全在这里。
+// ⚠️ 排在最后：它只定义本轮新增的类（palette 的补充、公式、速查表、拖拽层、
+//    焦点环），不覆盖上面任何一份的既有规则；放最后是为了让新组件的样式
+//    不被前面文件里的通用规则压掉。
+import './styles/features.css';
 
 /**
  * N7：随手研究浮窗和主窗口共用同一个渲染包，靠 hash 区分。
@@ -178,6 +185,13 @@ function MainApp() {
       <StatusBar />
       {/* E13：放在最外层，任何页面都能唤起；它自己判断 open 决定渲不渲染 */}
       <CommandPalette />
+      {/* C6 `?` 速查表。和命令面板一样挂在最外层 —— 它必须在任何页面都能唤出，
+          挂在某一页里的话，"有时候好使有时候不好使"比没有这功能更糟 */}
+      <ShortcutSheet />
+      {/* C8 拖拽万物。**必须只挂这一个**：window 上的拖放监听没法靠
+          stopPropagation 互相让路，同一个事件所有监听器都会跑，
+          挂两份就会把同一次拖拽处理两遍 */}
+      <DropEverything />
       {/* F5 首次引导。**判"首次"用的是库里有没有内容**，不是有没有配置文件 ——
           配置被删了但库里有一万条的用户，不该再看一遍引导。
           itemCount 为 null 时它自己不显示（还没问出来，先别判断） */}

@@ -161,6 +161,10 @@ export function SideBar() {
       onDragLeave={() => setOverId((id) => (id === n.id ? null : id))}
       onDrop={(e) => {
         e.preventDefault();
+        // 🔴 必须挡住冒泡：C8 的 `DropEverything` 在 window 上接管了全窗口拖放，
+        //    不挡的话，拖着导航项换个顺序会**顺带触发一次搜索** ——
+        //    搜的还是这一项的 id（`text/plain` 里放的就是它）。
+        e.stopPropagation();
         dropOn(n.id);
       }}
     >

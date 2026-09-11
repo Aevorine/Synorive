@@ -26,8 +26,12 @@
 import { globalShortcut, shell } from 'electron';
 
 export interface HotkeyBinding {
-  /** 逻辑动作名，界面据此显示"这个键干什么" */
-  id: 'focus-search' | 'screenshot-search' | 'toggle-window';
+  /**
+   * 逻辑动作名，界面据此显示"这个键干什么"。
+   * 只有这两个 —— `index.ts` 的 `applyHotkeys()` 注册的就是这两条，
+   * 渲染层也只认这两个 id（`IPC.hotkeySet` 里除此之外一律报"不认识的快捷键项"）。
+   */
+  id: 'focus-search' | 'screenshot-search';
   /** 想要的键 */
   accelerator: string;
   /** 抢不到时退而求其次的键。**空数组表示不退**，抢不到就是没有 */

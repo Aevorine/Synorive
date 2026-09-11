@@ -17,7 +17,11 @@
   width: 100%;
   /* 距顶部 32%：比垂直居中略高。完全居中时下方大片留白会让人觉得
      "页面还没加载完"，略高一点视觉重心才稳 */
-  padding-top: clamp(24px, calc(var(--syn-stage-vertical-anchor, 0.32) * 100vh - 160px), 180px);
+  padding-top: clamp(
+    24px,
+    calc(var(--syn-stage-vertical-anchor, 0.32) * 100vh - 160px),
+    var(--syn-stage-vertical-max, 96px)
+  );
   padding-bottom: var(--syn-d-space-xl, 24px);
 }
 
@@ -193,12 +197,14 @@
 
 /* ── 收窄态（顶栏那一条）───────────────────────────────── */
 
+/* 跟顶栏 .searchbox 是同一个控件的两态，宽度上限必须一样，
+   否则收窄 / 展开之间会横向跳一下版（C1） */
 .stagebar {
   display: flex;
   align-items: center;
   gap: var(--syn-space-sm);
   width: 100%;
-  max-width: var(--syn-layout-search-max, 720px);
+  max-width: min(60vw, var(--syn-layout-search-fluid-max, 1100px));
   height: var(--syn-stage-compact-height, 40px);
   padding: 0 var(--syn-space-md);
   font-size: var(--syn-fs-body);

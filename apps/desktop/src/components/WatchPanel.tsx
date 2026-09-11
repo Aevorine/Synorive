@@ -152,6 +152,7 @@ export function WatchPanel({
               <button
                 type="button"
                 title="现在跑一次，只报新出现的"
+                aria-label="现在跑一次这条订阅"
                 disabled={busy != null}
                 onClick={() =>
                   void act(`run-${w.id}`, async () => {
@@ -171,6 +172,7 @@ export function WatchPanel({
                 type="button"
                 className="syn-watch-danger"
                 title="删掉这条订阅"
+                aria-label="删掉这条订阅"
                 disabled={busy != null}
                 onClick={() =>
                   void act(`del-${w.id}`, async () => {

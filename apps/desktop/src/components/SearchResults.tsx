@@ -13,6 +13,7 @@ import type { Modality, MatchExplain, SearchHit } from '@synorive/shared-types';
 import { layout } from '@synorive/design-tokens';
 import { useApp } from '../lib/store';
 import { useKeyNav } from '../lib/keynav';
+import { rememberOpen } from '../lib/recentFiles';
 import { api } from '../lib/api';
 import { useSelection } from '../lib/useSelection';
 import { useSearch } from '../lib/useSearch';
@@ -158,6 +159,9 @@ export function SearchResults({
     // 带上当前查询词：引擎据此学"搜这几个词时你点的是哪一条"。
     // 不带的话只会更新全局热度，而全局热度回答不了"搜『预算』时我每次都得往下翻"
     void api.recordOpen(hit.item.id, useSearch.getState().query);
+    // C2：命令面板的「最近打开」那一组从这里来。引擎的 recordOpen 记的是
+    // 排序用的热度，回不来一份"我最近开过什么"的清单
+    rememberOpen(hit.item);
     if (hit.item.source === 'link') void window.synorive.sys.openExternal(hit.item.locator);
     else void window.synorive.sys.openPath(hit.item.locator);
   };
@@ -230,6 +234,7 @@ function ResultCard({
 
   const open = () => {
     void api.recordOpen(item.id, useSearch.getState().query);
+    rememberOpen(item);
     if (item.source === 'link') void window.synorive.sys.openExternal(item.locator);
     else void window.synorive.sys.openPath(item.locator);
   };

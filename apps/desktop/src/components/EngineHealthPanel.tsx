@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Activity, KeyRound, MonitorSmartphone, RefreshCw, RotateCcw } from 'lucide-react';
 import { webApi, type EngineHealthRow } from '../lib/webApi';
+import { useApp } from '../lib/store';
 
 /**
  * 引擎健康仪表盘 —— S1
@@ -77,9 +78,20 @@ export function EngineHealthPanel({ onClose }: { onClose?: () => void }) {
     await load();
   };
 
+  /**
+   * 🔴 **等引擎 ready 再拉健康表，ready 时重新拉一遍。**
+   *
+   * `webApi` 和 `api` 共用 `lib/api.ts` 的 `call()`，端口没设进来时直接抛
+   * EngineUnavailable。原来依赖数组是 `[]`，挂载那一帧必抛 → `rows` 停在 null →
+   * 整张表永远是"读取中"，而 `err` 里躺着一句"引擎还没就绪"，
+   * 哪怕引擎两秒后就起来了也不会再问第二遍。
+   */
+  const engineReady = useApp((s) => s.engine?.lifecycle === 'ready');
   useEffect(() => {
+    if (!engineReady) return;
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engineReady]);
 
   const web = (rows ?? []).filter((r) => r.group === 'web');
   const scholar = (rows ?? []).filter((r) => r.group === 'scholar');
@@ -177,7 +189,9 @@ export function EngineHealthPanel({ onClose }: { onClose?: () => void }) {
       </p>
 
       {err && <p className="eh__error">拿不到引擎状态：{err}</p>}
-      {!rows && !err && <p className="eh__note">正在读取…</p>}
+      {!rows && !err && (
+        <p className="eh__note">{engineReady ? '正在读取…' : '等引擎起来再读健康表…'}</p>
+      )}
       {rows && (
         <>
           {web.length > 0 && table(web, '网页搜索')}

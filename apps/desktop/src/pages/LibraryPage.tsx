@@ -195,7 +195,12 @@ export function LibraryPage() {
         <aside className="qp" role="dialog" aria-label="视频镜头">
           <header className="qp__head">
             <h3>{scening.title}</h3>
-            <button className="qp__close" onClick={() => setScening(null)} aria-label="关闭">
+            <button
+              className="qp__close"
+              onClick={() => setScening(null)}
+              title="关闭"
+              aria-label="关闭"
+            >
               ×
             </button>
           </header>

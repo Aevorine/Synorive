@@ -5,7 +5,8 @@
 import { BrowserWindow, app, dialog, globalShortcut, ipcMain, nativeTheme, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { AppSettings, LibraryEntry } from '@synorive/shared-types';
 import { IPC, type ClipEntry, type EngineProcessState } from '../shared/ipc-contract.js';
 import { ClipboardWatcher } from './clipboard.js';
@@ -90,6 +91,27 @@ app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 
+/**
+ * 🔴 **全局兜底：任何 webContents 默认都不许弹新窗口。**
+ *
+ * 应用里有三个窗口在加载**不可信内容**：8.5 渲染代理的两条通道
+ * （`render.ts` 里 loadURL 的是任意公网站点，而且 JS 是开着的）
+ * 和 C12 截图窗口。它们原来一个 `setWindowOpenHandler` 都没有 ——
+ * 页面里一句 `window.open()` 就能弹出一个**从 Synorive 里冒出来的**
+ * 无边框窗口，用户完全有理由以为那是应用自己的界面。这是现成的钓鱼载体。
+ *
+ * 兜底放在这里而不是逐个窗口去补，是因为漏一个就等于没做，
+ * 而以后新加的窗口不会有人记得补。
+ *
+ * ⚠️ 这条**不会**破坏主窗口和浮窗的外链流程：它们在
+ * `new BrowserWindow()` 之后各自又调了一次 `setWindowOpenHandler`
+ * （`window.ts` / `peek.ts`），后设的那个覆盖这一条，
+ * 外链照旧交给 `shell.openExternal` 用系统浏览器打开。
+ */
+app.on('web-contents-created', (_e, wc) => {
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+});
+
 function showWindow(): void {
   if (!win || win.isDestroyed()) {
     win = createMainWindow({
@@ -102,8 +124,42 @@ function showWindow(): void {
     return;
   }
   if (win.isMinimized()) win.restore();
+  // 上一次是被 toggleWindow() 收起来的话，任务栏按钮被摘掉了，这里要还回去
+  if (process.platform !== 'darwin') win.setSkipTaskbar(false);
   win.show();
   win.focus();
+}
+
+/**
+ * 显示 ↔ 收起来回切。托盘左键单击和全局唤起键共用这一条。
+ *
+ * 🔴 **收起必须用 `hide()`，不能用 `minimize()`。** Windows 上最小化的窗口
+ *    在任务栏里仍然占着一格 —— 用户要的是"再点一下就从任务栏里消失"，
+ *    只有 `hide()` 会把任务栏按钮一起收掉。`setSkipTaskbar(true)` 是第二道
+ *    保险：窗口处于某些中间状态（刚最小化、正在动画）时按钮偶尔赖着不走。
+ *
+ * 🔴 **托盘那一路绝不能拿 `isFocused()` 当条件。** 点托盘图标那一下，焦点
+ *    已经被系统外壳拿走了，回调里主窗口永远是"没聚焦"，于是永远只会 show，
+ *    第二下点下去什么都不会发生 —— 症状正是"切不回去"。
+ *    快捷键那一路相反，**必须**看焦点：窗口开着但你正在别的软件里干活时
+ *    按下唤起键，想要的是把它叫到面前，不是把它收起来。
+ *
+ * @returns true = 这一下把窗口收起来了（调用方不该再往窗口里发消息）
+ */
+function toggleWindow(mode: 'tray' | 'hotkey'): boolean {
+  if (!win || win.isDestroyed()) {
+    showWindow();
+    return false;
+  }
+  const shown = win.isVisible() && !win.isMinimized();
+  const shouldHide = mode === 'tray' ? shown : shown && win.isFocused();
+  if (shouldHide) {
+    if (process.platform !== 'darwin') win.setSkipTaskbar(true);
+    win.hide();
+    return true;
+  }
+  showWindow();
+  return false;
 }
 
 function wireWindowEvents(w: BrowserWindow): void {
@@ -227,6 +283,8 @@ function startEngine(): void {
     // `?? true` 兜底：老 settings.json 升级上来没有这个字段时按"默认开"处理，
     // 不能被当成 false——那样升级完这道安全闸会静默消失
     sensitiveGuardEnabled: settings.sensitiveGuardEnabled ?? true,
+    // B6：老 settings.json 升级上来没有这个字段时按"默认开"处理——同一条纪律
+    backgroundIndexingLowPriority: settings.backgroundIndexingLowPriority ?? true,
     lanPairingEnabled: settings.lanPairingEnabled,
     pairingToken: settings.pairingToken,
     // 整库加密口令。存在 safeStorage 里，走环境变量传给子进程（不进 argv）
@@ -321,17 +379,125 @@ function startUpdater(): void {
   }
 }
 
+// ── IPC 发送方校验 ───────────────────────────────────────────
+
+/**
+ * 🔴 **每条 IPC 都要问一句"你是谁"。**
+ *
+ * `ipcMain.handle` 不区分发送方：只要是这个应用里的任何一个 webContents
+ * （包括 8.5 渲染代理那两个正在加载**任意公网页面**的隐藏窗口、
+ * PDF 打印窗口、以后任何一个 iframe）都能调到全部 46 个通道 ——
+ * 里面有 `sys:open-path`（起进程）、`cloud:*`（碰密钥）、
+ * `settings:patch`（改隐私围栏）。任何一个页面被攻破，这些就全是它的。
+ *
+ * 判据只有一条：**发起这次调用的那个 frame，它的 URL 是不是我们自己的页面。**
+ *   · 开发模式：放行 vite dev server（`ELECTRON_RENDERER_URL`）和 devtools
+ *   · 打包之后：只放行 `file://`，而且文件必须落在应用自己的目录里
+ *     （`app.getAppPath()`，打包后是 app.asar 内部）
+ * 远程页面永远是 `https://…`，一条都过不了。
+ */
+function senderFrameUrl(e: Electron.IpcMainInvokeEvent): string | null {
+  try {
+    // frame 可能已经被销毁（页面在 await 期间跳走了），读 .url 会直接抛
+    return e.senderFrame?.url ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isTrustedSender(e: Electron.IpcMainInvokeEvent): boolean {
+  const url = senderFrameUrl(e);
+  if (!url) return false;
+
+  if (!app.isPackaged) {
+    const dev = process.env.ELECTRON_RENDERER_URL;
+    if (dev && url.startsWith(dev)) return true;
+    if (url.startsWith('devtools://')) return true;
+  }
+
+  if (!url.startsWith('file://')) return false;
+  try {
+    // 转成本地路径再比，不能拿 URL 字符串前缀比 ——
+    // `file:///C:/app.asar/../../evil/index.html` 这种字符串前缀是对的，
+    // 解析出来的路径却在应用外面
+    const filePath = resolvePath(fileURLToPath(url));
+    const root = resolvePath(app.getAppPath());
+    return filePath === root || filePath.startsWith(root + (process.platform === 'win32' ? '\\' : '/'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 包一层再挂上去。所有 `ipcMain.handle` 都走这个，不要直接用 `ipcMain.handle`。
+ *
+ * 拒绝时**抛异常而不是静默返回 undefined**：静默返回会让调用方拿到一个
+ * 看起来正常的空结果，出事了没人知道；抛出去至少在渲染层是一个明确的失败。
+ *
+ * （本文件目前没有 `ipcMain.on`。以后要加的话同样不能裸用，
+ *   照这个写一个 `on()` 包装 —— `on` 那条路连返回值都没有，
+ *   不校验就是完全静默地执行。）
+ */
+function handle<A extends unknown[], R>(
+  channel: string,
+  fn: (e: Electron.IpcMainInvokeEvent, ...args: A) => R,
+): void {
+  ipcMain.handle(channel, (e, ...args) => {
+    if (!isTrustedSender(e)) {
+      console.warn(`[ipc] 拒绝 ${channel}：发送方不是本应用页面（${senderFrameUrl(e) ?? '未知'}）`);
+      throw new Error(`拒绝执行 ${channel}：这个请求不是从本应用的界面发出来的`);
+    }
+    return fn(e, ...(args as A));
+  });
+}
+
+// ── 本地路径校验（sys:open-path / sys:reveal） ────────────────
+
+/**
+ * 🔴 **UNC 路径必须拦。**
+ *
+ * `shell.openPath('\\\\攻击者\\share\\x.exe')` 在 Windows 上会做两件事：
+ *   ① 为了访问那个共享，系统**自动把当前用户的 NTLM 哈希发过去**
+ *      —— 用户什么都没点，凭证已经泄了，可以拿去离线爆破或中继；
+ *   ② 那个 exe 从远程共享上直接跑起来。
+ * 一条渲染层过来的字符串就能触发这两件事，是这个应用里最短的一条攻击路径。
+ *
+ * 挡的是 UNC 和网络位置，**不是"打开本地文件"**：正常的
+ * `D:\资料\报告.pdf` 一个字都没变，那是这个功能的全部意义。
+ *
+ * @returns 规范化后的本地绝对路径；不合格返回 null
+ */
+function safeLocalPath(input: unknown): string | null {
+  const raw = typeof input === 'string' ? input.trim() : '';
+  if (!raw) return null;
+  // `file:///...`、`http://...`、`ms-settings:`、`shell:startup` 这类协议串
+  // 一律不认 —— 这个接口的语义是"本机上的一个文件/目录"，不是"一个地址"。
+  // 盘符（`C:\`）长得也像协议，所以先把它单独放过
+  const isDriveLetter = /^[a-zA-Z]:[\\/]/.test(raw);
+  if (!isDriveLetter && /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) return null;
+  // UNC：`\\server\share`、`//server/share`、`\\?\UNC\...`、设备路径 `\\.\`
+  if (/^[\\/]{2}/.test(raw)) return null;
+  if (!isAbsolute(raw)) return null;
+
+  const norm = resolvePath(raw);
+  // 规范化之后再查一遍：`C:\a\..\..\..\\\\server\share` 这种在 resolve
+  // 之后才会露出 UNC 的原形
+  if (/^[\\/]{2}/.test(norm)) return null;
+  if (process.platform === 'win32' && !/^[a-zA-Z]:[\\/]/.test(norm)) return null;
+  return norm;
+}
+
 // ── IPC ─────────────────────────────────────────────────────
 
 function registerIpc(): void {
   // 窗口
-  ipcMain.handle(IPC.windowMinimize, () => win?.minimize());
-  ipcMain.handle(IPC.windowMaximizeToggle, () => {
+  handle(IPC.windowMinimize, () => win?.minimize());
+  handle(IPC.windowMaximizeToggle, () => {
     if (!win) return;
     win.isMaximized() ? win.unmaximize() : win.maximize();
   });
-  ipcMain.handle(IPC.windowClose, () => win?.close());
-  ipcMain.handle(IPC.windowIsMaximized, () => win?.isMaximized() ?? false);
+  handle(IPC.windowClose, () => win?.close());
+  handle(IPC.windowIsMaximized, () => win?.isMaximized() ?? false);
 
   /**
    * 界面整体缩放。
@@ -343,7 +509,7 @@ function registerIpc(): void {
    * 🔴 夹在 0.5~3 之间。setZoomFactor 收到 0 或负数会直接抛，
    *    而调用方（渲染层）传什么完全取决于设置文件，设置文件是可以被手改的。
    */
-  ipcMain.handle(IPC.windowSetZoom, (_e, factor: number) => {
+  handle(IPC.windowSetZoom, (_e, factor: number) => {
     const f = Math.min(3, Math.max(0.5, Number(factor) || 1));
     for (const w of BrowserWindow.getAllWindows()) {
       if (!w.isDestroyed()) w.webContents.setZoomFactor(f);
@@ -352,7 +518,7 @@ function registerIpc(): void {
 
   // ── 资料库整库加密 ────────────────────────────────────────
 
-  ipcMain.handle(IPC.dbEncryptStatus, async () => {
+  handle(IPC.dbEncryptStatus, async () => {
     const port = engine?.getState().port;
     let cipherAvailable = false;
     let encrypted = false;
@@ -378,7 +544,7 @@ function registerIpc(): void {
    * 反过来（先存口令再转换）的话，转换失败时下次启动会拿着一个口令
    * 去开一个明文库 —— 引擎直接起不来，而用户完全不知道发生了什么。
    */
-  ipcMain.handle(IPC.dbEncryptEnable, async (_e, passphrase: string) => {
+  handle(IPC.dbEncryptEnable, async (_e, passphrase: string) => {
     const pw = String(passphrase ?? '');
     if (pw.length < 8) return { ok: false, error: '口令至少 8 位。这是解开整个资料库的唯一钥匙。' };
     const port = engine?.getState().port;
@@ -406,7 +572,7 @@ function registerIpc(): void {
     return { ok: true };
   });
 
-  ipcMain.handle(IPC.dbEncryptDisable, async (_e, passphrase: string) => {
+  handle(IPC.dbEncryptDisable, async (_e, passphrase: string) => {
     const port = engine?.getState().port;
     if (!port) return { ok: false, error: '引擎还没就绪，等它起来再试' };
     try {
@@ -426,15 +592,15 @@ function registerIpc(): void {
   });
 
   // 设置
-  ipcMain.handle(IPC.settingsGet, () => settings);
-  ipcMain.handle(IPC.settingsPatch, (_e, patch: Partial<AppSettings>) => applyPatch(patch));
+  handle(IPC.settingsGet, () => settings);
+  handle(IPC.settingsPatch, (_e, patch: Partial<AppSettings>) => applyPatch(patch));
 
   // ── 多库支持 ─────────────────────────────────────────────
   // 全是在操作 settings.libraries 这份注册表，"切库"复用 applyPatch——
   // 传的 patch 里带 dataDir，会自然触发下面那段"dataDir 变了就重启引擎"的逻辑。
-  ipcMain.handle(IPC.libraryList, () => settings.libraries);
+  handle(IPC.libraryList, () => settings.libraries);
 
-  ipcMain.handle(IPC.libraryCreate, (_e, name: string, dataDir?: string) => {
+  handle(IPC.libraryCreate, (_e, name: string, dataDir?: string) => {
     const trimmedName = String(name ?? '').trim() || '未命名库';
     const id = randomUUID();
     // 没传目录：在 userData 下自动生成一个专属目录，不和任何已有库共用
@@ -446,7 +612,7 @@ function registerIpc(): void {
     return entry;
   });
 
-  ipcMain.handle(IPC.librarySwitch, async (_e, id: string) => {
+  handle(IPC.librarySwitch, async (_e, id: string) => {
     const target = settings.libraries.find((l) => l.id === id);
     if (!target) return { ok: false, error: '找不到这个库' };
     if (target.id === settings.activeLibraryId) return { ok: true, settings };
@@ -459,14 +625,14 @@ function registerIpc(): void {
     return { ok: true, settings: next };
   });
 
-  ipcMain.handle(IPC.libraryRename, (_e, id: string, name: string) => {
+  handle(IPC.libraryRename, (_e, id: string, name: string) => {
     const trimmed = String(name ?? '').trim();
     if (!trimmed) return settings;
     const libraries = settings.libraries.map((l) => (l.id === id ? { ...l, name: trimmed } : l));
     return applyPatch({ libraries });
   });
 
-  ipcMain.handle(IPC.libraryRemove, (_e, id: string) => {
+  handle(IPC.libraryRemove, (_e, id: string) => {
     // 只从注册表移除，不碰硬盘上的数据——跟这个项目"删除只删索引记录不碰
     // 原文件"的一贯原则一致。数据还在，用户改主意了随时能把目录重新加回来。
     if (id === settings.activeLibraryId) {
@@ -563,8 +729,11 @@ function registerIpc(): void {
   }
 
   // 引擎
-  ipcMain.handle(IPC.engineGetState, () => engine?.getState() ?? null);
-  ipcMain.handle(IPC.engineRestart, () => engine?.restart());
+  handle(IPC.engineGetState, () => engine?.getState() ?? null);
+  // 🔴 必须走 requestEngineRestart()，不能直接 engine.restart()：
+  //    理由见文件顶上 engineRestartChain 那段——绕过串行链的重启会漏下
+  //    没人管的 Python 子进程，它继续锁着上一个库的索引文件
+  handle(IPC.engineRestart, () => requestEngineRestart());
 
   /**
    * 首次运行自举（锚点 2「可以自动配置需要的工具与内容」）。
@@ -573,7 +742,7 @@ function registerIpc(): void {
    * 只有用户在引导页上点了那个按钮才跑。
    * 装完直接重启引擎，不让用户再手动点一次"重试"。
    */
-  ipcMain.handle(IPC.engineBootstrap, async () => {
+  handle(IPC.engineBootstrap, async () => {
     const { bootstrapEngine } = await import('./bootstrap.js');
     const r = await bootstrapEngine((p) => broadcast(IPC.engineBootstrapProgress, p));
     if (r.ok) {
@@ -588,7 +757,7 @@ function registerIpc(): void {
   });
 
   // 系统集成
-  ipcMain.handle(IPC.pickFolders, async () => {
+  handle(IPC.pickFolders, async () => {
     if (!win) return [];
     const r = await dialog.showOpenDialog(win, {
       properties: ['openDirectory', 'multiSelections'],
@@ -598,7 +767,7 @@ function registerIpc(): void {
     return r.canceled ? [] : r.filePaths;
   });
 
-  ipcMain.handle(IPC.pickFiles, async () => {
+  handle(IPC.pickFiles, async () => {
     if (!win) return [];
     const r = await dialog.showOpenDialog(win, {
       properties: ['openFile', 'multiSelections'],
@@ -608,9 +777,22 @@ function registerIpc(): void {
     return r.canceled ? [] : r.filePaths;
   });
 
-  ipcMain.handle(IPC.revealInExplorer, (_e, p: string) => shell.showItemInFolder(p));
-  ipcMain.handle(IPC.openPath, (_e, p: string) => shell.openPath(p));
-  ipcMain.handle(IPC.openExternal, (_e, url: string) => {
+  handle(IPC.revealInExplorer, (_e, p: string) => {
+    const safe = safeLocalPath(p);
+    if (!safe) {
+      console.warn(`[sys] 拒绝在文件管理器里定位：${String(p)}（不是本机本地路径）`);
+      return;
+    }
+    shell.showItemInFolder(safe);
+  });
+  handle(IPC.openPath, async (_e, p: string) => {
+    const safe = safeLocalPath(p);
+    // openPath 的约定是"返回空串 = 成功，返回字符串 = 失败原因"，
+    // 拒绝时照这个约定给原因，界面上的错误提示不用改
+    if (!safe) return '只能打开这台电脑上的本地文件或文件夹（网络共享路径 \\\\… 已被拒绝）';
+    return shell.openPath(safe);
+  });
+  handle(IPC.openExternal, (_e, url: string) => {
     if (!/^https?:\/\//i.test(url)) return;
     return shell.openExternal(url);
   });
@@ -618,7 +800,7 @@ function registerIpc(): void {
   // A16：安卓配对页要显示"手机该填哪个 IP"，列出这台机器所有局域网 IPv4 地址
   // （虚拟网卡、VPN 会插进来好几个，全列出来让用户自己认——猜哪个是"真的"猜错的代价
   // 比多列几行 UI 更大）
-  ipcMain.handle(IPC.sysGetLanAddresses, () => {
+  handle(IPC.sysGetLanAddresses, () => {
     const nets = require('node:os').networkInterfaces() as Record<
       string,
       Array<{ address: string; family: string; internal: boolean }> | undefined
@@ -637,17 +819,17 @@ function registerIpc(): void {
   });
 
   // E4 剪贴板哨兵
-  ipcMain.handle(IPC.clipList, () => clip?.list() ?? []);
-  ipcMain.handle(IPC.clipArchive, (_e, id: string) => {
+  handle(IPC.clipList, () => clip?.list() ?? []);
+  handle(IPC.clipArchive, (_e, id: string) => {
     const entry = clip?.list().find((x) => x.id === id);
     return entry ? archiveClip(entry) : false;
   });
-  ipcMain.handle(IPC.clipDismiss, (_e, id: string) => clip?.remove(id));
-  ipcMain.handle(IPC.peekClose, () => peek?.hide());
+  handle(IPC.clipDismiss, (_e, id: string) => clip?.remove(id));
+  handle(IPC.peekClose, () => peek?.hide());
 
   // F7：把**真实**注册结果交给界面。设置页显示的必须是实际生效的键，
   // 不是我们希望生效的那个 —— 显示错的比不显示更糟
-  ipcMain.handle(IPC.hotkeyReport, () => hotkeyReport);
+  handle(IPC.hotkeyReport, () => hotkeyReport);
 
   /**
    * 改键。**先真的注册一次再落盘。**
@@ -655,7 +837,7 @@ function registerIpc(): void {
    * 🔴 只把新键写进设置的话，用户看到"保存成功"，按下去却没反应 ——
    *    而他没有任何线索。这里试注册失败就原样回滚并把失败原因报回界面。
    */
-  ipcMain.handle(
+  handle(
     IPC.hotkeySet,
     async (_e, id: string, accelerator: string): Promise<{ ok: boolean; error?: string }> => {
       const key = id === 'focus-search' ? 'focusSearch' : id === 'screenshot-search' ? 'screenshot' : null;
@@ -682,17 +864,17 @@ function registerIpc(): void {
     },
   );
   // A4：命令面板里也能触发截图，不是只有快捷键那一条路
-  ipcMain.handle(IPC.screenshotCapture, () => launchScreenCapture());
+  handle(IPC.screenshotCapture, () => launchScreenCapture());
 
   // E5：引用可点的 PDF。渲染层把引擎生成的 single-html 交过来，
   // 这边用 Chromium 自己的 PDF 后端打印 —— 只有它会保留 <a> 的链接注解
-  ipcMain.handle(IPC.saveText, (_e, req: { content: string; name: string; ext: string }) =>
+  handle(IPC.saveText, (_e, req: { content: string; name: string; ext: string }) =>
     saveText(req?.content ?? '', req?.name ?? '文稿', req?.ext ?? 'md'),
   );
-  ipcMain.handle(IPC.exportPdf, (_e, req: { html: string; name: string }) =>
+  handle(IPC.exportPdf, (_e, req: { html: string; name: string }) =>
     exportPdf(req?.html ?? '', req?.name ?? '研究简报'),
   );
-  ipcMain.handle(IPC.clipClear, () => {
+  handle(IPC.clipClear, () => {
     clip?.clear();
     // ⚠️ 必须广播，否则界面自己那份状态不会跟着清 —— 用户点了「全部清掉」，
     //    主进程空了，界面上的条目却还在，而且从此和内存对不上。实测抓到过。
@@ -701,19 +883,19 @@ function registerIpc(): void {
   });
 
   // 主题
-  ipcMain.handle(IPC.themeGetSystem, () => (nativeTheme.shouldUseDarkColors ? 'dark' : 'light'));
+  handle(IPC.themeGetSystem, () => (nativeTheme.shouldUseDarkColors ? 'dark' : 'light'));
   nativeTheme.on('updated', () => {
     broadcast(IPC.themeSystemChanged, nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
   });
 
   // R8 云端简报：Key 走 safeStorage，settings.json 里只留一个"设没设"的布尔值
-  ipcMain.handle(IPC.cloudHasKey, () => hasCloudKey());
-  ipcMain.handle(IPC.cloudSetKey, (_e, apiKey: string) => {
+  handle(IPC.cloudHasKey, () => hasCloudKey());
+  handle(IPC.cloudSetKey, (_e, apiKey: string) => {
     const ok = saveCloudKey(apiKey);
     if (ok) void pushCloudConfig();
     return ok;
   });
-  ipcMain.handle(IPC.cloudClearKey, () => {
+  handle(IPC.cloudClearKey, () => {
     clearCloudKey();
     void pushCloudConfig();
   });
@@ -724,8 +906,8 @@ function registerIpc(): void {
   // 启动时通过 `--web-key id=值` 传给 Python 进程的命令行参数，
   // 不像云端 Key 那样有热更新接口。不重启的话，用户填完 Key 会看到
   // 引擎照旧报"没有配置 API Key" —— 又是一次"看起来生效了，实际没有"。
-  ipcMain.handle(IPC.engineKeyStatus, () => engineKeyStatus());
-  ipcMain.handle(IPC.engineKeySet, (_e, id: string, value: string) => {
+  handle(IPC.engineKeyStatus, () => engineKeyStatus());
+  handle(IPC.engineKeySet, (_e, id: string, value: string) => {
     const key = String(id || '').trim();
     if (!key) return false;
     const all = loadEngineKeys();
@@ -738,22 +920,22 @@ function registerIpc(): void {
   });
   // U 组 应用自更新。**下载和安装永远是用户点出来的**，
   // 这里没有任何一条路径会自己走到 quitAndInstall
-  ipcMain.handle(IPC.updateGetState, () => updater?.getState() ?? null);
-  ipcMain.handle(IPC.updateCheck, () => updater?.check(false));
-  ipcMain.handle(IPC.updateDownload, () => updater?.download());
-  ipcMain.handle(IPC.updateInstall, () => {
+  handle(IPC.updateGetState, () => updater?.getState() ?? null);
+  handle(IPC.updateCheck, () => updater?.check(false));
+  handle(IPC.updateDownload, () => updater?.download());
+  handle(IPC.updateInstall, () => {
     // 让引擎先干净退出，再让安装器接管。不这么做的话 Python 进程
     // 还占着 data 目录的文件句柄，NSIS 覆盖安装会撞上"文件被占用"
     (app as AppRef).isQuitting = true;
     updater?.install();
   });
-  ipcMain.handle(IPC.updateSkip, (_e, version: string) => {
+  handle(IPC.updateSkip, (_e, version: string) => {
     settings = patchSettings({ skippedUpdateVersion: version });
     updater?.setSkippedVersion(version);
     broadcast(IPC.settingsChanged, settings);
   });
 
-  ipcMain.handle(
+  handle(
     IPC.cloudTest,
     async (
       _e,
@@ -762,15 +944,49 @@ function registerIpc(): void {
       const port = engine?.getState().port;
       if (!port) return { ok: false, error: '引擎还没就绪' };
       try {
-        // 输入框里的草稿为空，说明用户测的是"已经保存过的那把 Key"，
-        // 不是没填——这时候要从 safeStorage 读出真实值，不能拿空串去配置
-        // （拿空串配的话，已保存过 Key 的用户点"测试连接"必然失败，
-        //  他会以为自己保存出了问题，而实际上问题出在这个 IPC 处理逻辑没接上）
-        const apiKey = draft.apiKey || loadCloudKey() || '';
+        /**
+         * 🔴 **草稿里没带 Key 时，草稿里的地址一律不作数。**
+         *
+         * 原来这里是 `apiKey = draft.apiKey || loadCloudKey()`，而
+         * `baseUrl` 整个由渲染层给。于是一次
+         * `cloud.test({ baseUrl:'https://攻击者/v1', apiKey:'' })`
+         * 就让主进程**替调用方**把付费 Key 从 safeStorage 解出来，
+         * 送到攻击者的服务器上 —— 调用方自己根本不需要知道 Key 是什么。
+         *
+         * 两个候选修法里选了这一个（另一个是"baseUrl 必须 https + 厂商白名单
+         * + 自建端点要显式开关"）：白名单挡不住自建端点这个正当需求，
+         * 一旦留了开关，攻击面又回来了；而"要用已存的 Key，就只能用已存的
+         * 那套配置"是一条不需要维护任何名单的硬规则，也不改变正常用法 ——
+         * 用户在设置页改地址时那个改动本来就已经存进 settings 了
+         * （SettingsPage 的 patchCloud 是立刻落盘的），
+         * 所以"用已保存的配置去测"测的正是他刚填的地址。
+         *
+         * 只有用户在输入框里**当场敲了一把新 Key**时，才允许连草稿里的
+         * 地址一起用 —— 那把 Key 是他自己刚输入的，不是我们替他解密的。
+         */
+        const typed = String(draft?.apiKey ?? '').trim();
+        const target = typed
+          ? {
+              provider: String(draft?.provider ?? 'none'),
+              baseUrl: String(draft?.baseUrl ?? ''),
+              chatModel: String(draft?.chatModel ?? ''),
+              apiKey: typed,
+            }
+          : {
+              provider: settings.cloud.enabled ? settings.cloud.provider : 'none',
+              baseUrl: settings.cloud.baseUrl ?? '',
+              chatModel: settings.cloud.chatModel ?? '',
+              apiKey: loadCloudKey() ?? '',
+            };
+        // 当场敲的那把 Key 也不能往任意协议上送：`baseUrl` 只认 http/https，
+        // 空串交给引擎用它自己的默认地址
+        if (target.baseUrl && !/^https?:\/\//i.test(target.baseUrl)) {
+          return { ok: false, error: '接口地址必须以 http:// 或 https:// 开头' };
+        }
         await fetch(`http://127.0.0.1:${port}/api/cloud/configure`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...draft, apiKey }),
+          body: JSON.stringify(target),
         });
         const r = await fetch(`http://127.0.0.1:${port}/api/cloud/test`, { method: 'POST' });
         const body = (await r.json().catch(() => ({}))) as { detail?: string; reply?: string };
@@ -808,7 +1024,10 @@ function applyHotkeys(): void {
       accelerator: custom.focusSearch?.trim() || 'Alt+Space',
       fallbacks: ['CommandOrControl+Alt+Space', 'CommandOrControl+Shift+Space'],
       run: () => {
-        showWindow();
+        // 🔴 按一下唤起，**再按一下收回去**。原来这里只有 showWindow()：
+        //    窗口已经在眼前了还按同一个键，什么都不会发生，用户只能去点关闭。
+        //    收起来的判断在 toggleWindow 里（要看焦点，理由见那儿）。
+        if (toggleWindow('hotkey')) return;
         win?.webContents.send(IPC.engineEvent, { type: 'ui.focus-search' });
       },
     },
@@ -822,6 +1041,8 @@ function applyHotkeys(): void {
       },
     },
   ]);
+  // 托盘菜单里那行「快速搜索…」要印真正抢到的键，不能印我们希望抢到的
+  tray?.setSearchAccelerator(hotkeyReport.find((r) => r.id === 'focus-search')?.active ?? null);
   for (const r of hotkeyReport) {
     if (!r.active) {
       console.warn(`[hotkey] 「${r.label}」一个都没抢到，试过：${r.tried.join(' / ')}`);
@@ -839,6 +1060,7 @@ app.whenReady().then(() => {
 
   tray = new TrayController({
     onShow: () => showWindow(),
+    onToggle: () => void toggleWindow('tray'),
     onSearch: () => {
       showWindow();
       win?.webContents.send(IPC.engineEvent, { type: 'ui.focus-search' });
@@ -847,7 +1069,8 @@ app.whenReady().then(() => {
       (app as AppRef).isQuitting = true;
       app.quit();
     },
-    onRestartEngine: () => void engine?.restart(),
+    // 同 IPC.engineRestart：托盘菜单这一路以前也绕过了串行链
+    onRestartEngine: () => void requestEngineRestart(),
     onToggleClipboard: (enabled) => {
       settings = patchSettings({ clipboardSentinel: enabled });
       applyClipboardSetting();

@@ -301,7 +301,7 @@
 .entitygrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-  gap: var(--syn-space-xs);
+  gap: var(--syn-d-card-gap, 16px);
 }
 
 .entity {
@@ -1474,8 +1474,8 @@
 .brief {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: var(--syn-space-md);
-  margin-bottom: var(--syn-space-lg);
+  gap: var(--syn-d-card-gap, 16px);
+  margin-bottom: var(--syn-d-space-lg, 16px);
 }
 
 .brief__block {

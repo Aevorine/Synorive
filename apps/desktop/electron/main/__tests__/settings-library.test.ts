@@ -61,6 +61,7 @@ function makeBase(overrides: Partial<AppSettings> = {}): AppSettings {
     enableImageDescription: false,
     enableGpuAcceleration: false,
     sensitiveGuardEnabled: true,
+    backgroundIndexingLowPriority: true,
     lanPairingEnabled: false,
     pairingToken: 'abc123',
     allowNetwork: true,

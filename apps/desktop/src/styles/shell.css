@@ -100,12 +100,17 @@
 
 /* ── 搜索框：全应用最重要的一个控件 ──────────────────────── */
 
+/* 宽度（C1）：原来死卡在 720px，1920px 的窗口上它只占 37%，
+   两边各空 600px —— 顶栏是全应用最显眼的一条，那片空白最扎眼。
+   改成 min(60vw, 1100px)：窄窗口按 60vw 跟着缩（不会挤掉右边的窗口按钮），
+   宽窗口停在 1100px。不让它无限长是因为搜索框是"扫"的控件，
+   一眼扫不到头的输入框反而让人不确定自己刚才打的字还在不在里面。 */
 .searchbox {
   display: flex;
   align-items: center;
   gap: var(--syn-space-sm);
   width: 100%;
-  max-width: var(--syn-layout-search-max);
+  max-width: min(60vw, var(--syn-layout-search-fluid-max, 1100px));
   height: 36px;
   padding-inline: var(--syn-space-md);
   background: var(--syn-color-bg-sunken);
@@ -258,7 +263,8 @@
   display: flex;
   align-items: baseline;
   gap: var(--syn-space-md);
-  padding: var(--syn-space-xl) var(--syn-layout-content-pad) var(--syn-space-lg);
+  padding: var(--syn-d-space-xl, 24px) var(--syn-layout-content-pad)
+    var(--syn-d-space-lg, 16px);
 }
 
 /* 状态行。导航栏已经写着当前在哪一页，正文顶上不再重复一遍页名 ——
@@ -293,7 +299,9 @@
   flex: 1;
   min-height: 0;
   padding-inline: var(--syn-layout-content-pad);
-  padding-block: var(--syn-space-md) var(--syn-space-xl);
+  /* 上下内边距也接密度（C7）：原来写死 12/24，紧凑档下页面上下依然
+     跟标准档一样松，"紧凑"只在左右方向生效，看起来像开关没起作用 */
+  padding-block: var(--syn-d-space-md, 12px) var(--syn-d-space-xl, 24px);
   overflow: auto;
 }
 
