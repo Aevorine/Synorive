@@ -19,7 +19,7 @@
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
@@ -53,6 +53,45 @@ const MCP_PKG = join(ROOT, 'mcp', 'package.json');
 // 少一个就一定会漂移，只是快慢的问题。
 const CLI_PKG = join(ROOT, 'cli', 'package.json');
 const PACKAGE_LOCK = join(ROOT, 'package-lock.json');
+
+/**
+ * 🔴 **README 一直不在这份名单里**，而它恰恰是用户第一眼看到版本号的地方。
+ *
+ * 后果不是"少改一个数"，是**发出去的公告页指着旧文件名**：
+ * 徽章写着 `download-v0.1.8`、下载表格里写着 `Synorive-Setup-0.1.8.exe`，
+ * 而 Releases 里已经只有 0.1.9 了。链接指向 `releases/latest` 所以**点得动**，
+ * 但用户看到的文件名和实际下到的东西对不上 —— 没有任何一处会报错。
+ *
+ * 判据和上面几条一样：**全仓 grep 得到的每一处版本号都必须在这个脚本的名单里。**
+ * 2026-09-11 补进来，同日实测 5 份 README 全部漂在 0.1.8。
+ */
+const README_FILES = [
+  join(ROOT, 'README.md'),
+  ...['ar', 'es', 'fr', 'ru', 'zh-CN'].map((l) => join(ROOT, 'docs', 'i18n', `README.${l}.md`)),
+];
+
+/**
+ * README 里版本号只出现在四个固定位置，逐个点名替换 —— **不做全文 `0\.1\.\d+` 替换**：
+ * README 正文里有别的地方会自然出现 `0.1.x`（比如 release notes 的例子、
+ * 依赖版本），一把梭会改出莫名其妙的 diff，而且下次没人敢信这个脚本。
+ *
+ * ⚠️ 四条规则**必须全部命中**，缺一条就报错退出 ——
+ *    否则有人把下载表格改成新格式之后，脚本会"成功"而新位置永远不更新。
+ */
+function readmeRules(next) {
+  return [
+    [/badge\/download-v\d+\.\d+\.\d+/, `badge/download-v${next}`],
+    [/Synorive-Setup-\d+\.\d+\.\d+\.exe/, `Synorive-Setup-${next}.exe`],
+    [/Synorive-\d+\.\d+\.\d+-portable\.exe/, `Synorive-${next}-portable.exe`],
+    // 文档里的用法示例 `npm run version:set 0.1.8` —— 也是要跟着走的
+    [/version:set \d+\.\d+\.\d+/, `version:set ${next}`],
+  ];
+}
+
+/** 把 text 里所有匹配 re 的地方换成 to（re 不带捕获组，所以 split/join 安全） */
+function replaceAll(text, re, to) {
+  return text.split(re).join(to);
+}
 
 /**
  * versionName → versionCode。
@@ -113,6 +152,27 @@ function check() {
       + '（它会被 /health 返回，桌面端状态栏显示的就是它）');
   }
 
+  // README（含 5 份 i18n）—— 用户第一眼看到版本号的地方
+  for (const p of README_FILES) {
+    let text;
+    try {
+      text = readFileSync(p, 'utf8');
+    } catch {
+      problems.push(`${relative(ROOT, p)} 读不到`);
+      continue;
+    }
+    for (const [re] of readmeRules(want)) {
+      const hit = text.match(re);
+      if (!hit) {
+        problems.push(`${relative(ROOT, p)} 里没找到 ${re}`
+          + '（README 的写法改过就要同步改 readmeRules，否则这一处永远不会被更新）');
+        continue;
+      }
+      const got = hit[0].match(/\d+\.\d+\.\d+/)?.[0];
+      if (got !== want) problems.push(`${relative(ROOT, p)} 里是「${hit[0]}」，应为 ${want}`);
+    }
+  }
+
   console.log('当前版本：');
   console.log(`  根 package.json      ${v.root}`);
   console.log(`  桌面 package.json    ${v.desktop}`);
@@ -130,7 +190,7 @@ function check() {
     console.error(`\n跑 node scripts/set-version.mjs ${want} 修好它。`);
     process.exit(1);
   }
-  console.log('\n✓ 四处版本号一致。');
+  console.log('\n✓ 所有位置版本号一致（含 5 份 README）。');
 }
 
 function setVersion(next) {
@@ -181,6 +241,23 @@ function setVersion(next) {
     writeFileSync(path, before.replace(re, make()), 'utf8');
   }
 
+  // README（含 5 份 i18n）。四条规则全部命中才写盘 ——
+  // 缺一条就说明 README 的写法变了，这时**宁可整个脚本失败**，
+  // 也不能"改了三处、第四处悄悄不动"。
+  for (const p of README_FILES) {
+    const before = readFileSync(p, 'utf8');
+    let after = before;
+    for (const [re] of readmeRules(next)) {
+      if (!re.test(before)) {
+        console.error(`✗ 在 ${relative(ROOT, p)} 里没找到 ${re}，没有改动它`);
+        console.error('  改过 README 的版本号写法就要同步改 set-version.mjs 的 readmeRules()。');
+        process.exit(1);
+      }
+    }
+    for (const [re, to] of readmeRules(next)) after = replaceAll(after, re, to);
+    writeFileSync(p, after, 'utf8');
+  }
+
   // package-lock.json 里三个 workspace 包的 version 字段混在几百个第三方依赖
   // 的 version 字段里，正则替换风险太大（容易改错行）。交给 npm 自己按刚写好
   // 的 package.json 重新算 lockfile——不装东西，只是 --package-lock-only。
@@ -203,7 +280,8 @@ function setVersion(next) {
   console.log('  改到了：package.json / apps/desktop/package.json / mcp/package.json /');
   console.log('          cli/package.json / package-lock.json /');
   console.log('          apps/mobile/app/build.gradle.kts /');
-  console.log('          engine/pyproject.toml / engine/synorive/__init__.py');
+  console.log('          engine/pyproject.toml / engine/synorive/__init__.py /');
+  console.log(`          README.md + docs/i18n/README.*.md（共 ${README_FILES.length} 份）`);
   console.log(`\n下一步：git commit 后打 tag —— git tag v${next}`);
 }
 
