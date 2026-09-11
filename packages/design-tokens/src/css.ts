@@ -76,8 +76,16 @@ function staticVars(): string {
   lines.push(`  --syn-layout-side-bar-collapsed: ${layout.sideBarWidthCollapsed}px;`);
   lines.push(`  --syn-layout-status-bar: ${layout.statusBarHeight}px;`);
   lines.push(`  --syn-layout-search-max: ${layout.searchBoxMaxWidth}px;`);
+  lines.push(`  --syn-layout-search-fluid-max: ${layout.searchBoxFluidMax}px;`);
   lines.push(`  --syn-layout-content-pad: ${layout.contentPadding}px;`);
   lines.push(`  --syn-layout-detail-panel: ${layout.detailPanelWidth}px;`);
+  lines.push('  /* ── C1 宽屏填满：行长约束 + 三栏工作台 ── */');
+  // proseMeasure 是 '96ch'，**已经带单位**，再拼 px 就成了 "96chpx"（整条声明被丢弃，
+  // 不报错、只是 max-width 静默失效 → 正文一路铺到 2000px）
+  lines.push(`  --syn-layout-prose-measure: ${layout.proseMeasure};`);
+  lines.push(`  --syn-layout-wide-max: ${layout.wideMaxWidth}px;`);
+  lines.push(`  --syn-layout-rail-left: ${layout.railLeftWidth}px;`);
+  lines.push(`  --syn-layout-rail-right: ${layout.railRightWidth}px;`);
   for (const [k, v] of Object.entries(layout.resultRowHeight)) {
     lines.push(`  --syn-row-h-${kebab(k)}: ${v}px;`);
   }
@@ -118,6 +126,8 @@ function densityVars(name: keyof typeof densityScale): string {
   lines.push(`  --syn-d-card-pad: ${d.cardPad}px;`);
   lines.push(`  --syn-d-line-height: ${d.lineHeight};`);
   lines.push(`  --syn-d-content-pad: ${d.contentPad}px;`);
+  lines.push(`  --syn-d-card-gap: ${d.cardGap}px;`);
+  lines.push(`  --syn-d-thumb: ${d.thumb}px;`);
   // 由总倍率乘出来的间距阶梯 —— 组件用这一组，就自动是响应密度的
   for (const [k, v] of Object.entries(spacing)) {
     if (v === 0) continue;

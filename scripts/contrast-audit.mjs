@@ -153,7 +153,7 @@ const EXEMPT = [
 let failed = 0;
 const suggestions = new Map();   // `${theme}.${token}` → 建议色值集合
 
-for (const theme of ['light', 'dark']) {
+for (const theme of ['light', 'dark', 'paper']) {
   const p = palette[theme];
   console.log(`\n${'━'.repeat(78)}`);
   console.log(`  ${theme === 'light' ? '浅色' : '深色'}主题`);

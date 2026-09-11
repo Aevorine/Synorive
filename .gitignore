@@ -6,7 +6,7 @@
 #    engine.json 里有本机绝对路径和 PID，websearch-health.json 是搜索行为统计，
 #    还有索引库本体。2026-08-03 转公开前的扫描当场抓到它们已经进了暂存区。
 engine/data/
-data/
+apps/desktop/data/
 *.db
 *.db-wal
 *.db-shm
@@ -28,6 +28,12 @@ dist/
 # ── Node ──────────────────────────────────────────────────────
 node_modules/
 .vite/
+
+# ── git worktree 挂载点 ───────────────────────────────────────
+# 分支隔离用 `git worktree add .worktrees/<名字> -b <分支>` 在这里开，
+# 每个挂载点自带一份完整检出和 node_modules。它**不是**仓库内容，
+# 漏了这一条，主工作区的 git status 会被几十万行依赖文件淹掉。
+.worktrees/
 out/
 release/
 *.tsbuildinfo
@@ -89,6 +95,13 @@ apps/desktop/src/styles/fonts.css
 #    （.claude/settings.json 和 skills/ 这类**该共享的**配置不受影响）
 .claude/.pv-*.json
 .claude/settings.local.json
+# 🔴 `.claude/pv/` 是同一批东西的**新落点**（intake.json 收原始需求、
+#    ledger.jsonl 是逐轮台账、round.json 是当前轮次）。只忽略 `.pv-*.json`
+#    这一条老规则盖不住它 —— 2026-09-11 发版前扫描时才发现它一直裸露在
+#    `git status` 里，随时可能被 `git add -A` 卷进去。
+.claude/pv/
+# 调度器的运行期锁文件（本机状态，内容是进程信息）
+.claude/scheduled_tasks.lock
 
 # 🔴 我和你之间的工作记录，不是产品文档 —— 仓库是公开的，这几份里
 #    有你的需求原话、口令习惯、以及"哪些地方我做错过"。对外人零价值，
@@ -98,6 +111,22 @@ apps/desktop/src/styles/fonts.css
 /task-progress.md
 .claude/PROJECT-BRIEF.md
 .claude/PROJECT-AI-STATE.md
+
+# 🔴 `.lavish/` 里存的是**整场会话的 HTML 转录**
+#    （session.claude-*.html，单份 20 万字节级，含你的原话与屏幕内容）
+#    加上逐轮请求原文 current-request.md。这是最重的一类隐私数据，
+#    而它默认就躺在仓库根目录、`git status` 里明晃晃地列着 —— 只要有一次
+#    `git add -A` 就跟着公开仓库一起出去了。整目录忽略，不留例外。
+.lavish/
+
+# Playwright MCP 抓下来的页面快照（本机调试产物，与产品无关）
+.playwright-mcp/
+
+# 🔴 安全审计报告：**本地留存，不进公开仓库。**
+#    仓库是 public 的，而这份报告逐条点名了「git 历史里哪三处被 gitleaks
+#    判成密钥」「哪些依赖还有未修的 CVE」。对攻击者来说这是一份现成的清单 ——
+#    公开它等于替对方做完侦察。报告本身继续用，只是不跟着仓库走。
+/docs/安全与依赖审计-*.md
 
 # 随包分发的 Python 运行时（scripts/bundle-python.mjs 生成，几百 MB，构建时重建）
 apps/desktop/resources/pyruntime/

@@ -821,6 +821,17 @@ export interface AppSettings {
    */
   sensitiveGuardEnabled: boolean;
   /**
+   * B6：批量摄取/分析线程跑后台优先级，系统繁忙时让路给前台搜索。
+   * 默认开。关掉是例外操作——只有在"怀疑优先级调整让这台机器上摄取变慢"
+   * 时才关。关掉时桌面端给引擎加 `--disable-background-priority`。
+   *
+   * 🔴 这个字段曾经只加进了 `settings.ts` 的默认值和 `settings-schema.ts`
+   *    的校验，**没加进这个接口** —— 于是 `settings-schema.ts` 末尾那两条
+   *    静态对齐断言直接编译不过。断言拦住的是"校验默默漏掉新字段"，
+   *    拦住的过程本身是对的；漏掉的是接口本身。改这里就够了，另外两处已对齐。
+   */
+  backgroundIndexingLowPriority: boolean;
+  /**
    * A16 安卓配对：打开后引擎从只听 127.0.0.1 改成监听 0.0.0.0，
    * 局域网里的手机才连得上。默认关——这会让同一局域网内的其他设备
    * 看得到这台机器在跑这个服务。开着的时候所有非本机请求都要带

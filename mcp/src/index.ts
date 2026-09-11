@@ -96,7 +96,7 @@ function fail(e: unknown) {
 
 const server = new McpServer({
   name: 'synorive',
-  version: '0.1.0',
+  version: '0.1.8',
 });
 
 // ① 检索
@@ -187,7 +187,9 @@ server.registerTool(
     title: '分析一个文件并立刻返回结果',
     description:
       '分析单个文件并同步等结果返回（和 synorive_ingest 的区别是这个会等完成）。' +
-      '适合"我想知道这个文件里有什么"的场景。大文件会比较慢。',
+      '适合"我想知道这个文件里有什么"的场景。' +
+      '🔴 **最多只等 20 秒**：超时就返回一句"已提交但还没完成"，' +
+      '这**不是失败**，只是大文件还在后台跑——过一会儿用 synorive_search 找它就行，别重复调用本工具。',
     inputSchema: {
       target: z.string().describe('文件的绝对路径'),
       maxChars: z.number().int().min(200).max(50000).default(4000).describe('返回多少字正文'),
