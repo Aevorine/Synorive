@@ -28,6 +28,11 @@ dist/
 # ── Node ──────────────────────────────────────────────────────
 node_modules/
 .vite/
+# electron-vite 构建期会在 apps/desktop/ 下写一份带时间戳的临时配置，
+# 正常路径它自己会删掉；**构建中途失败就会残留**，且文件名带随机后缀，
+# 每次失败都留一个新的。不忽略的话，一次失败的构建就能在 git status 里
+# 多出一条看着像源码的文件。
+apps/desktop/electron.vite.config.*.mjs
 
 # ── git worktree 挂载点 ───────────────────────────────────────
 # 分支隔离用 `git worktree add .worktrees/<名字> -b <分支>` 在这里开，
