@@ -24,7 +24,8 @@
  * 挡住你刚复制完要粘贴的那个输入框。
  */
 
-import { BrowserWindow, screen, shell } from 'electron';
+import { app, BrowserWindow, screen, shell } from 'electron';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { IPC } from '../shared/ipc-contract.js';
 
@@ -85,23 +86,34 @@ export class PeekWindow {
    * A8 —— 复制到一张图时调这个，走以图搜图那一路。
    *
    * 🔴 **和 `show()` 分成两条通道，不复用查询词那条。**
-   * 图片的 `dataUrl` 是几百 KB 的 base64；当成查询词传下去会被分词器
-   * 当文本处理，症状是浮窗正常弹出、正常显示"没找到"，
-   * 而真相是它根本没在搜图。静默失败的典型形态。
+   *  图片的 data URL 是几百 KB 的 base64；当成查询词传下去会被分词器
+   *  当文本处理，症状是浮窗正常弹出、正常显示"没找到"，
+   *  而真相是它根本没在搜图。静默失败的典型形态。
    *
    * 🔴 **图片一路永不联网**，哪怕用户开了 `peekWeb`。
-   * 文字查询发出去的是一句话，图片发出去的是**一张可能包含任何东西的截图** ——
-   * 那个隐私代价的量级完全不同，不该被同一个开关覆盖。
-   * 要网上反查得回主窗口里显式点。
+   *  文字查询发出去的是一句话，图片发出去的是**一张可能包含任何东西的截图** ——
+   *  那个隐私代价的量级完全不同，不该被同一个开关覆盖。
+   *  要网上反查得回主窗口里显式点。
+   *
+   * 🔴 **推的是临时文件路径，不是 data URL。**
+   *  这条以前推的是 `image: dataUrl`，而渲染层**从来没监听这条通道** ——
+   *  于是复制一张图，浮窗照样弹出来，显示"你的库里没有相关内容"，
+   *  全程不报错。修的时候顺手把载荷换成路径：
+   *  引擎的 `/search/by-image` 只吃本机路径，推 data URL 的话渲染层
+   *  还得先想办法把它变回一个文件；而且几百 KB 的 base64 走一遍 IPC
+   *  要先 JSON 序列化，浮窗的全部价值就是"快得像没发生过"。
    */
   showImage(dataUrl: string, preview: string): void {
     if (!dataUrl.startsWith('data:image/')) return;
-    // 太大的图不走浮窗：base64 过 4MB 时 IPC 序列化本身就要几百毫秒，
+    // 太大的图不走浮窗：base64 过 4MB 时序列化本身就要几百毫秒，
     // 而浮窗的全部价值就在于"快得像没发生过"
     if (dataUrl.length > 4 * 1024 * 1024) return;
 
+    const path = this.writeTempImage(dataUrl);
+    if (!path) return;
+
     const win = this.ensure();
-    const payload = { image: dataUrl, preview, web: false };
+    const payload = { path, preview, web: false };
     const send = () => win.webContents.send(IPC.peekImage, payload);
     if (win.webContents.isLoading()) {
       win.webContents.once('did-finish-load', send);
@@ -114,6 +126,33 @@ export class PeekWindow {
 
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = setTimeout(() => this.hide(), AUTO_HIDE_MS);
+  }
+
+  /**
+   * 把剪贴板那张图的 data URL 落成临时文件，返回路径。
+   *
+   * 固定文件名（不按时间戳生成）是**故意**的：浮窗只关心"刚复制的那张"，
+   * 每次覆盖写同一个文件，临时目录里就不会堆出一串历史截图 ——
+   * 用户复制过的图不该在硬盘上留下副本，哪怕在 temp 里。
+   */
+  private writeTempImage(dataUrl: string): string | null {
+    const comma = dataUrl.indexOf(',');
+    if (comma < 0) return null;
+    const meta = dataUrl.slice(5, comma);
+    if (!meta.includes('base64')) return null;
+
+    const mime = meta.split(';')[0] || 'image/png';
+    const ext = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
+    const file = join(app.getPath('temp'), `synorive-peek-image.${ext}`);
+
+    try {
+      writeFileSync(file, Buffer.from(dataUrl.slice(comma + 1), 'base64'));
+      return file;
+    } catch {
+      // 临时目录写不进去（磁盘满 / 权限）时静默放弃 ——
+      // 为一个"顺手看一眼"的功能弹错误提示，比不弹更烦人
+      return null;
+    }
   }
 
   hide(): void {

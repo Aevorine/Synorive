@@ -7,7 +7,7 @@
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { AppSettings, LibraryEntry } from '@synorive/shared-types';
-import { IPC, type ClipEntry, type UpdateState } from '../shared/ipc-contract.js';
+import { IPC, type ClipEntry, type PeekImagePayload, type UpdateState } from '../shared/ipc-contract.js';
 
 type Unsubscribe = () => void;
 
@@ -100,8 +100,7 @@ const api = {
   peek: {
     onQuery: (cb: (p: { query: string; web: boolean }) => void) => on(IPC.peekQuery, cb),
     /** A8 复制了一张图 —— 和 onQuery 分开，因为图走的是完全另一条检索路径 */
-    onImage: (cb: (p: { image: string; preview: string; web: boolean }) => void) =>
-      on(IPC.peekImage, cb),
+    onImage: (cb: (p: PeekImagePayload) => void) => on(IPC.peekImage, cb),
     close: (): Promise<void> => ipcRenderer.invoke(IPC.peekClose),
   },
 

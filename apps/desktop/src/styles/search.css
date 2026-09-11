@@ -816,6 +816,17 @@
   text-overflow: ellipsis;
 }
 
+/* A8 图片浮窗：顶上这条缩略图是**唯一**让用户确认"查的是哪张图"的东西。
+   少了它，浮窗里出现三个结果而用户不知道在搜什么 */
+.peek__thumb {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border: 1px solid var(--syn-color-border);
+  border-radius: var(--syn-radius-sm);
+}
+
 .peek__close {
   flex: none;
   padding: 2px;

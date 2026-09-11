@@ -26,6 +26,7 @@ const MAX = 3;
 
 export function ClipboardPeek() {
   const [query, setQuery] = useState('');
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [local, setLocal] = useState<SearchHit[]>([]);
   const [web, setWeb] = useState<WebResultItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -56,6 +57,7 @@ export function ClipboardPeek() {
   useEffect(() => {
     return window.synorive.peek.onQuery(async (p) => {
       setQuery(p.query);
+      setImagePreview(null);
       setLocal([]);
       setWeb([]);
       setErr(null);
@@ -89,6 +91,40 @@ export function ClipboardPeek() {
     });
   }, []);
 
+  /**
+   * A8 —— 复制到一张图时走这条。
+   *
+   * 🔴 这段以前**根本不存在**：主进程 `PeekWindow.showImage()` 老老实实
+   *    把 `peek:image` 推了出来，而这里没人监听。症状是复制一张图，
+   *    浮窗照常弹出、照常显示"你的库里没有相关内容"，全程不报错 ——
+   *    用户以为库里真的没有，实际上是这条通道另一头是空的。
+   *
+   * 图片一路**只查本地**：主进程给过来的 `web` 永远是 false，
+   * 这里也不再做联网分支。发一句话出去和发一张截图出去，隐私代价不同量级。
+   */
+  useEffect(() => {
+    return window.synorive.peek.onImage(async (p) => {
+      setImagePreview(p.preview);
+      setQuery('');
+      setLocal([]);
+      setWeb([]);
+      setErr(null);
+      setLoading(true);
+      abortRef.current?.abort();
+      const ctl = new AbortController();
+      abortRef.current = ctl;
+
+      try {
+        const r = await api.byImage({ path: p.path, limit: MAX });
+        if (!ctl.signal.aborted) setLocal((r.hits ?? []).slice(0, MAX));
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') setErr((e as Error).message);
+      } finally {
+        if (!ctl.signal.aborted) setLoading(false);
+      }
+    });
+  }, []);
+
   const close = () => void window.synorive.peek.close();
 
   const openItem = (h: SearchHit) => {
@@ -103,9 +139,13 @@ export function ClipboardPeek() {
   return (
     <div className="peek">
       <header className="peek__head">
-        <span className="peek__q" title={query}>
-          {query.length > 42 ? `${query.slice(0, 41)}…` : query}
-        </span>
+        {imagePreview ? (
+          <img className="peek__thumb" src={imagePreview} alt="刚复制的图" />
+        ) : (
+          <span className="peek__q" title={query}>
+            {query.length > 42 ? `${query.slice(0, 41)}…` : query}
+          </span>
+        )}
         {loading && <Loader2 size={12} className="spin" aria-hidden />}
         <button className="peek__close" onClick={close} aria-label="关闭" title="关闭">
           <X size={13} />
@@ -116,9 +156,13 @@ export function ClipboardPeek() {
 
       {nothing && (
         <p className="peek__msg">
-          你的库里没有相关内容。
+          {imagePreview ? '你的库里没有相似的图。' : '你的库里没有相关内容。'}
           <br />
-          <span className="peek__dim">（这只查了本地。要连网上一起查，去设置里打开）</span>
+          <span className="peek__dim">
+            {imagePreview
+              ? '（只比了库里已有的图和视频画面。没装图像模型时这张图比不了）'
+              : '（这只查了本地。要连网上一起查，去设置里打开）'}
+          </span>
         </p>
       )}
 

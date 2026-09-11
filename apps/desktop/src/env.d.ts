@@ -4,6 +4,7 @@ import type { AppSettings, LibraryEntry } from '@synorive/shared-types';
 import type {
   ClipEntry,
   EngineProcessState,
+  PeekImagePayload,
   UpdateState,
   WindowState,
 } from '../electron/shared/ipc-contract';
@@ -70,7 +71,7 @@ export interface SynoriveApi {
   peek: {
     onQuery: (cb: (p: { query: string; web: boolean }) => void) => Unsubscribe;
     /** A8 复制了一张图 —— 和 onQuery 分开，因为图走的是另一条检索路径 */
-    onImage: (cb: (p: { image: string; preview: string; web: boolean }) => void) => Unsubscribe;
+    onImage: (cb: (p: PeekImagePayload) => void) => Unsubscribe;
     close: () => Promise<void>;
   };
   /**

@@ -187,6 +187,28 @@ export interface WindowState {
   isFullScreen: boolean;
 }
 
+/**
+ * A8 复制到一张图时推给浮窗的载荷。
+ *
+ * 🔴 推的是**磁盘路径**不是 data URL。
+ *    图片的 data URL 动辄几百 KB，走 IPC 要先 JSON 序列化一遍，
+ *    浮窗的全部价值就是"快得像没发生过"，这一段纯属白花。
+ *    而且引擎的 `/search/by-image` 本来就只吃本机路径 ——
+ *    推 data URL 的话渲染层还得先想办法把它变回一个文件。
+ *
+ * 🔴 `preview` 仍然是 data URL，但它是缩略图（几十 KB），
+ *    用来让用户确认"查的是不是这张图"。少了它，用户看到浮窗里
+ *    三个结果却不知道在搜什么。
+ */
+export interface PeekImagePayload {
+  /** 落到临时目录里的那张原图 */
+  path: string;
+  /** 缩略图 data URL，只用于显示 */
+  preview: string;
+  /** 图片一路**永远是 false**（见 electron/main/peek.ts 的约束②） */
+  web: boolean;
+}
+
 // ── U 组 应用自更新 ────────────────────────────────────────
 
 /**
