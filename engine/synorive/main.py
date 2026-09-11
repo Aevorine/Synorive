@@ -17,6 +17,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -45,6 +46,103 @@ _INTEGRITY = _integrity_check()
 #: 过的设备扫到端口就能读，超出了"配对前确认这是不是 Synorive"本身需要的范围。
 _UNGUARDED_PATHS = {"/pairing/status"}
 
+#: S5：这次请求是不是来自**非本机**。`_PairingGuardMiddleware` 写进 ASGI scope，
+#: 路由层用 `routes._is_remote()` 读。
+#:
+#: 🔴 **判定只在这一处做。** 路由层自己去看 `request.client.host` 是行不通的：
+#:    反代/测试客户端下那个字段千奇百怪（TestClient 是 "testclient"），
+#:    判错的方向是"把本机当成远程"，那会直接砍掉桌面端的主功能。
+#:    scope 里没有这个键 = 没经过这道闸 = 按本机处理，和改动前完全一样。
+REMOTE_SCOPE_KEY = "synorive_remote"
+
+
+def dev_mode() -> bool:
+    """
+    M1/M18：现在跑的是不是**开发模式**。
+
+    打包版和开发版在两件事上必须不一样：
+      ① CORS：开发时渲染层跑在 `http://localhost:5173`（Vite），打包后是 `file://`。
+      ② `/docs` `/openapi.json`：那是 150 条接口的完整签名表。本机零鉴权，
+         把它常开等于给"本机任意网页/任意进程"发了一份攻击说明书。
+
+    判据两条，任意一条成立就算开发模式：
+      · `SYNORIVE_DEV=1`（显式，命令行调试用）
+      · 环境里有 `ELECTRON_RENDERER_URL`（electron-vite 开发模式会设它，
+        引擎是 Electron 主进程 spawn 的、继承整个 env，所以拿得到）
+    第二条是为了**不用改 apps/ 就能让现有的开发流程照常工作** ——
+    只加显式变量的话，谁都不会记得设，开发模式第二天就坏了。
+    """
+    if os.environ.get("SYNORIVE_DEV", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return bool(os.environ.get("ELECTRON_RENDERER_URL", "").strip())
+
+
+#: M1 打包版放行的浏览器来源。**只有 file://** —— 渲染层是 `loadFile` 起来的。
+#: 原来这里连本机任意端口都放行（`http://127.0.0.1:任意端口`），意味着
+#: **这台机器上跑着的任何一个网页**（Vite dev server、Jupyter、某个有 XSS 的
+#: 本地服务）都能跨源把整个资料库读走 —— 而引擎对本机是完全信任的。
+_ORIGIN_RE_PROD = r"^file://$"
+#: 开发模式额外放行本机端口（Vite 是 5173，但端口会变，所以按段放行）。
+_ORIGIN_RE_DEV = r"^(http://(127\.0\.0\.1|localhost)(:\d+)?|file://)$"
+
+
+class _OriginGuardMiddleware:
+    """
+    M2 跨站请求闸 —— 挡"恶意网页用表单 POST 打本机接口"。
+
+    CORS 只管**读不读得到响应**，不管**请求发不发得出去**。所以一个
+    `<form action="http://127.0.0.1:8731/api/security/db/encrypt" method="post">`
+    照样会真的执行 —— 攻击者读不到返回值，但副作用已经发生了。
+    `/api/security/db/encrypt` 那条尤其严重：它只校验口令 ≥8 位、
+    不校验库当前是什么状态，等于**用攻击者的口令把整库锁死**。
+
+    两条规则，都刻意做成"宁可放行也不误伤"：
+
+    1. 非 GET 请求**带**了 Origin，而且既不是 `null` 也不在白名单里 → 403。
+       **不带 Origin 的照常放行** —— CLI、MCP、安卓客户端、curl 都不带，
+       按"没有 Origin 就拒绝"写的话，等于把非浏览器调用方全部弄坏。
+
+    2. 非 GET 且 `Sec-Fetch-Mode: navigate` → 403。这正是"表单直接提交"
+       的特征；浏览器的 fetch/XHR 永远是 `cors`/`same-origin`/`no-cors`，
+       非浏览器客户端根本不发这个头。
+
+    ⚠️ **说清楚剩下的口子**：`Origin: null`（sandbox iframe、data: 页面）里
+       发出的 **fetch** 仍然能过第 1 条。放行 `null` 不是疏忽，是因为
+       file:// 页面在部分 Chromium 版本里发出的就是 `Origin: null` ——
+       拒掉它有把整个桌面端打死的实际风险。第 2 条能挡住 sandbox 里的
+       **表单**提交，挡不住 sandbox 里的 fetch。这是已知残留，不是"应该没问题"。
+    """
+
+    def __init__(self, app: Any, origin_re: str) -> None:
+        self.app = app
+        self._re = re.compile(origin_re)
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope.get("method", "GET") in ("GET", "HEAD"):
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers") or [])
+        origin = headers.get(b"origin", b"").decode("latin-1").strip()
+        mode = headers.get(b"sec-fetch-mode", b"").decode("latin-1").strip().lower()
+
+        bad_origin = bool(origin) and origin != "null" and not self._re.match(origin)
+        form_navigation = mode == "navigate"
+        if bad_origin or form_navigation:
+            why = (
+                f"跨站来源 {origin} 不在白名单里"
+                if bad_origin
+                else "这是一次页面级表单提交（Sec-Fetch-Mode: navigate），不是程序调用"
+            )
+            resp = JSONResponse(
+                {"detail": f"拒绝：{why}。Synorive 的接口只给本机的桌面端/CLI/MCP 用。"},
+                status_code=403,
+            )
+            await resp(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
 
 class _PairingGuardMiddleware:
     """
@@ -72,8 +170,13 @@ class _PairingGuardMiddleware:
         client = scope.get("client")
         client_host = client[0] if client else ""
         if client_host in ("127.0.0.1", "::1", "localhost"):
+            scope[REMOTE_SCOPE_KEY] = False
             await self.app(scope, receive, send)
             return
+
+        # S5：从这里往下都是"非本机"。放行与否下面再判，但**是不是远程这件事
+        # 现在就要写进 scope** —— 路由层要靠它决定"这个字符串能不能当本机路径用"
+        scope[REMOTE_SCOPE_KEY] = True
 
         path = scope.get("path", "")
         token = self.runtime.config.pairing_token
@@ -144,26 +247,47 @@ def build_app(runtime: Runtime) -> FastAPI:
         log.info("引擎关闭，累计运行 %.1fs", runtime.uptime_sec)
         runtime.db.close()
 
+    dev = dev_mode()
+
+    # M18：`/docs` 和 `/openapi.json` **打包版关掉**。
+    # 它们把 150 条接口的完整签名（路径、方法、请求体字段）端出来，而本机
+    # 调用是零鉴权的 —— 等于把"本机任意网页/任意进程能干什么"的探索成本降到零。
+    # 关掉不影响任何正常功能：桌面端/安卓端/CLI/MCP 走的都是写死的路径，
+    # 没有一个是靠读 OpenAPI 才知道该调什么的。
+    # 开发和调试要用就设 `SYNORIVE_DEV=1`（`engine/tests/test_web_api.py`
+    # 里那段"接口有没有真的挂上路由"的自查需要它）。
     app = FastAPI(
         title="Synorive Engine",
         version=__version__,
         description="多模态并发分析与极速内容检索引擎",
-        docs_url="/docs",
-        openapi_url="/openapi.json",
+        docs_url="/docs" if dev else None,
+        redoc_url="/redoc" if dev else None,
+        openapi_url="/openapi.json" if dev else None,
         lifespan=lifespan,
     )
     app.state.runtime = runtime
 
-    # CORS 只放行本机的浏览器场景（file:// 打包页面 / 本机调试）。
+    origin_re = _ORIGIN_RE_DEV if dev else _ORIGIN_RE_PROD
+    if dev:
+        log.warning(
+            "开发模式：CORS 放行本机任意端口，/docs 和 /openapi.json 是开着的。"
+            "打包版两样都会收紧 —— 这行日志出现在正式版里就是配置错了"
+        )
+
+    # CORS 只放行本机的浏览器场景（打包版 = 只有 file://；开发版 = 再加本机端口）。
     # 这道闸对安卓端不起作用——CORS 是浏览器自己遵守的规矩，原生 App
     # 发请求根本不看这层，真正挡安卓端的是下面注册的 `_PairingGuardMiddleware`。
     app.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=r"^(http://(127\.0\.0\.1|localhost)(:\d+)?|file://)$",
+        allow_origin_regex=origin_re,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # M2 跨站写操作闸。**加在 CORS 之前 = 跑在 CORS 外面**（Starlette 里后加的
+    # 在外层），所以连预检 OPTIONS 都过它一道，恶意来源连预检都拿不到。
+    app.add_middleware(_OriginGuardMiddleware, origin_re=origin_re)
 
     app.add_middleware(_PairingGuardMiddleware, runtime=runtime)
 
@@ -291,6 +415,12 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
         help="分析并发度，1~16",
     )
     p.add_argument("--allow-cloud", action="store_true")
+    # S6-B：默认只允许把简报发给白名单里的大模型厂商。自建/中转端点要显式开。
+    # 也认环境变量 SYNORIVE_ALLOW_CUSTOM_CLOUD_ENDPOINT=1（设置页那个开关走它）
+    p.add_argument("--allow-custom-cloud-endpoint", action="store_true",
+                   help="S6-B：允许把云端通道的 baseUrl 指向白名单之外的自建/中转地址。"
+                        "默认关 —— 开着的话一个被篡改的 baseUrl 就能把整份研究简报"
+                        "发到攻击者的服务器上，而界面上一切正常")
     p.add_argument("--enable-image-description", action="store_true",
                     help="C4：允许调云端视觉模型给图片生成描述并入索引（还要 --allow-cloud 且配置好视觉模型）")
     p.add_argument("--enable-face-clustering", action="store_true",
@@ -299,6 +429,14 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
     # 不能靠"不传就是关"——那样以后哪次忘了传，这道闸就静默消失了
     p.add_argument("--disable-sensitive-guard", action="store_true",
                     help="关掉投喂目录时的敏感文件（.env/私钥/凭据）自动跳过。默认这道闸是开着的")
+    # B6：跟上面几个"默认开、关掉要显式传参"的开关同一套纪律——批量摄取
+    # 让路给前台搜索这件事应该是默认姿态，不该需要用户自己找到开关去开
+    p.add_argument("--disable-background-priority", action="store_true",
+                    help="B6：关掉批量摄取/分析线程的 Windows 后台优先级调低"
+                         "（SetThreadPriority THREAD_MODE_BACKGROUND_BEGIN）。"
+                         "默认开着——系统繁忙时批量摄取自动让路给正在处理的搜索请求。"
+                         "非 Windows 平台本来就是空操作。只在怀疑优先级调整"
+                         "导致某些机器上摄取异常慢时才关掉排查")
     p.add_argument("--pairing-token", default=None,
                     help="A16：安卓配对令牌。设了之后，非本机地址的 /api 请求"
                          "必须带匹配的 X-Synorive-Token 头才放行")
@@ -346,6 +484,50 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
             if k.strip() and v.strip():
                 web_keys[k.strip()] = v.strip()
 
+    # ── 密钥改走环境变量（argv 全机可见）────────────────────────
+    #
+    # 🔴 `--pairing-token xxx` 和 `--web-key brave=xxx` 会**明文出现在进程命令行里**。
+    #    Windows 任务管理器加一列"命令行"、或者一句 `Get-CimInstance Win32_Process`
+    #    就能看到 —— 同一台机器上任何一个普通权限的进程都读得到。
+    #    `SYNORIVE_DB_KEY` 早就因为这个理由走了环境变量，这两个只是漏了。
+    #
+    # **环境变量优先于 argv**：桌面端在兼容期里两条都传，argv 那份是回退。
+    # 等它把 `ENGINE_ARGV_SECRET_COMPAT` 关掉之后，命令行泄露才算真的没了。
+    # argv 参数**保留不删** —— 现在就删会让局域网配对和付费搜索静默失效。
+    env_token = os.environ.pop("SYNORIVE_PAIRING_TOKEN", "").strip()
+    pairing_token = env_token or a.pairing_token
+
+    raw_web_keys = os.environ.pop("SYNORIVE_WEB_KEYS", "").strip()
+    if raw_web_keys:
+        # 🔴 解析失败**不许静默吞掉**。这里悄悄吞掉的后果是"付费搜索 Key 没生效"，
+        #    而表现是搜索结果变少 —— 用户永远不会把它和一个 JSON 语法错误联系起来。
+        #    所以：说清是哪个变量、错在哪、这次改用什么，然后退回 argv。
+        try:
+            got = json.loads(raw_web_keys)
+            if not isinstance(got, dict):
+                raise TypeError(f"顶层必须是 JSON 对象，收到的是 {type(got).__name__}")
+            parsed = {
+                str(k).strip(): str(v).strip()
+                for k, v in got.items()
+                if str(k).strip() and str(v).strip()
+            }
+            if parsed:
+                web_keys = parsed
+            else:
+                log.warning(
+                    "环境变量 SYNORIVE_WEB_KEYS 解析出来是空的（键或值全是空串），"
+                    "本次改用命令行 --web-key 传进来的 %d 个 Key", len(web_keys),
+                )
+        except (TypeError, ValueError) as e:
+            log.error(
+                "环境变量 SYNORIVE_WEB_KEYS 解析失败：%s: %s —— "
+                "它应该是一个 JSON 对象，例如 {\"brave\":\"xxx\"}。"
+                "**本次退回命令行 --web-key 里的 %d 个 Key**；"
+                "如果那边也没有，付费搜索引擎这次就是没配（不是坏了）。"
+                "（不打印原文，里面是密钥）",
+                type(e).__name__, e, len(web_keys),
+            )
+
     trust_profile: dict[str, Any] | None = None
     if a.trust_profile:
         try:
@@ -368,10 +550,15 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
         model_dir=(a.model_dir.resolve() if a.model_dir else data_dir / "models"),
         concurrency=max(1, min(16, a.concurrency)),
         allow_cloud=a.allow_cloud,
+        allow_custom_cloud_endpoint=(
+            a.allow_custom_cloud_endpoint
+            or os.environ.get("SYNORIVE_ALLOW_CUSTOM_CLOUD_ENDPOINT", "").strip().lower()
+            in ("1", "true", "yes", "on")
+        ),
         allow_network=not a.no_network,
         enable_image_description=a.enable_image_description,
         enable_face_clustering=a.enable_face_clustering,
-        pairing_token=a.pairing_token,
+        pairing_token=pairing_token,
         lan_tls=bool(a.lan_tls),
         web_engines=[s.strip() for s in a.web_engines.split(",") if s.strip()] or None,
         web_keys=web_keys or None,
@@ -380,6 +567,7 @@ def parse_args(argv: list[str] | None = None) -> EngineConfig:
         trust_profile=trust_profile,
         prefer_gpu=a.prefer_gpu,
         sensitive_guard_enabled=not a.disable_sensitive_guard,
+        background_priority=not a.disable_background_priority,
     )
 
 

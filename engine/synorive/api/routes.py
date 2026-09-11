@@ -95,6 +95,74 @@ def _rt(request: Request) -> Any:
     return request.app.state.runtime
 
 
+# ── S5 远程请求的路径围栏 ──────────────────────────────────
+#
+# 问题：鉴权只有一层（本机全放行 / 非本机要配对令牌），而下面这批端点
+# **直接把请求体里的字符串当本机路径用，没有任何根目录约束**。也就是说
+# 一台配对过的手机 = 这台电脑上任意文件的读取权限。最直接的一条：
+#     POST /api/compare/files {"a":"C:\\Users\\x\\.ssh\\id_rsa","b":"C:\\Windows\\win.ini"}
+# 这个接口会**回显文件内容的 diff**，私钥就这么出去了。
+#
+# 🔴 **两个方案都不能单独用，所以这里是合起来的第三种：**
+#   · 只做"远程不可调用名单"（方案①）会**弄坏手机端的主功能** —— 安卓端的
+#     分享入库流程本来就是 `/api/upload` 拿到一个落在引擎那台机器上的路径，
+#     再拿这个路径去调 `/api/ingest`、`/api/search/by-image`、
+#     `/api/web/reverse-image`。把这些端点从远程整个拿掉 = 手机端废掉一半。
+#   · 只做 `allowed_roots` 而且**连本机一起管**（方案②）会弄坏桌面端：
+#     桌面端是本机调用方，用户在文件选择框里随便点一个文件做比对/预览是
+#     正常用法，那个文件不可能事先"被投喂过"。
+#
+# 所以：**围栏只对远程生效，根目录就是 data_dir。**
+#   · 本机（桌面端 / CLI / MCP）一个字节都没变，主功能不受影响；
+#   · 远程只能引用 data_dir 里的东西 —— 而 `/api/upload` 落盘正好就落在
+#     `data_dir/inbox`，手机端那条流程原样能跑；
+#   · 私钥、系统文件、别人的文档全部在 data_dir 之外，一条也读不到。
+#
+# "是不是远程"由 `main._PairingGuardMiddleware` 写进 ASGI scope，这里只读不判。
+# 没有这个键 = 没经过那道闸（比如单元测试里直接挂 router）= 按本机处理，
+# 和改动之前完全一样。
+
+
+def _is_remote(request: Request) -> bool:
+    return bool(request.scope.get("synorive_remote"))
+
+
+def _remote_path_guard(request: Request, values: Any, *, what: str) -> None:
+    """
+    远程请求给过来的每一个本机路径，都必须落在 `data_dir` 里面。
+
+    判据用 `Path.resolve()` 之后的 `is_relative_to`，不是字符串前缀比较 ——
+    前缀比较挡不住 `..`、符号链接，也会把兄弟目录（`data_x`）误判成在里面。
+    """
+    if not _is_remote(request):
+        return
+    if isinstance(values, str):
+        values = [values]
+    items = [str(v) for v in (values or []) if v]
+    if not items:
+        return
+
+    rt = _rt(request)
+    try:
+        root = Path(rt.config.data_dir).resolve()
+    except (OSError, ValueError):  # pragma: no cover — data_dir 永远是合法路径
+        raise HTTPException(500, "引擎的数据目录配置有问题") from None
+
+    for raw in items:
+        try:
+            target = Path(raw).resolve()
+        except (OSError, ValueError):
+            raise HTTPException(400, f"路径不合法：{raw[:120]}") from None
+        if not target.is_relative_to(root):
+            raise HTTPException(
+                403,
+                f"已配对的远程设备只能引用引擎数据目录里的{what}。"
+                f"要把手机上的文件送进来，先用 POST /api/upload 传上来，"
+                f"再拿它返回的 path 调这个接口。"
+                f"（这道围栏只对远程生效，电脑上的桌面端不受影响）",
+            )
+
+
 @router.post("/search")
 async def search(req: SearchRequest, request: Request) -> dict[str, Any]:
     rt = _rt(request)
@@ -175,6 +243,12 @@ async def ingest(req: IngestRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(503, "摄取流水线还没就绪")
 
     from ..ingest.web import is_url
+
+    # S5：远程设备给的**本机路径**必须落在 data_dir 里（URL 不受这条管，
+    # 它走的是抓网页那条路，安全性由 `is_safe_url` 负责）
+    _remote_path_guard(
+        request, [t for t in req.targets if not is_url(t)], what="文件或目录"
+    )
 
     # URL 保持字符串，路径转 Path —— URL 包成 Path 在 Windows 上会被折叠双斜杠
     targets: list[Any] = []
@@ -457,8 +531,20 @@ async def archive_shot(req: ArchiveShotRequest, request: Request) -> dict[str, A
     rt = _rt(request)
     if not rt.config.allow_network:
         raise HTTPException(403, "联网功能被隐私设置关闭了")
-    if not req.url.lower().startswith(("http://", "https://")):
-        raise HTTPException(400, "只支持 http/https 网址")
+
+    # 🔴 S1：原来这里只查了 `startswith(("http://","https://"))`，然后就把网址
+    #    交给 `broker.capture()` 去用一个真浏览器打开。也就是说
+    #    `POST /api/web/archive-shot {"url":"http://192.168.1.1/admin"}`
+    #    会把**内网页面整页 PNG 取回来**并存进归档目录 —— 这不是盲打 SSRF，
+    #    是把内网后台的完整截图端到调用方面前。
+    #    改成复用 `ingest/web.py` 的 `is_safe_url`：它按 `ipaddress` 解析后
+    #    分类判定，认识 `2130706433`、`0177.0.0.1`、`[::ffff:127.0.0.1]`、
+    #    `[fd00::1]`、`100.64.0.1` 这些等价写法，字符串匹配全都漏。
+    from ..ingest.web import is_safe_url
+
+    ok, why = is_safe_url(req.url)
+    if not ok:
+        raise HTTPException(400, why)
 
     broker = getattr(rt, "render_broker", None)
     if broker is None or not broker.available:
@@ -535,8 +621,18 @@ async def get_archive_shot(name: str, request: Request) -> Any:
 
     rt = _rt(request)
     base = (rt.config.archive_dir / "shots").resolve()
-    target = (base / name).resolve()
-    if not str(target).startswith(str(base)) or not target.is_file():
+    try:
+        target = (base / name).resolve()
+    except (OSError, ValueError):
+        raise HTTPException(400, "文件名不合法") from None
+
+    # 🔴 B5：这里原来写的是 `str(target).startswith(str(base))`，
+    #    **和上面注释里说的"同一条判据"其实不是同一条**。前缀比较会把
+    #    兄弟目录当成在里面：`.../archive/shots_x/秘密.png` 的字符串
+    #    确实以 `.../archive/shots` 开头，于是照发不误。
+    #    `is_relative_to` 是按路径段比的，`shots_x` 不是 `shots` 的子目录，
+    #    直接就拒了 —— 这才是 `/media/thumb/{name}` 用的那一条。
+    if not target.is_relative_to(base) or not target.is_file():
         raise HTTPException(404, "没有这张截图")
     return FileResponse(target, media_type="image/png")
 
@@ -571,7 +667,7 @@ class PreviewRequest(BaseModel):
 
 
 @router.post("/preview/media")
-async def preview_media_route(req: PreviewRequest) -> dict[str, Any]:
+async def preview_media_route(req: PreviewRequest, request: Request) -> dict[str, Any]:
     """
     A2 —— 视频/音频「先看后搜」秒开预览：等距缩略带 + 语音波形。
 
@@ -584,6 +680,7 @@ async def preview_media_route(req: PreviewRequest) -> dict[str, Any]:
     """
     from ..analyze.preview import preview_media
 
+    _remote_path_guard(request, req.path, what="媒体文件")
     p = Path(req.path)
     if not p.exists():
         raise HTTPException(400, f"文件不在：{req.path}")
@@ -615,6 +712,9 @@ async def set_watch_folders(req: WatchFoldersRequest, request: Request) -> dict[
     rt = _rt(request)
     if rt.watcher is None:
         raise HTTPException(503, "引擎还没就绪")
+    # S5：远程设备不能把任意目录塞进监听列表 —— 那等于让手机决定
+    # 这台电脑要把哪些目录整个索引进库
+    _remote_path_guard(request, req.folders, what="目录")
     rt.set_watch_folders(req.folders)
     return {"ok": True, "watching": rt.watcher.watched_folders()}
 
@@ -940,6 +1040,7 @@ async def search_by_image(req: ByImageRequest, request: Request) -> dict[str, An
     它能告诉你"这个画面出现在某个视频的第 3 分 24 秒"。
     """
     rt = _rt(request)
+    _remote_path_guard(request, req.path, what="图片")
     vec = await asyncio.to_thread(rt.image_vector_for, req.itemId, req.path)
     if vec is None:
         raise HTTPException(
@@ -1806,6 +1907,7 @@ async def reverse_image_search(req: ReverseImageRequest, request: Request) -> di
     if not req.itemId and not req.path:
         raise HTTPException(400, "itemId 和 path 至少给一个")
 
+    _remote_path_guard(request, req.path, what="图片")
     target = Path(req.path) if req.path else None
     if req.itemId and not target:
         row = rt.repo.get_item(req.itemId)
@@ -1857,6 +1959,7 @@ async def image_lanes(req: ImageLanesRequest, request: Request) -> dict[str, Any
     if not req.itemId and not req.path:
         raise HTTPException(400, "itemId 和 path 至少给一个")
 
+    _remote_path_guard(request, req.path, what="图片")
     target = Path(req.path) if req.path else None
     if req.itemId and target is None:
         row = rt.repo.get_item(req.itemId)
@@ -2004,6 +2107,18 @@ async def cloud_configure(req: CloudConfigureRequest, request: Request) -> dict[
     只交给桌面端的 `safeStorage`，引擎这层少一个需要考虑"文件权限/加密"的地方。
     """
     rt = _rt(request)
+
+    # 🔴 S6-B：`baseUrl` 决定了 `/cloud/synthesize` 把整份研究简报发到哪台服务器。
+    #    原来这里完全没校验，改一个字段就能把数据静默改道，而界面上一切正常。
+    from ..cloud.adapters import validate_base_url
+
+    ok, why = validate_base_url(
+        req.baseUrl,
+        allow_custom=bool(getattr(rt.config, "allow_custom_cloud_endpoint", False)),
+    )
+    if not ok:
+        raise HTTPException(400, why)
+
     rt.cloud.provider = req.provider
     rt.cloud.api_key = req.apiKey
     rt.cloud.base_url = req.baseUrl
@@ -2033,7 +2148,17 @@ async def cloud_test(request: Request) -> dict[str, Any]:
     if not rt.cloud.configured:
         raise HTTPException(400, "还没配置完整（通道/Key/模型名缺一样）")
 
-    from ..cloud.adapters import CloudAdapterError, build_adapter
+    from ..cloud.adapters import CloudAdapterError, build_adapter, validate_base_url
+
+    # S6-B 第二道：**用之前再验一次**。第一道在 /cloud/configure，但那条路径
+    # 以后可能被别的入口绕过（比如将来加一个批量导入配置的接口），
+    # 而这里是简报真正被发出去的那一刻 —— 最后一道拦得住才算拦住
+    ok, why = validate_base_url(
+        rt.cloud.base_url,
+        allow_custom=bool(getattr(rt.config, "allow_custom_cloud_endpoint", False)),
+    )
+    if not ok:
+        raise HTTPException(400, f"云端地址被拒绝，这次没有发出任何内容：{why}")
 
     adapter = build_adapter(
         rt.cloud.provider, api_key=rt.cloud.api_key, base_url=rt.cloud.base_url or None,
@@ -2063,8 +2188,18 @@ async def cloud_synthesize(req: SynthesizeRequest, request: Request) -> dict[str
     if not rt.cloud.configured:
         raise HTTPException(400, "还没配置云端通道，去设置里填 Key")
 
-    from ..cloud.adapters import CloudAdapterError, build_adapter
+    from ..cloud.adapters import CloudAdapterError, build_adapter, validate_base_url
     from ..cloud.synthesize import synthesize
+
+    # S6-B 第二道：**用之前再验一次**。第一道在 /cloud/configure，但那条路径
+    # 以后可能被别的入口绕过（比如将来加一个批量导入配置的接口），
+    # 而这里是简报真正被发出去的那一刻 —— 最后一道拦得住才算拦住
+    ok, why = validate_base_url(
+        rt.cloud.base_url,
+        allow_custom=bool(getattr(rt.config, "allow_custom_cloud_endpoint", False)),
+    )
+    if not ok:
+        raise HTTPException(400, f"云端地址被拒绝，这次没有发出任何内容：{why}")
 
     adapter = build_adapter(
         rt.cloud.provider, api_key=rt.cloud.api_key, base_url=rt.cloud.base_url or None,
@@ -2947,8 +3082,14 @@ class CompareRequest(BaseModel):
 
 
 @router.post("/compare/files")
-async def compare_files_route(req: CompareRequest) -> dict[str, Any]:
+async def compare_files_route(req: CompareRequest, request: Request) -> dict[str, Any]:
     from ..analyze.compare import compare_files
+
+    # 🔴 S5：这条**会把两个文件的内容 diff 原样返回**，是整批端点里危害最直接的一个。
+    # 没有围栏的话，一台配对过的手机发
+    #   {"a":"C:\\Users\\x\\.ssh\\id_rsa","b":"C:\\Windows\\win.ini"}
+    # 就能把私钥内容读走。桌面端是本机调用方，不受这条影响
+    _remote_path_guard(request, [req.a, req.b], what="文件")
 
     # 比对是纯 CPU 活（大文件 diff 能跑几秒），扔线程池 ——
     # 占住事件循环会让 WebSocket 心跳断掉，界面以为引擎挂了
@@ -3016,9 +3157,10 @@ class TamperRequest(BaseModel):
 
 
 @router.post("/images/tamper")
-async def images_tamper(req: TamperRequest) -> dict[str, Any]:
+async def images_tamper(req: TamperRequest, request: Request) -> dict[str, Any]:
     from ..analyze.tamper import screen, screen_batch
 
+    _remote_path_guard(request, req.paths, what="图片")
     if len(req.paths) == 1:
         return await asyncio.to_thread(
             lambda: screen(req.paths[0], earliest_seen=req.earliestSeen).to_dict()
@@ -3239,6 +3381,10 @@ async def federation_list(request: Request) -> list[dict[str, Any]]:
 async def federation_add(req: FederatedLibRequest, request: Request) -> dict[str, Any]:
     from .. import federation
 
+    # S5：`register()` 会拿这个路径去 sqlite 打开并读表。远程只能登记
+    # data_dir 里的库 —— 否则一台手机能把这台电脑上任意一个 sqlite 文件
+    # 挂成"副库"，然后用 /federation/search 把里面的内容检索出来
+    _remote_path_guard(request, req.dbPath, what="资料库文件")
     try:
         return await asyncio.to_thread(
             federation.register, _rt(request).repo, req.dbPath, req.label

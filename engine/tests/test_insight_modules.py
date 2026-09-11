@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from synorive import briefing, evidence, federation, relations, snapshots
+from synorive.ingest.pipeline import file_fingerprint
 from synorive.store.db import Database
 from synorive.store.repository import Repository
 
@@ -61,8 +62,13 @@ def test_证据链_文件没动过报未改动_动过报已改动(tmp_path: Path
     bad = tmp_path / "bad.txt"
     bad.write_bytes(b"original")
 
-    fp_good = hashlib.sha256(b"hello evidence").hexdigest()[:32]
-    fp_bad = hashlib.sha256(b"original").hexdigest()[:32]
+    # 🔴 指纹必须用**入库端真正在用的那套算法**造，不能自己在测试里另算一套。
+    #    原来这里写的是 `sha256(内容)[:32]`，而入库写进 items.fingerprint 的是
+    #    `sha256(文件长度 + 头1MB + 尾1MB)[:32]`（见 ingest.pipeline.file_fingerprint）。
+    #    测试自己造了一套和生产不一样的基准，于是它绿着，而生产里**每一条**
+    #    来源都被判成「已改动」。
+    fp_good = file_fingerprint(good)
+    fp_bad = file_fingerprint(bad)
     _add(repo, "g", locator=str(good), fingerprint=fp_good)
     _add(repo, "b", locator=str(bad), fingerprint=fp_bad)
 

@@ -7,14 +7,32 @@
   · 只用关键词：搜「怎么把 PDF 里的字提出来」找不到标题写着
     「文档解析方案对比」的文章，因为一个词都没重合。
 
-融合用 **RRF（倒数排名融合）**：两路各自的排名取倒数相加。
+融合用 **RRF（倒数排名融合）**：每一路各自的排名取倒数相加。
 不用分数加权是因为 BM25 的分数和余弦相似度量纲完全不同，
 归一化怎么做都是拍脑袋；而排名是可比的。
 
-    RRF(d) = Σ  weight_i / (K + rank_i(d))
+    RRF(d) = Σ  w_r / (K + rank_r(d))
 
-K=60 是文献里的常用值，作用是压低头部排名的差距 ——
-第1名和第2名的差距不该比第10名和第20名的差距大那么多。
+K=60 是 Cormack 等人 2009 年那篇 RRF 原始论文里用的值，之后被
+Elasticsearch / OpenSearch / Vespa 一路沿用成事实默认值。
+它的作用是压低头部排名的差距 —— 第1名和第2名的差距不该比第10名和
+第20名的差距大那么多。**没有实测理由就别动它**（见 `RRF_K`）。
+
+────────────────────────────────────────────────────────────────────
+🔴 **2026-08-27 改动：精排那一路也进 RRF 了。**
+
+在这之前，关键词 / 语义 / 子串三路确实已经是 RRF，但**精排（D7 交叉编码器）
+不是** —— `_rerank()` 直接把总分整个换成 cross-encoder 的 sigmoid 分
+（0~1），而融合分的量级是 0.01~0.03。等于说前三路辛苦排出来的名次
+在最后一步被一个完全不同量纲的分数**整个覆盖掉**，
+只保留了"进不进前 12"这一个 bit 的信息。
+
+症状是：cross-encoder 的分布一变（换模型、换文档长度截断），
+前 12 条的顺序就整个抖一次，而前三路的证据一点没起作用。
+这正是"拿苹果加橘子"的那个毛病，只不过它藏在最后一步而不是第一步。
+
+现在精排作为**第四路**参与 RRF：拿它的名次（不是它的分数）去融合。
+切回旧行为见 `FUSION_MODES`。
 """
 
 from __future__ import annotations
@@ -43,14 +61,64 @@ from .recovery import RecoveryPlanner
 
 log = logging.getLogger("synorive.search")
 
-#: RRF 的平滑常数
 #: 一份资料最多留几段其余命中给界面展开。
 #: 留太多既没人看，又让每次搜索的响应体白白变大
 EXTRA_HITS_KEEP = 3
 
+#: RRF 的平滑常数。60 = Cormack/Clarke/Buettcher 2009《Reciprocal Rank Fusion
+#: outperforms Condorcet and individual Rank Learning Methods》里用的值，
+#: 也是 Elasticsearch `rrf` retriever 的 `rank_constant` 默认值。
+#: 它控制"名次差距被压平多少"：K 越大越平（越接近纯投票），
+#: 越小越看重头几名。60 在这两端之间，是被最多系统实测过的那个折中点。
 RRF_K = 60
+
+#: 融合模式。**这是给用户的退路，两条路径都留着，一行代码都没删。**
+#:
+#:   "rrf"    —— 默认。关键词/语义/子串/精排**四路全部按名次**做 RRF。
+#:   "linear" —— 改动前的原样行为：前三路 RRF，**精排分直接当总分**
+#:               （0~1 的 sigmoid 覆盖 0.01~0.03 的融合分，量纲混用）。
+#:               别名 "legacy"，两个词指同一条路径。
+#:
+#: 怎么切：
+#:   · 进程级：环境变量 `SYNORIVE_FUSION=linear`
+#:   · 单次请求：`SearchEngine.search(..., fusion="linear")`
+#:   · 实例级：`engine.fusion = "linear"`
+#: 认不出来的值一律当 "rrf"，不报错也不静默换成别的东西。
+FUSION_MODES = ("rrf", "linear", "legacy")
+FUSION_DEFAULT = os.environ.get("SYNORIVE_FUSION", "rrf").strip().lower()
+
+
+def _normalize_fusion(mode: str | None) -> str:
+    """把各种写法归一成 "rrf" / "linear" 两种。认不出来当 rrf（默认）。"""
+    m = (mode or "").strip().lower()
+    if m in ("linear", "legacy"):
+        return "linear"
+    return "rrf"
+
+
 #: 每一路召回多少条送去融合。太少会漏，太多融合和取详情变慢。
 RECALL_LIMIT = 200
+
+#: A4 BM25F：`chunks_fts` 三个场（标题 / 章节名 / 正文）各自的权重。
+#: **顺序必须和建表的列序一致**（见 `store/db.py` 的 `FTS_CHUNK_COLUMNS`）——
+#: 顺序错了是把正文的权重加到标题上，而且 SQLite 不会报任何错。
+#:
+#: 为什么不是 10:5:1 那种夸张的比例：BM25 本身就带**场长度归一化**，
+#: 短场（标题只有几个词）命中同一个词时得到的分本来就比长正文高。
+#: 在此之上再乘 10 倍，结果是任何标题里带查询词的东西无条件霸榜 ——
+#: 搜「报告」会把所有文件名带"报告"的排在真正讲报告内容的前面。
+#: 4:2:1 是"标题命中确实更重要，但正文里反复出现同样能赢"的档位。
+#:
+#: 退路：`SYNORIVE_BM25F=0` 把三个场拉平成 1:1:1，等于回到分场之前的排序
+#: （索引还是分场的，只是不加权）。
+FTS_FIELD_WEIGHTS: tuple[float, float, float] = (4.0, 2.0, 1.0)
+if os.environ.get("SYNORIVE_BM25F", "1").strip() in ("0", "off", "false"):
+    FTS_FIELD_WEIGHTS = (1.0, 1.0, 1.0)
+
+#: 标题子串兜底表 `items_tri` 的两个场（标题 / 路径）。
+#: 这张表本来就是两列的，不需要迁移，顺手把加权补上：
+#: 用户记得的是**文件名**，路径里某一层目录撞上查询串是弱得多的证据。
+TRI_FIELD_WEIGHTS: tuple[float, float] = (3.0, 1.0)
 
 #: 判定"这一轮有没有真正匹配上"的语义相似度线。
 #:
@@ -126,6 +194,14 @@ class Weights:
 
     semantic: float = 1.0
     keyword: float = 1.0
+    #: RRF 里**精排那一路**的权重（`fusion="rrf"` 时才有意义）。
+    #:
+    #: 它和 semantic/keyword 是同一个东西 —— RRF 公式里的 `w_r`，
+    #: 只不过这一路的"名次"来自交叉编码器而不是召回。
+    #: 默认 1.5：精排看得见查询和文档的交互，比单编码的语义路准，
+    #: 该比它重一点；但**不能重到把前三路整个盖掉**（那正是改动前的毛病）。
+    #: 设成 0 = 精排只用来决定"哪 12 条进候选"，完全不参与排序。
+    rerank: float = 1.5
     recency: float = 0.3
     source_trust: float = 0.2
     popularity: float = 0.2
@@ -178,6 +254,9 @@ class Weights:
             diversity=float(d.get("diversity", 0.5)),
             length_penalty=float(d.get("lengthPenalty", 0.3)),
             personal=float(d.get("personal", 0.25)),
+            # 同一条纪律：老客户端发上来的 weights 里没有 rerank 这个键，
+            # 不给默认值会直接 KeyError（"手机上一搜就 500"）
+            rerank=float(d.get("rerank", 1.5)),
         )
 
 
@@ -488,6 +567,8 @@ class SearchEngine:
         self.embedder = embedder
         #: D7 精排。可以是 None（没配），或加载失败 —— 两种情况都安静退回融合排序
         self.reranker = reranker
+        #: 融合模式，见模块头 `FUSION_MODES`。改这一个字段就能整台引擎切回旧排序
+        self.fusion = _normalize_fusion(FUSION_DEFAULT)
         # D9 零结果补救。注入自己的"数一下有几条"，避免两个模块互相 import
         self._recovery = RecoveryPlanner(self.db.connect, self._count_for_recovery)
 
@@ -519,9 +600,17 @@ class SearchEngine:
         conn = self.db.connect()
         # L3-plus：这一路是块级召回，`section:` 要落在**命中的那一块**上
         where, args = filters.sql("i", chunk_alias="c")
+        # A4 BM25F：索引已经分场了才给权重。老库后台迁移还没跑完时
+        # `chunks_fts` 仍然是一列的，这时候必须用无参数的 bm25()——
+        # 给一列的表塞三个权重不会报错（实测 SQLite 3.50.4 直接忽略多余参数），
+        # 那才是更坏的情况：看起来在加权，实际一点作用都没有
+        score_expr = "bm25(chunks_fts)"
+        if getattr(self.db, "fts_fielded", False):
+            wt, ws, wb = FTS_FIELD_WEIGHTS
+            score_expr = f"bm25(chunks_fts, {wt}, {ws}, {wb})"
         sql = f"""
             SELECT c.rowid AS chunk_rowid, c.item_id, c.text, c.channel, c.page, c.start_sec,
-                   c.section, bm25(chunks_fts) AS score
+                   c.section, {score_expr} AS score
             FROM chunks_fts
             JOIN chunks c ON c.rowid = chunks_fts.rowid
             JOIN items  i ON i.id = c.item_id
@@ -654,7 +743,7 @@ class SearchEngine:
         conn = self.db.connect()
         where, args = filters.sql("i")
         sql = f"""
-            SELECT i.id AS item_id, bm25(items_tri) AS score
+            SELECT i.id AS item_id, bm25(items_tri, {TRI_FIELD_WEIGHTS[0]}, {TRI_FIELD_WEIGHTS[1]}) AS score
             FROM items_tri
             JOIN items i ON i.rowid = items_tri.rowid
             WHERE items_tri MATCH ?
@@ -704,6 +793,13 @@ class SearchEngine:
                 pairs = ann.search(qv.tolist(), knn_limit)
             except Exception as e:  # noqa: BLE001
                 log.warning("ANN 召回失败，本次退回暴力扫描：%s", e)
+                # 🔴 只 log 不够。ANN 挂了的表现是"搜索还能用，就是慢"——
+                #    没人会去翻日志。把原因挂到索引对象上，
+                #    `Repository.stats()` 会把它带到 `/api/stats` 和状态栏
+                try:
+                    ann.note_degraded(f"ANN 召回抛异常，已退回暴力扫描：{e}")
+                except Exception:  # noqa: BLE001
+                    pass
                 pairs = _brute_force_knn(conn, qv, knn_limit)
         else:
             pairs = _brute_force_knn(conn, qv, knn_limit)
@@ -765,7 +861,18 @@ class SearchEngine:
     # ── 融合与排序 ──────────────────────────────────────────
 
     def fuse(self, groups: dict[str, list[Candidate]], weights: Weights) -> list[Candidate]:
-        """RRF 融合多路召回。"""
+        """
+        RRF 融合多路召回：`score(d) = Σ_r w_r / (RRF_K + rank_r(d))`。
+
+        🔴 **喂进公式的是名次，不是分数。** 三路的分数量纲根本没法比：
+           BM25 无上界、余弦在 [-1,1]、cross-encoder 是 logit。
+           名次是唯一在三路之间可比的量。
+
+        `w_r` 就是 `Weights` 里那几个滑块 —— D4 手动调滑块、D-adaptive
+        自动分类（`classify_intent`）、PRESETS 预设，三者调的都是这里的
+        每路权重，改成 RRF 之后它们的语义没变（还是"这一路占多大分量"），
+        变的只是权重乘的东西：以前乘归一化分，现在乘倒数名次。
+        """
         merged: dict[str, Candidate] = {}
         rrf: dict[str, float] = {}
 
@@ -965,12 +1072,17 @@ class SearchEngine:
         rerank: bool = False,
         answer: bool = False,
         ask: bool = False,
+        fusion: str | None = None,
     ) -> dict[str, Any]:
         """
         stage 控制跑哪几路 —— D2 三级瀑布靠它分次返回：
           keyword  → 只跑关键词和子串（快，15~50ms）
           semantic → 全跑（150ms 级）
+
+        fusion 控制最后一步怎么合分，见模块头 `FUSION_MODES`。
+        不传就用 `self.fusion`（默认 "rrf"，可用 `SYNORIVE_FUSION=linear` 全局切回）。
         """
+        fuse_mode = _normalize_fusion(fusion if fusion is not None else self.fusion)
         t0 = time.perf_counter()
 
         # D10：先把查询串里的 type:/date:/size:/in:/tag:/src: 指令拆出来，
@@ -1033,7 +1145,7 @@ class SearchEngine:
         # 所以只在首页做。
         reranked = False
         if rerank and stage == "semantic" and offset == 0 and self.reranker is not None:
-            scored, reranked = self._rerank(text_query, scored)
+            scored, reranked = self._rerank(text_query, scored, w, fuse_mode)
 
         page = scored[offset : offset + limit]
 
@@ -1100,7 +1212,24 @@ class SearchEngine:
                         "titleBoost": round(parts.get("titleBoost", 0), 4),
                         "lengthPenalty": round(parts.get("lengthPenalty", 0), 4),
                         "diversity": round(parts.get("diversity", 1), 4) if "diversity" in parts else None,
+                        # D7 精排分。RRF 模式下它**不再是总分**，只是第四路的
+                        # 原始打分，界面上要跟 rerankRank 一起看才说得清
+                        "rerank": parts.get("rerank"),
                     },
+                    # 四路各自的名次（RRF 公式里真正被除的那个数）。
+                    # 没走那一路就没有这个键 —— 不能填 0，0 在 RRF 里是"第 0 名"
+                    "ranks": {
+                        k: v
+                        for k, v in (
+                            ("keyword", c.rank_keyword),
+                            ("vector", c.rank_vector),
+                            ("trigram", c.rank_trigram),
+                            ("fused", int(parts["fusedRank"]) if "fusedRank" in parts else None),
+                            ("rerank", int(parts["rerankRank"]) if "rerankRank" in parts else None),
+                        )
+                        if v is not None
+                    },
+                    "fusion": fuse_mode,
                     "matchedTerms": matched_terms,
                     "matchedVia": sorted(c.matched_via),
                     # 上面 matchedTerms/highlight 用的 c.best_text 具体来自
@@ -1118,6 +1247,9 @@ class SearchEngine:
                             ("keyword", c.rank_keyword is not None),
                             ("vector", c.rank_vector is not None),
                             ("trigram", c.rank_trigram is not None),
+                            # 精排现在是**平等的第四路**，不再是"最后覆盖一切
+                            # 的那一步"，所以它该和另外三路一样出现在这里
+                            ("rerank", "rerank" in parts),
                         )
                         if present
                     ],
@@ -1194,16 +1326,40 @@ class SearchEngine:
     # ── D7 精排 ─────────────────────────────────────────────
 
     def _rerank(
-        self, query: str, scored: list[tuple[Candidate, float, dict[str, float]]]
+        self,
+        query: str,
+        scored: list[tuple[Candidate, float, dict[str, float]]],
+        weights: Weights,
+        fusion: str = "rrf",
     ) -> tuple[list[tuple[Candidate, float, dict[str, float]]], bool]:
         """
         用交叉编码器给前 MAX_CANDIDATES 条重打分。
 
-        返回 (新顺序, 是否真的重排了)。模型没装/失败时原样返回，
+        返回 (新顺序, 是否真的重排了)。模型没装/失败/超预算熔断时原样返回，
         调用方据此决定 stage 报 'semantic' 还是 'reranked' ——
         **不能谎报 reranked**，界面上那个标签是给用户看"这次用了精排"的。
+
+        两条路径，靠 `fusion` 选（见模块头 `FUSION_MODES`）：
+
+        · `"rrf"`（默认）—— 精排当**第四路**参与 RRF：
+              `新分 = 1/(K + 融合名次) + w_rerank/(K + 精排名次)`
+          用的是精排给出的**名次**，不是它的 sigmoid 分。这样前三路的
+          证据（BM25 名次、向量名次、文件名名次）在最后一步仍然算数，
+          精排是"再投一票"而不是"一票否决"。
+
+        · `"linear"` —— 改动前的原样行为：总分直接换成精排的 sigmoid 分。
+          一行代码都没改，就是原来那几行。留着是退路。
         """
         from ..analyze.reranker import MAX_CANDIDATES, MAX_DOC_CHARS
+
+        # 🔴 别只靠调用点那句 `self.reranker is not None`。
+        #    这是个 public-ish 的方法，将来多一个调用点就多一次
+        #    `AttributeError: 'NoneType' object has no attribute 'score'` ——
+        #    而它会在**用户搜索的时候**炸，表现是 500 而不是"没精排"。
+        #    在这里自己拦一道，顺便让类型检查器也不用猜。
+        reranker = self.reranker
+        if reranker is None:
+            return scored, False
 
         head = scored[:MAX_CANDIDATES]
         tail = scored[MAX_CANDIDATES:]
@@ -1217,17 +1373,64 @@ class SearchEngine:
             t = (c.best_text or "").strip()
             docs.append(t[:MAX_DOC_CHARS] if t else "")
 
-        scores = self.reranker.score(query, docs)
+        scores = reranker.score(query, docs)
         if scores is None or len(scores) != len(head):
+            # 模型没装、打分失败、或者**超预算熔断**（见 reranker.BUDGET_MS）。
+            # 三种情况一律保持融合排序的原顺序，且如实报 reranked=False
             return scored, False
 
-        # 保留原来的 parts（可解释面板要用），只把总分换成精排分。
-        # 精排分之间的差距远大于 RRF 分，直接用它排序即可。
-        new_head = [
-            (c, float(s), {**parts, "rerank": round(float(s), 4)})
-            for (c, _, parts), s in zip(head, scores)
-        ]
-        new_head.sort(key=lambda x: -x[1])
+        if _normalize_fusion(fusion) == "linear":
+            # ── 旧路径：精排分直接当总分 ────────────────────────
+            # 保留原来的 parts（可解释面板要用），只把总分换成精排分。
+            new_head = [
+                (c, float(s), {**parts, "rerank": round(float(s), 4)})
+                for (c, _, parts), s in zip(head, scores)
+            ]
+            new_head.sort(key=lambda x: -x[1])
+            return new_head + tail, True
+
+        # ── RRF 路径：精排是第四路 ──────────────────────────────
+        # 进来时 head 已经按融合分降序排好，所以下标 i 就是"融合名次-1"。
+        fused_rank = {i: i + 1 for i in range(len(head))}
+        # 精排名次：按精排分降序。分数相同时按融合名次决胜 ——
+        # 不定序的话同分候选的先后取决于 sort 的实现细节，
+        # 同一次查询跑两遍可能不一样，而且不报错
+        order = sorted(range(len(head)), key=lambda i: (-scores[i], fused_rank[i]))
+        rerank_rank = {i: pos + 1 for pos, i in enumerate(order)}
+
+        w_r = max(0.0, weights.rerank)
+        combined: list[tuple[int, float]] = []
+        for i in range(len(head)):
+            combined.append(
+                (i, 1.0 / (RRF_K + fused_rank[i]) + w_r / (RRF_K + rerank_rank[i]))
+            )
+        combined.sort(key=lambda t: (-t[1], fused_rank[t[0]]))
+
+        # 🔴 **把 head 的分数整体抬到 tail 之上。**
+        #    RRF 分的量级（约 0.02~0.04）和 apply_signals 出来的分数是同一量级，
+        #    不平移的话第 12 名的新分可能低于第 13 名的旧分。列表顺序本身没问题
+        #    （下面是 `new_head + tail`，search() 直接按列表顺序切页），
+        #    但 `hit["score"]` 会出现"排在前面的分反而低"，界面上按分数排一次
+        #    就全乱了。旧路径（sigmoid 0~1 vs 0.03）天然满足这条，这里补上。
+        floor = tail[0][1] if tail else 0.0
+        new_head: list[tuple[Candidate, float, dict[str, float]]] = []
+        for i, rrf_score in combined:
+            c, _, parts = head[i]
+            new_head.append(
+                (
+                    c,
+                    floor + rrf_score,
+                    {
+                        **parts,
+                        # 可解释性数据一个都不能少：精排原始分照留，
+                        # 再补上两路各自的名次，界面才说得清"为什么它上来了"
+                        "rerank": round(float(scores[i]), 4),
+                        "rerankRank": float(rerank_rank[i]),
+                        "fusedRank": float(fused_rank[i]),
+                        "rrfFused": round(rrf_score, 6),
+                    },
+                )
+            )
         return new_head + tail, True
 
     # ── D3 跨模态互搜 ───────────────────────────────────────
@@ -1486,6 +1689,12 @@ def _reason(c: Candidate, parts: dict[str, float]) -> str:
     label = _CHANNEL_LABEL.get(c.best_text_channel)
     if label:
         bits.append(f"在{label}命中")
+    if "rerankRank" in parts:
+        # RRF 模式下精排是第四路，如实说它投了第几名 ——
+        # 说"已精排"等于什么都没说，用户看不出它到底把这条往上抬了还是往下压
+        bits.append(f"精排第 {int(parts['rerankRank'])} 名")
+    elif "rerank" in parts:
+        bits.append(f"精排 {parts['rerank']:.2f}")
     if parts.get("titleBoost", 0) > 0:
         bits.append("标题命中")
     if parts.get("recency", 0) > 0.6:

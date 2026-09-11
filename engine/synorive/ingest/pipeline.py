@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .. import winprio
 from ..analyze.embedder import TextEmbedder
 from ..analyze.enrich import enrich
 from ..analyze.image import ImageEmbedder, OcrEngine, analyze_image, is_image
@@ -229,12 +230,15 @@ class IngestPipeline:
         concurrency: int = 7,
         on_progress: ProgressCb | None = None,
         sensitive_guard_enabled: bool = True,
+        background_priority: bool = True,
     ) -> None:
         self.repo = repo
         self.model_dir = model_dir
         self.concurrency = max(1, min(16, concurrency))
         self.on_progress = on_progress
         self.sensitive_guard_enabled = sensitive_guard_enabled
+        #: B6：批量摄取的工作线程要不要主动降优先级，见 `_thread_init`
+        self.background_priority = background_priority
         self._local = threading.local()
         self._lock = threading.Lock()
         self._vec_ready = False
@@ -260,6 +264,16 @@ class IngestPipeline:
         )
 
     # ── 每线程一个推理会话 ──────────────────────────────────
+
+    def _thread_init(self) -> None:
+        """
+        B6：`ThreadPoolExecutor` 的 `initializer`——线程池里每条线程
+        开工前跑一次。把它标成 Windows 后台模式，系统繁忙时优先调度
+        正在处理前台搜索请求的线程，批量摄取自动让路（对应 B5"前台
+        搜索永远插队"：不用另起一套优先级队列，让 OS 调度器按线程
+        优先级去插队，是同一个效果的更轻量实现）。
+        """
+        winprio.enter_background_mode()
 
     def _embedder(self) -> TextEmbedder | None:
         """本线程的向量化器。线程数见 __init__ 里那张实测表。"""
@@ -1242,7 +1256,8 @@ class IngestPipeline:
                         }
                     )
 
-        with ThreadPoolExecutor(max_workers=self.concurrency) as ex:
+        initializer = self._thread_init if self.background_priority else None
+        with ThreadPoolExecutor(max_workers=self.concurrency, initializer=initializer) as ex:
             list(ex.map(work, files))
 
         st = self.repo.stats()

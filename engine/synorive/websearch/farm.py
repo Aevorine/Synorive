@@ -148,7 +148,13 @@ def _host(url_or_site: str) -> str:
         return ""
     if "://" in s:
         s = urlparse(s).netloc
-    return s.lower().split(":")[0].lstrip("www.")
+    host = s.lower().split(":")[0]
+    # 🔴 **不能写 `lstrip("www.")`** —— 那是按**字符集**剥，会把开头所有的
+    #    `w` 和 `.` 一个一个啃掉：`wsj.com` → `sj.com`、`wired.com` → `ired.com`、
+    #    `www.walmart.com` → `almart.com`。这个值会原样进 `FarmVerdict.site`
+    #    显示给用户，也用来做"有几个独立站在说"的去重，错了不报错、只是一直错。
+    #    （trust.py 的 `_host` 早就踩过并写下了这条，这里当时漏了。）
+    return host[4:] if host.startswith("www.") else host
 
 
 def domain_flags(url_or_site: str) -> tuple[list[str], list[str]]:

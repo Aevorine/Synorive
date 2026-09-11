@@ -99,7 +99,11 @@ _PLAN: dict[str, dict[str, Any]] = {
     },
     "code": {
         "engines": ["bing", "mojeek", "searxng"],
-        "preset": "github",
+        # 🔴 这里原来写的是 "github"，而 presets.py 里根本没有这个 id
+        #    （代码类预设的 id 是 "code"）。`apply_preset()` 查不到就**原样返回查询、
+        #    不报错**，于是"锁定 GitHub 与官方文档"这句话从来没有生效过：
+        #    接口 200、结果照出、只是完全没做站点限定。
+        "preset": "code",
         "limit_boost": 0,
         "why": "找代码：锁定 GitHub 与官方文档，避开内容农场的翻译搬运",
     },

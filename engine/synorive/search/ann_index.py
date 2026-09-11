@@ -34,6 +34,17 @@ sqlite-vec 0.1.9 的 `k=` 查询是**暴力线性扫描**，没有 ANN 索引，
 
 ④ **model_id 兼容性检查复用 `vec_chunks` 那一套**（`meta_kv.embed_model`）。
    两边共享同一个"模型变了就作废"的判据，不用发明第二套。
+
+⑤ **int8 标量量化 + mmap 落盘（2026-08-27）**。见 `VECTOR_DTYPE` 和 `load()`。
+   一句话：向量在索引里按 int8 存（每维 1 字节而不是 4 字节），
+   索引文件用**内存映射**打开而不是整个读进来。
+   代价是近似度又降了一档（量化误差），换来的是内存和加载时间。
+   实测数字见本次改动的报告，不在这里抄。
+
+🔴 **这一整套只要有任何一环不成立，就必须退回暴力扫描并说明原因**，
+   绝不能变成"搜出来 0 条"。判据和原因都写在 `degraded_reason` 里，
+   `Repository.stats()` 会把它带到 `/api/stats` 和状态栏上 ——
+   静默降级是这个模块最不能犯的错：功能"正常"、不报错、只是搜不到东西。
 """
 
 from __future__ import annotations
@@ -58,6 +69,29 @@ EXPANSION_ADD = 128
 EXPANSION_SEARCH = 64
 
 INDEX_FILENAME = "ann_index.usearch"
+
+#: 索引里向量的存储精度。
+#:
+#: **i8 = int8 标量量化**：usearch 在 add 的时候把每一维从 float32（4 字节）
+#: 线性映射到 int8（1 字节）。对**已经归一化到单位长度**的向量来说这个映射
+#: 是良性的 —— 每一维本来就落在 [-1, 1]，量化步长固定 1/127，
+#: 不需要先扫一遍数据去estimate 分布（那才是量化最容易出错的地方）。
+#:
+#: 换来什么：向量部分的内存和磁盘占用降到 1/4。
+#: 付出什么：距离计算有量化误差，召回率再降一点点。
+#: ANN 本来就是"用一点召回换速度"，这里是同一笔交易再做一次，
+#: **不是新引入了一类风险**。真实数字以本次改动报告里的实测为准。
+#:
+#: 🔴 **f32 和 i8 的索引文件不通用。** usearch 的 `load()` 会用**文件里存的**
+#:    dtype 覆盖 Index 构造时声明的 dtype（实测：拿 dtype="i8" 的 Index
+#:    去 load 一个 f32 文件，加载"成功"，然后 `index.dtype` 变成 F32）。
+#:    也就是说 dtype 不匹配**不会报错**，只会安静地跑在旧格式上。
+#:    所以 `.meta` 里必须显式记下 dtype，并在 load 之后再核一遍实际值。
+VECTOR_DTYPE = "i8"
+
+#: 改动之前磁盘上那一批索引用的精度。老索引文件的 `.meta` 里没有 dtype 这一行，
+#: 一律按这个值对待 —— 于是它和 VECTOR_DTYPE 不等，触发一次重建。
+LEGACY_VECTOR_DTYPE = "f32"
 
 #: 攒够这么多条改动就在后台落一次盘（见 `_maybe_autosave`）。
 #:
@@ -89,39 +123,203 @@ class AnnIndex:
         self._dirty = 0
         #: 有没有一次后台落盘正在跑。防止摄取高峰期堆起一串落盘线程
         self._saving = False
+        #: 当前这份索引是不是内存映射打开的（只读）。见 `load()` 和 `_writable()`
+        self._mmapped = False
+        #: 🔴 **为什么退回了暴力扫描。** None = 没退回。
+        #:    这条字符串会经 `Repository.stats()` 出现在 `/api/stats`
+        #:    和状态栏上 —— ANN 用不了只慢不错，正因为它不报错，
+        #:    才必须有个地方能一眼看出"现在跑的不是 ANN，原因是这个"
+        self._degraded: str | None = None
+        #: 全量重建的进度 (已完成, 总数)。没在重建时是 (0, 0)
+        self._rebuild_done = 0
+        self._rebuild_total = 0
 
     # ── 生命周期 ────────────────────────────────────────────
+    def _new_index(self) -> Any:
+        from usearch.index import Index
+
+        return Index(
+            ndim=self.dim, metric="cos", dtype=VECTOR_DTYPE,
+            connectivity=CONNECTIVITY, expansion_add=EXPANSION_ADD,
+            expansion_search=EXPANSION_SEARCH,
+        )
+
     def _ensure_index(self) -> Any:
         if self._index is None:
-            from usearch.index import Index
-
-            self._index = Index(
-                ndim=self.dim, metric="cos", dtype="f32",
-                connectivity=CONNECTIVITY, expansion_add=EXPANSION_ADD,
-                expansion_search=EXPANSION_SEARCH,
-            )
+            self._index = self._new_index()
+            self._mmapped = False
         return self._index
 
+    def _writable(self) -> Any:
+        """
+        拿一份**可写**的索引。
+
+        🔴 mmap 打开的索引是只读的（实测：`add` 抛
+           `RuntimeError: Can't add to an immutable index`）。
+           所以第一次真的要写入时，得把它从映射切成常驻内存的副本 ——
+           代价是把整个文件读一遍（百万级几秒），**只在有新内容进来时付一次**，
+           下次落盘 + 重启又回到 mmap。
+
+           不这么做的话只有两个选择：要么永远不 mmap（白白多占内存），
+           要么写入时静默失败（新内容在语义检索里查不到，且不报错）。
+        """
+        if self._index is not None and not self._mmapped:
+            return self._index
+        if self._index is None:
+            return self._ensure_index()
+        log.info("ANN 索引原来是内存映射（只读）打开的，有新内容要写入，切换成可写副本")
+        idx = self._new_index()
+        try:
+            idx.load(str(self.index_path))
+        except Exception as e:  # noqa: BLE001
+            # 读不回来就从空索引开始 —— 落差会被 runtime 的
+            # "库里向量数 > 索引里向量数" 那条检查发现并触发重建
+            log.warning("ANN 索引转可写时读盘失败，从空索引重新攒：%s", e)
+            idx = self._new_index()
+        self._index = idx
+        self._mmapped = False
+        self._count = len(idx)
+        return idx
+
+    # ── .meta 文件 ──────────────────────────────────────────
+    #
+    # 老格式是**一行裸的 model_tag**，新格式是 `键=值` 每行一条。
+    # 读的时候两种都认（没有 `=` 就当老格式），写的时候只写新格式。
+
+    def _meta_path(self) -> Path:
+        return self.index_path.with_suffix(".meta")
+
+    def _read_meta(self) -> dict[str, str]:
+        raw = self._meta_path().read_text(encoding="utf-8").strip()
+        if "=" not in raw:
+            return {"model": raw, "dtype": LEGACY_VECTOR_DTYPE, "dim": str(self.dim)}
+        meta: dict[str, str] = {}
+        for line in raw.splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                meta[k.strip()] = v.strip()
+        meta.setdefault("dtype", LEGACY_VECTOR_DTYPE)
+        meta.setdefault("model", "")
+        return meta
+
+    def _write_meta(self) -> None:
+        self._meta_path().write_text(
+            f"model={self.model_tag}\ndtype={VECTOR_DTYPE}\ndim={self.dim}\n",
+            encoding="utf-8",
+        )
+
     def load(self) -> bool:
-        """从磁盘加载已有索引。返回 False 表示没有可用的文件（不是错误）。"""
-        meta_path = self.index_path.with_suffix(".meta")
+        """
+        从磁盘加载已有索引。返回 False 表示没有可用的文件（不是错误）。
+
+        用 `view()`（内存映射）而不是 `load()`（整个读进内存）：
+        索引文件按需换页，不占常驻内存，冷启动也不用等反序列化跑完。
+        代价是这份索引**只读**，第一次写入时要转成可写副本（见 `_writable`）。
+
+        每一条"不能用"的判断都会写进 `degraded_reason` ——
+        不写的话表现就是"ANN 一直没接管，没人知道为什么"。
+        """
+        meta_path = self._meta_path()
         if not self.index_path.exists() or not meta_path.exists():
-            return False
-        saved_tag = meta_path.read_text(encoding="utf-8").strip()
-        if saved_tag != self.model_tag:
-            log.info("磁盘上的 ANN 索引是给 %s 建的，当前模型是 %s，不能用，需要重建",
-                      saved_tag, self.model_tag)
+            self._degraded = "磁盘上还没有 ANN 索引文件（首次使用，或文件被删过）"
             return False
         try:
-            idx = self._ensure_index()
-            idx.load(str(self.index_path))
+            meta = self._read_meta()
+        except Exception as e:  # noqa: BLE001
+            self._degraded = f"ANN 索引的 .meta 读不出来（{e}），当成没有索引"
+            log.warning(self._degraded)
+            return False
+
+        if meta.get("model") != self.model_tag:
+            self._degraded = (
+                f"磁盘上的 ANN 索引是给 {meta.get('model')!r} 建的，"
+                f"当前模型是 {self.model_tag!r}，不能用，需要重建"
+            )
+            log.info(self._degraded)
+            return False
+        if meta.get("dtype") != VECTOR_DTYPE:
+            self._degraded = (
+                f"磁盘上的 ANN 索引是 {meta.get('dtype')} 精度的，当前要求 {VECTOR_DTYPE}"
+                "（int8 量化），格式不通用，需要重建一次"
+            )
+            log.info(self._degraded)
+            return False
+
+        try:
+            idx = self._new_index()
+            idx.view(str(self.index_path))
+            # 🔴 **load/view 之后必须再核一遍实际的 dtype 和维度。**
+            #    usearch 用文件里存的值覆盖构造时声明的值，且**不报错**。
+            #    只信 .meta 的话，一个被手工替换过的索引文件能让整条
+            #    语义检索安静地跑在错误的向量空间上。
+            actual_dtype = str(getattr(idx.dtype, "name", idx.dtype)).lower()
+            if actual_dtype != VECTOR_DTYPE:
+                self._degraded = (
+                    f".meta 说这份索引是 {VECTOR_DTYPE}，实际打开是 {actual_dtype} —— "
+                    "文件和元数据对不上，不敢用，需要重建"
+                )
+                log.warning(self._degraded)
+                self._index = None
+                return False
+            if int(idx.ndim) != int(self.dim):
+                self._degraded = (
+                    f"ANN 索引是 {idx.ndim} 维的，当前嵌入模型是 {self.dim} 维，"
+                    "维度对不上，需要重建"
+                )
+                log.warning(self._degraded)
+                self._index = None
+                return False
+            self._index = idx
+            self._mmapped = True
             self._count = len(idx)
-            log.info("ANN 索引加载完成：%d 个向量", self._count)
+            self._degraded = None
+            log.info("ANN 索引已内存映射打开：%d 个向量，%s 精度", self._count, VECTOR_DTYPE)
             return True
         except Exception as e:  # noqa: BLE001
-            log.warning("ANN 索引加载失败，视为不存在，等待重建：%s", e)
+            self._degraded = f"ANN 索引文件打不开（多半是损坏或被截断）：{e}"
+            log.warning("%s —— 视为不存在，等待重建", self._degraded)
             self._index = None
+            self._mmapped = False
             return False
+
+    def note_degraded(self, reason: str) -> None:
+        """调用方（`search/engine.py`）退回暴力扫描时，把原因记在这里。"""
+        self._degraded = reason
+
+    @property
+    def degraded_reason(self) -> str | None:
+        return self._degraded
+
+    @property
+    def dtype(self) -> str:
+        return VECTOR_DTYPE
+
+    @property
+    def mmapped(self) -> bool:
+        return self._mmapped
+
+    def status(self) -> dict[str, Any]:
+        """
+        给 `/api/stats` 和状态栏用。**"用不了"必须说得出原因。**
+        """
+        st: dict[str, Any] = {
+            "available": True,
+            "size": self._count,
+            "active": self.active,
+            "threshold": ANN_THRESHOLD,
+            "dtype": VECTOR_DTYPE,
+            "mmapped": self._mmapped,
+        }
+        if self._degraded:
+            st["degradedReason"] = self._degraded
+            st["fallback"] = "暴力扫描（sqlite-vec 全量比对）"
+        if self._rebuild_total:
+            st["rebuild"] = {
+                "done": self._rebuild_done,
+                "total": self._rebuild_total,
+                "running": self._rebuild_done < self._rebuild_total,
+            }
+        return st
 
     def save(self) -> None:
         """
@@ -134,10 +332,15 @@ class AnnIndex:
         """
         if self._index is None or self._count == 0:
             return
+        if self._mmapped:
+            # 映射打开的这份索引从没被改过（要改必先经 `_writable` 转成副本），
+            # 磁盘上那个文件就是它本身，再存一遍是白写一次几百 MB
+            self._dirty = 0
+            return
         with self._lock:
             self.index_path.parent.mkdir(parents=True, exist_ok=True)
             self._index.save(str(self.index_path))
-            self.index_path.with_suffix(".meta").write_text(self.model_tag, encoding="utf-8")
+            self._write_meta()
             # 只有真的写成功了才清账。失败时保留 _dirty，
             # 下一批改动会再触发一次自动落盘 —— 而不是"失败一次就等到关机"
             self._dirty = 0
@@ -149,14 +352,16 @@ class AnnIndex:
 
     @property
     def active(self) -> bool:
-        """规模够大才真正接管查询——见模块开头②。"""
-        return self._count >= ANN_THRESHOLD
+        """规模够大**且索引真的可用**才接管查询——见模块开头②。"""
+        return self._index is not None and self._count >= ANN_THRESHOLD
 
     def add(self, rowid: int, vector: list[float]) -> None:
         import numpy as np
 
-        idx = self._ensure_index()
         with self._lock:
+            idx = self._writable()
+            # 喂进去的仍然是 float32：int8 量化发生在 usearch 内部，
+            # 调用方不需要知道索引里到底存的是什么精度。
             # 同样的"C 扩展只认 NumPy 数组"限制，见 search() 的注释
             idx.add(rowid, np.asarray(vector, dtype="float32"))
             self._count = len(idx)
@@ -168,8 +373,8 @@ class AnnIndex:
 
         if not rowids:
             return
-        idx = self._ensure_index()
         with self._lock:
+            idx = self._writable()
             idx.add(np.asarray(rowids), np.asarray(vectors, dtype="float32"), threads=0)
             self._count = len(idx)
             self._dirty += len(rowids)
@@ -180,8 +385,9 @@ class AnnIndex:
             return
         with self._lock:
             try:
-                self._index.remove(rowid)
-                self._count = len(self._index)
+                idx = self._writable()
+                idx.remove(rowid)
+                self._count = len(idx)
                 self._dirty += 1
             except Exception:  # noqa: BLE001
                 # rowid 本来就不在索引里（比如库还小、ANN 从没接管过），
@@ -255,12 +461,23 @@ class AnnIndex:
         # 后来在 `_similarity()` 那边用真实 sqlite-vec 建表测出它是没开方的 L2 时，
         # 才发现这里也得跟着改，不能是简单的倍数关系。两次错都栽在同一件事上：
         # 公式抄了别处的说法就直接用，没有自己拿真实数据核验一遍。
+        #
+        # int8 量化对这段换算**没有影响**：usearch 在 i8 索引上返回的仍然是
+        # 归一化到同一区间的 cos 距离（`1 - cos_sim`），只是数值上带了量化误差。
+        # 实测同一批向量 f32 与 i8 的距离差在 1e-2 量级，排序基本一致。
         return [
             (int(k_), math.sqrt(2.0 * max(0.0, float(d))))
             for k_, d in zip(r.keys.tolist(), r.distances.tolist(), strict=True)
         ]
 
-    def rebuild_from_db(self, conn: Any, batch_size: int = 20_000) -> int:
+    @property
+    def rebuild_progress(self) -> tuple[int, int]:
+        """(已完成, 总数)。没在重建时是 (0, 0)。"""
+        return self._rebuild_done, self._rebuild_total
+
+    def rebuild_from_db(
+        self, conn: Any, batch_size: int = 20_000, progress: Any = None
+    ) -> int:
         """
         扫一遍 `vec_chunks` 整表重建索引。**这是唯一的全量重建路径**——
         给已经攒了几十万块、在这个功能上线之前就存在的老库一条升级路径，
@@ -268,19 +485,20 @@ class AnnIndex:
 
         用 sqlite-vec 自己存的向量重建，而不是重新跑一遍嵌入模型——
         向量内容没变，只是换一种索引结构去组织它们，没道理重新推理一遍。
+
+        进度：写进 `self._rebuild_done / _rebuild_total`，
+        `status()` 会把它带到 `/api/stats`；`progress` 回调是可选的额外出口，
+        给已有的 job 机制用（不传就只有前者，不新造任何东西）。
         """
         import numpy as np
-        from usearch.index import Index
 
         total = conn.execute("SELECT COUNT(*) AS n FROM vec_chunks").fetchone()["n"]
         if total == 0:
+            self._rebuild_done = self._rebuild_total = 0
             return 0
 
-        new_index = Index(
-            ndim=self.dim, metric="cos", dtype="f32",
-            connectivity=CONNECTIVITY, expansion_add=EXPANSION_ADD,
-            expansion_search=EXPANSION_SEARCH,
-        )
+        self._rebuild_done, self._rebuild_total = 0, int(total)
+        new_index = self._new_index()
         done = 0
         last_rowid = 0
         while True:
@@ -300,12 +518,24 @@ class AnnIndex:
             new_index.add(ids, vecs, threads=0)
             last_rowid = int(ids[-1])
             done += len(ids)
+            self._rebuild_done = done
+            if progress is not None:
+                try:
+                    progress(done, int(total))
+                except Exception:  # noqa: BLE001
+                    # 进度回调抛异常不该把重建本身带崩 —— 它只是个通知
+                    pass
             if done % (batch_size * 5) == 0:
                 log.info("ANN 重建进度：%d/%d", done, total)
 
         with self._lock:
             self._index = new_index
+            self._mmapped = False
             self._count = len(new_index)
+            # 重建成功 = 之前那条降级原因（旧格式 / 文件损坏 / 维度对不上）
+            # 已经被解决了。不清掉的话状态里会永远挂着一条已经不成立的原因
+            self._degraded = None
         self.save()
-        log.info("ANN 重建完成：%d 个向量", self._count)
+        self._rebuild_done = self._rebuild_total = 0
+        log.info("ANN 重建完成：%d 个向量（%s 精度）", self._count, VECTOR_DTYPE)
         return self._count

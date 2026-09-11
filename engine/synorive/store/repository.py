@@ -163,6 +163,68 @@ class Repository:
             (rid, row["title"] or "", row["locator"] or ""),
         )
 
+    def _index_chunk_text(
+        self,
+        conn: sqlite3.Connection,
+        rowid: int,
+        title: str,
+        section: str | None,
+        text: str,
+    ) -> None:
+        """
+        把一个块写进关键词索引。**分场与否只在这一个地方分叉。**
+
+        A4 之后 `chunks_fts` 是三列（标题/章节名/正文），但老库在后台迁移
+        跑完之前还是一列的 —— 拿三列的 INSERT 去写一列的表会直接
+        `no such column: title`，整批摄取失败。所以按 `db.fts_fielded` 分叉。
+
+        迁移进行中（`fts_migration_live`）时还要**往新表里也写一份**：
+        新表是从 chunks 快照灌进去的，迁移那几分钟里新进来的内容它没有，
+        不补这一份的话，切换过去的一瞬间那批内容就从关键词索引里消失了 ——
+        表现是"刚导入的东西搜不到"，而且不报错。
+        """
+        seg_text = to_index_text(text)
+        if self.db.fts_fielded:
+            conn.execute(
+                "INSERT INTO chunks_fts (rowid, title, section, text) VALUES (?,?,?,?)",
+                (rowid, to_index_text(title), to_index_text(section or ""), seg_text),
+            )
+            return
+
+        conn.execute("INSERT INTO chunks_fts (rowid, text) VALUES (?,?)", (rowid, seg_text))
+        if self.db.fts_migration_live:
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO chunks_fts_v2 (rowid, title, section, text) "
+                    "VALUES (?,?,?,?)",
+                    (rowid, to_index_text(title), to_index_text(section or ""), seg_text),
+                )
+            except sqlite3.OperationalError:
+                # 正好撞上迁移收尾那一瞬（v2 已经改名成 chunks_fts）。
+                # 上面那条 INSERT 已经写进去了（三列表允许只给 text 列），
+                # 这一块只是少了标题/章节这两场，下次重新分析会补齐 —— 不该让摄取失败
+                pass
+
+    def _unindex_chunk_text(self, conn: sqlite3.Connection, rowid: int) -> None:
+        """
+        把一个块从关键词索引里删掉。
+
+        迁移进行中时**两张表都要删** —— 只删老表的话，那个块会作为幽灵项
+        留在新表里，切换过去之后它还在倒排里。虽然查询侧是
+        `chunks_fts JOIN chunks` 内连接、查不到 chunks 行就自动丢掉，
+        但它会白占 LIMIT 的名额（本该出现的第 200 条被挤掉）。
+        """
+        conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (rowid,))
+        if self.db.fts_migration_live:
+            try:
+                conn.execute("DELETE FROM chunks_fts_v2 WHERE rowid = ?", (rowid,))
+            except sqlite3.OperationalError:
+                pass  # 撞上迁移收尾那一瞬，上面那条已经删的是新表了
+
+    def _item_title(self, conn: sqlite3.Connection, item_id: str) -> str:
+        row = conn.execute("SELECT title FROM items WHERE id = ?", (item_id,)).fetchone()
+        return str(row["title"] or "") if row is not None else ""
+
     def write_chunks(
         self,
         item_id: str,
@@ -196,6 +258,9 @@ class Repository:
         ann_adds: list[tuple[int, list[float]]] = []
 
         conn = self.db.connect()
+        # A4：分场索引里的 title 是从 items 冗余过来的（FTS5 不能跨表打分）。
+        # 一次 write_chunks 只涉及一个条目，所以只查一次，不是每块查一次
+        item_title = self._item_title(conn, item_id)
         conn.execute("BEGIN IMMEDIATE")
         try:
             # 旧分块先清掉（重新分析同一份内容时）
@@ -203,7 +268,7 @@ class Repository:
                 "SELECT rowid FROM chunks WHERE item_id = ?", (item_id,)
             ).fetchall()
             for r in old:
-                conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (r["rowid"],))
+                self._unindex_chunk_text(conn, int(r["rowid"]))
                 conn.execute("DELETE FROM vec_chunks WHERE chunk_rowid = ?", (r["rowid"],))
                 ann_removes.append(int(r["rowid"]))
             conn.execute("DELETE FROM chunks WHERE item_id = ?", (item_id,))
@@ -223,11 +288,14 @@ class Repository:
                         c.page, c.start_sec, c.end_sec, c.bbox_json, c.section, c.token_count,
                     ),
                 )
+                # 🔴 `lastrowid` 的类型是 `int | None`。None 只会在"这条 INSERT
+                #    其实没插进去"时出现 —— 真发生了的话，后面拿它当 rowid 去写
+                #    FTS 和向量表，写出来的就是一批**指向不存在的块**的索引项，
+                #    症状是搜到一条结果、点开什么都没有。当场拦住，别往下传。
                 rid = cur.lastrowid
-                conn.execute(
-                    "INSERT INTO chunks_fts (rowid, text) VALUES (?,?)",
-                    (rid, to_index_text(c.text)),
-                )
+                if rid is None:
+                    raise RuntimeError(f"写分块后拿不到 rowid（item={item_id} 第 {i} 块）")
+                self._index_chunk_text(conn, rid, item_title, c.section, c.text)
                 if embeddings is not None:
                     conn.execute(
                         "INSERT INTO vec_chunks (chunk_rowid, embedding) VALUES (?,?)",
@@ -1137,7 +1205,7 @@ class Repository:
             for r in conn.execute(
                 "SELECT rowid FROM chunks WHERE item_id = ?", (item_id,)
             ).fetchall():
-                conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (r["rowid"],))
+                self._unindex_chunk_text(conn, int(r["rowid"]))
                 if "vec_chunks" in existing_tables:
                     conn.execute("DELETE FROM vec_chunks WHERE chunk_rowid = ?", (r["rowid"],))
             conn.execute("DELETE FROM items_fts WHERE rowid = ?", (row["rowid"],))
@@ -1273,12 +1341,37 @@ class Repository:
             "FROM items"
         ).fetchone()
         chunks = conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()
-        return {
+        out: dict[str, Any] = {
             "items": int(row["items"] or 0),
             "ready": int(row["ready"] or 0),
             "failed": int(row["failed"] or 0),
             "chunks": int(chunks["n"] or 0),
         }
+        # A17/A2：ANN 近似索引现在是什么状态、有没有退回暴力扫描、为什么。
+        #
+        # 🔴 **必须有一个不用翻日志就能看到的地方。** ANN 用不了的症状是
+        #    "搜索还能用，就是慢"——不报错、不少结果，只是延迟从几十毫秒
+        #    变成几秒。这类退化没人会主动发现，除非状态里直接写着。
+        #    走 stats() 而不是新开接口：它已经挂在 `/api/stats` 和状态栏上了。
+        ann = self.ann_index
+        if ann is None:
+            out["annStatus"] = {
+                "available": False,
+                "reason": "usearch 没装，或嵌入模型还没就绪过一次",
+                "fallback": "暴力扫描（sqlite-vec 全量比对）",
+            }
+        else:
+            try:
+                out["annStatus"] = ann.status()
+            except Exception as e:  # noqa: BLE001
+                out["annStatus"] = {"available": False, "reason": f"读 ANN 状态出错：{e}"}
+        # A4：全文索引是不是已经是分场（标题/章节/正文）的那一版。
+        # 老库升级期间这里会是 False，界面据此知道"标题加权还没生效"
+        out["ftsFielded"] = bool(getattr(self.db, "fts_fielded", False))
+        mig = getattr(self.db, "fts_migration_progress", None)
+        if mig and mig[1]:
+            out["ftsMigration"] = {"done": mig[0], "total": mig[1]}
+        return out
 
 
 def _path_words(locator: str) -> str:

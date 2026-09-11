@@ -603,6 +603,14 @@ class MetaSearch:
         for eid in ids:
             e = get_engine(eid)
             if e is None:
+                # 🔴 这一条以前是**光秃秃的 continue**，而它恰恰是上面那段注释
+                #    说要治的病：用户传了个不认识的引擎名（拼错、界面上存着一个
+                #    已经改名/下线的 id），列表被悄悄清空，最终就是
+                #    "0 条结果，一句解释都没有"。它必须和下面三种一样留个回执。
+                skipped.append(EngineReply(
+                    engine=eid, outcome=ParseOutcome.BROKEN, attempted=False,
+                    error="没有这个搜索引擎（名字拼错了，或者它已经不在引擎列表里）",
+                ))
                 continue
             # 🔴 下面三种全部 `attempted=False`：它们是"这一轮没派上场"，
             # 不是"派出去了没搜到"。混为一谈会让健康档案自我实现地越记越差
@@ -1274,7 +1282,12 @@ def _registrable(site: str) -> str:
     完整的公共后缀列表有几千条且每月都在变，为了一个"给个大概判断"的
     功能去背那张表不划算，判错的代价只是少合并一组。
     """
-    host = str(site or "").lower().strip().lstrip("www.")
+    # 🔴 `lstrip("www.")` 是按字符集剥，`wsj.com` 会变成 `sj.com`（见 trust.py 的同名坑）。
+    #    这里的返回值是 B7「有几个真正独立的站在说」的合并键，剥错了就会把
+    #    两个不同的站算成同一个，独立来源数被悄悄压低，而界面上什么异常都看不到。
+    host = str(site or "").lower().strip()
+    if host.startswith("www."):
+        host = host[4:]
     parts = [p for p in host.split(".") if p]
     if len(parts) <= 2:
         return ".".join(parts)

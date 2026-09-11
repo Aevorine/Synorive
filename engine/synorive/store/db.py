@@ -20,6 +20,7 @@ SQLite 连接管理
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 import sqlite3
 import threading
@@ -27,6 +28,8 @@ from pathlib import Path
 from typing import Any
 
 import sqlite_vec
+
+log = logging.getLogger("synorive.db")
 
 #: 加密后端。装了 sqlcipher3 才有；没装时"整库加密"这个功能整个不可用，
 #: 而**不是降级成明文** —— 加密这块唯一不能干的事就是"库没装就用个办法顶一下"。
@@ -106,6 +109,40 @@ def _tuning() -> tuple[int, int]:
     return _tuning_cache
 
 
+#: A4：`chunks_fts` 分场之后该有的列，顺序必须和 schema.sql 一致 ——
+#: BM25F 的权重是**按列序**给的（`bm25(chunks_fts, 4.0, 2.0, 1.0)`），
+#: 顺序错了就是把正文的权重加到标题上，而且不报错。
+FTS_CHUNK_COLUMNS = ("title", "section", "text")
+
+#: 建表语句只此一份。schema.sql 里那份负责全新库，这份负责迁移时的新表，
+#: 两处的 tokenize/content 选项必须一模一样 —— 不一样的话迁移完
+#: 分词规则就变了，症状是"升级之后某些词搜不到了"
+_CREATE_CHUNKS_FTS = (
+    "CREATE VIRTUAL TABLE {name} USING fts5 ("
+    "title, section, text, "
+    "content = '', contentless_delete = 1, "
+    "tokenize = 'unicode61 remove_diacritics 2')"
+)
+
+
+def _fts_chunk_columns(conn: sqlite3.Connection) -> list[str]:
+    """
+    `chunks_fts` 现在有哪几列。表不存在时返回空列表（不抛）。
+
+    用 `PRAGMA table_info` 而不是去解析 sqlite_master 里的建表语句 ——
+    后者要写正则去啃 SQL 文本，而这张表的定义将来还会变。
+    """
+    have = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+        )
+    }
+    if "chunks_fts" not in have:
+        return []
+    return [str(row["name"]) for row in conn.execute("PRAGMA table_info(chunks_fts)")]
+
+
 def _migrate_columns(conn: sqlite3.Connection) -> None:
     #: 表不存在时 `PRAGMA table_info` 返回 0 行且**不报错**，于是"列不在里面"
     #: 恒为真，接着 `ALTER TABLE` 抛 `no such table`。老库（建库时还没有 jobs 表）
@@ -170,6 +207,14 @@ class Database:
         self._init_lock = threading.Lock()
         self._initialized = False
         self.capabilities: dict[str, Any] = {}
+        #: A4：`chunks_fts` 是不是已经是分场（title/section/text）的那一版。
+        #: 老库刚打开时是 False，后台迁移跑完变 True。
+        #: **写入侧和查询侧都要看它**——两边不一致的表现是"某些东西就是搜不到"。
+        self.fts_fielded = False
+        #: 迁移期间那张临时的新表还在不在（写入侧要同时往它里面写一份）
+        self.fts_migration_live = False
+        #: (已完成, 总数)。没在迁移时是 (0, 0)。经 `Repository.stats()` 露出去
+        self.fts_migration_progress: tuple[int, int] = (0, 0)
 
     # ── 加密 ────────────────────────────────────────────────
 
@@ -426,6 +471,7 @@ class Database:
 
             conn.executescript(_SCHEMA_SQL)
             _migrate_columns(conn)
+            self._check_fts_schema(conn)
             cur = conn.execute("SELECT value FROM meta_kv WHERE key = 'schema_version'")
             row = cur.fetchone()
             if row is None:
@@ -434,6 +480,140 @@ class Database:
                     (str(SCHEMA_VERSION),),
                 )
             self._initialized = True
+
+    # ── A4：全文索引分场迁移 ──────────────────────────────────
+
+    def _check_fts_schema(self, conn: sqlite3.Connection) -> None:
+        """
+        看 `chunks_fts` 是老的单列版还是新的分场版；老的就安排一次重建。
+
+        🔴 **不能在这里同步重建。** 重建要把整库的块正文重新过一遍 jieba，
+           几十万块是几十秒到几分钟。放在 `initialize()` 里同步做，
+           老用户升级后打开应用会看到一个几分钟不响应的窗口，
+           而且 A1「冷启动 ≤2s」直接作废。
+
+        🔴 **更不能先把老表删掉再慢慢建。** 那样重建期间关键词搜索是空的 ——
+           "升级完搜不到东西"正是这件事最不能出的后果。
+           所以：老表原地不动继续服务，新表在旁边建，建完了才**原子地**换过去。
+        """
+        cols = _fts_chunk_columns(conn)
+        if not cols:
+            return  # 表还没建出来（不该发生，schema.sql 刚跑过），交给下次
+        if tuple(cols) == FTS_CHUNK_COLUMNS:
+            self.fts_fielded = True
+            return
+
+        # 上一次迁移跑到一半被强杀，留下的半成品。直接丢掉重来 ——
+        # 它可能只索引了一部分，拿它去换掉好用的老表是拿完整换残缺
+        conn.execute("DROP TABLE IF EXISTS chunks_fts_v2")
+
+        n = conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
+        if not n:
+            # 空库：没什么可搬的，当场换掉，不用惊动后台
+            conn.execute("DROP TABLE chunks_fts")
+            conn.execute(_CREATE_CHUNKS_FTS.format(name="chunks_fts"))
+            self.fts_fielded = True
+            log.info("全文索引已升级为分场（标题/章节/正文）—— 库是空的，直接重建")
+            return
+
+        log.info(
+            "检测到老版单列全文索引（%d 个块）。老索引继续服务，"
+            "后台重建分场索引，完成后自动切换；在那之前标题加权还不生效",
+            n,
+        )
+        self.fts_migration_progress = (0, int(n))
+        threading.Thread(
+            target=self._migrate_chunks_fts_bg, daemon=True, name="fts-fielded-migrate"
+        ).start()
+
+    def _migrate_chunks_fts_bg(self) -> None:
+        try:
+            self.migrate_chunks_fts()
+        except Exception as e:  # noqa: BLE001
+            # 迁移失败 = 停留在老索引上。搜索照常能用，只是没有标题加权。
+            # 大声记一笔，别变成"这个功能怎么一直没生效"
+            log.warning(
+                "全文索引分场迁移失败，仍然使用老的单列索引（搜索不受影响，"
+                "只是标题/章节加权不生效）：%s", e, exc_info=True,
+            )
+            self.fts_migration_live = False
+            self.fts_migration_progress = (0, 0)
+
+    def migrate_chunks_fts(self, batch_size: int = 2000) -> int:
+        """
+        把 `chunks_fts` 从单列重建成分场（title/section/text）。
+
+        这是**显式的重建入口**：自动路径（`_check_fts_schema`）和手动路径
+        都走这一个函数。返回重建了多少个块。
+
+        做法：
+          ① 建一张 `chunks_fts_v2`，边界是"表存在"这个事实本身 ——
+             `Repository` 看到 `fts_migration_live` 就会把新写入的块
+             **同时**写进这张表。不这么做的话，迁移那几分钟里摄取进来的
+             内容会跟着老表一起被丢掉，症状是"刚导入的东西搜不到"。
+          ② 分批把 chunks 里的块灌进去（jieba 分词是这一步的大头）。
+          ③ 一个事务里 DROP 老表 + RENAME 新表。WAL 下并发的读事务看到的
+             要么全是老表要么全是新表，不会看到中间态。
+        """
+        conn = self.connect()
+        total = int(conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"])
+        self.fts_migration_progress = (0, total)
+
+        conn.execute("DROP TABLE IF EXISTS chunks_fts_v2")
+        conn.execute(_CREATE_CHUNKS_FTS.format(name="chunks_fts_v2"))
+        self.fts_migration_live = True
+
+        from .text import to_index_text
+
+        done, last = 0, 0
+        while True:
+            rows = conn.execute(
+                "SELECT c.rowid AS rid, c.text, c.section, i.title "
+                "FROM chunks c JOIN items i ON i.id = c.item_id "
+                "WHERE c.rowid > ? ORDER BY c.rowid LIMIT ?",
+                (last, batch_size),
+            ).fetchall()
+            if not rows:
+                break
+            payload = [
+                (
+                    int(r["rid"]),
+                    to_index_text(str(r["title"] or "")),
+                    to_index_text(str(r["section"] or "")),
+                    to_index_text(str(r["text"] or "")),
+                )
+                for r in rows
+            ]
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO chunks_fts_v2 (rowid, title, section, text) "
+                    "VALUES (?,?,?,?)",
+                    payload,
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            last = payload[-1][0]
+            done += len(payload)
+            self.fts_migration_progress = (done, total)
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("DROP TABLE chunks_fts")
+            conn.execute("ALTER TABLE chunks_fts_v2 RENAME TO chunks_fts")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        # 顺序要紧：先关掉"往 v2 里也写一份"，再宣布分场可用。
+        # 反过来的话，中间那一瞬写入侧会拿分场的 INSERT 去写一张还没换名的表
+        self.fts_migration_live = False
+        self.fts_fielded = True
+        self.fts_migration_progress = (0, 0)
+        log.info("全文索引分场重建完成：%d 个块，标题/章节加权已生效", done)
+        return done
 
     # ── 向量表：维度已知时才建 ────────────────────────────────
 

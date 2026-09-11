@@ -23,6 +23,181 @@ from .store.db import Database
 log = logging.getLogger("synorive.runtime")
 
 
+class NetworkBlocked(RuntimeError):
+    """
+    D6：联网总闸关着的时候，任何一次出网尝试都抛这个。
+
+    message 是**直接给用户看的人话** —— 接口层原样往上抛就行，
+    不用再翻译一遍（翻译一遍的结果通常是变成"请求失败"这种废话）。
+    """
+
+
+#: 关掉时给用户看的那两句话。各写各的会让同一件事在界面上有三种说法。
+NETWORK_OFF_REASON = (
+    "联网总闸是关着的（设置 → 隐私围栏 → 允许联网搜索）。"
+    "这次没有任何数据发出去 —— 不是网络故障，是你自己关的。"
+)
+CLOUD_OFF_REASON = (
+    "云端调用是关着的（设置 → 隐私围栏 → 允许调用云端）。"
+    "这次没有任何资料被发出去 —— 不是网络故障，是你自己关的。"
+)
+
+
+class NetworkGate:
+    """
+    D6 —— **出网的唯一闸门**，开关一变立刻生效。
+
+    🔴 **这条改的是一个隐私承诺失效的 bug，不是优化。** 原来 `allow_network`
+       只在启动时读一次：用户在界面上点"断网"，界面立刻显示已断网，而**引擎
+       进程里那些 httpx 调用照常出网**，要重启引擎才真的断。也就是说
+       "我点了断网"和"真的断网了"之间隔着一次用户根本不知道要做的重启。
+
+    做法：所有 httpx client 都从这里拿，而不是各处 `httpx.AsyncClient(...)`。
+      · 建 client 时装一个 request 事件钩子 —— **每一次请求发出前**重新读开关，
+        所以"client 是开着的时候建的"不会变成漏网的理由；
+      · 关闸时把已经建出来的 client 全部关掉 —— 正在飞的连接会当场断开，
+        而不是"等这一批跑完再说"。断掉的请求在调用方看来是一个网络错误，
+        这是对的：它本来就不该再继续。
+
+    ⚠️ **这个闸挡的是这个进程里走 httpx 的出网。** 别的出网方式（子进程、
+       系统级下载器）不经过它 —— 引擎里目前没有那种路径，但以后有的话
+       必须自己接上，不能默认"用了这个闸就一定断干净了"。
+    """
+
+    #: 两条闸各管各的，**不能合并**（CLAUDE.md 里定死的原则）：
+    #:   network 管的是把**查询词**发出去（联网搜索、抓网页、下依赖）
+    #:   cloud   管的是把**你的资料原文**发出去（简报改写、图片描述）
+    #: 很多人愿意接受前者而绝不接受后者。所以 client 工厂收一个 `kind`，
+    #: 两类连接分开记账 —— 关联网搜索不该顺手掐掉正在跑的云端简报。
+    #:
+    #: 第三类 `download` 是**模型/依赖下载**，故意**不受联网总闸管**，
+    #: 和桌面端"自动检查更新"是同一条理由（见 apps/desktop 的 settings.ts）：
+    #: 联网总闸管的是"把我在查什么发出去"，而下模型既不含用户内容、
+    #: 也是"关了网之后想装个 OCR"这种完全正常的用法。
+    #: 🔴 它仍然从这个工厂拿 client —— 出口只有一个，谁不受管也是**写在这里
+    #:    看得见的**，而不是散在各处靠"忘了接"实现的。
+    KINDS = ("network", "cloud", "download")
+
+    def __init__(self) -> None:
+        self._allowed = {"network": True, "cloud": False, "download": True}
+        self._clients: Any = None  # 懒建，避免顶层 import weakref/threading
+        self._lock: Any = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    # ── 状态 ────────────────────────────────────────────────
+
+    @property
+    def allowed(self) -> bool:
+        """联网总闸（`allow_network`）。"""
+        return self._allowed["network"]
+
+    @property
+    def cloud_allowed(self) -> bool:
+        return self._allowed["cloud"]
+
+    def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """记住事件循环 —— 关闸时要从别的线程回到它上面去关 async client。"""
+        self._loop = loop
+
+    def check(self, kind: str = "network") -> None:
+        """出网前问一句。关着就抛 `NetworkBlocked`，message 可以直接显示。"""
+        if not self._allowed.get(kind, False):
+            raise NetworkBlocked(
+                CLOUD_OFF_REASON if kind == "cloud" else NETWORK_OFF_REASON
+            )
+
+    def _ensure(self) -> None:
+        import threading
+        import weakref
+
+        if self._clients is None:
+            self._clients = {k: weakref.WeakSet() for k in self.KINDS}
+            self._lock = threading.Lock()
+
+    def _track(self, kind: str, client: Any) -> Any:
+        self._ensure()
+        with self._lock:
+            self._clients[kind].add(client)
+        return client
+
+    def set_allowed(self, on: bool, *, kind: str = "network") -> int:
+        """
+        翻开关。返回**这次掐断了几个已经建出来的 client**（0 是正常的：
+        没有在飞的请求时就没有东西要掐）。
+
+        关闸走"先置状态再掐连接"的顺序：反过来的话，掐连接和置状态之间
+        新建的 client 会带着"还开着"的状态活下来。
+        """
+        on = bool(on)
+        was = self._allowed.get(kind, False)
+        self._allowed[kind] = on
+        if on or was == on:
+            return 0
+        return self._close_all(kind)
+
+    def _close_all(self, kind: str) -> int:
+        if self._clients is None:
+            return 0
+        with self._lock:
+            live = list(self._clients[kind])
+            self._clients[kind].clear()
+        n = 0
+        for c in live:
+            try:
+                if hasattr(c, "aclose"):
+                    loop = self._loop
+                    if loop is not None and not loop.is_closed():
+                        asyncio.run_coroutine_threadsafe(c.aclose(), loop)
+                        n += 1
+                else:
+                    c.close()
+                    n += 1
+            except Exception as e:  # noqa: BLE001 — 关不掉一个不该拖累其它的
+                log.debug("关闭 httpx client 时出错（忽略）：%s", e)
+        return n
+
+    # ── client 工厂 ──────────────────────────────────────────
+
+    def async_client(self, *, kind: str = "network", **kwargs: Any) -> Any:
+        """
+        拿一个 `httpx.AsyncClient`。**建的那一刻就查一次**，之后每次请求再查一次。
+
+        用法和 `httpx.AsyncClient(...)` 完全一样，直接换掉即可：
+            async with NETWORK.async_client(timeout=...) as client: ...
+        """
+        import httpx
+
+        self.check(kind)
+
+        async def _hook(request: Any) -> None:
+            # 🔴 **必须在这里再查一次。** client 可能是十秒前建的，
+            #    而用户五秒前把闸关了 —— 只在建的时候查等于漏掉这一整段。
+            self.check(kind)
+
+        hooks = dict(kwargs.pop("event_hooks", None) or {})
+        hooks["request"] = [_hook, *list(hooks.get("request") or [])]
+        return self._track(kind, httpx.AsyncClient(event_hooks=hooks, **kwargs))
+
+    def sync_client(self, *, kind: str = "network", **kwargs: Any) -> Any:
+        """同上，同步版（`ingest/web.py` 的抓正文走的是同步 httpx）。"""
+        import httpx
+
+        self.check(kind)
+
+        def _hook(request: Any) -> None:
+            self.check(kind)
+
+        hooks = dict(kwargs.pop("event_hooks", None) or {})
+        hooks["request"] = [_hook, *list(hooks.get("request") or [])]
+        return self._track(kind, httpx.Client(event_hooks=hooks, **kwargs))
+
+
+#: 全局唯一的出网闸。**范围外的模块也从这里拿 client**：
+#:     from ..runtime import NETWORK
+#:     async with NETWORK.async_client(timeout=...) as client: ...
+NETWORK = NetworkGate()
+
+
 def _short_provider(name: str) -> str:
     """
     ONNX Runtime 的执行器全名太长（CPUExecutionProvider），
@@ -49,8 +224,25 @@ class EngineConfig:
     db_key: str = ""
     model_dir: Path = field(default_factory=lambda: Path.cwd() / "data" / "models")
     concurrency: int = 7
+    """
+    B6：批量摄取/分析的工作线程主动调成 Windows 后台优先级
+    （`winprio.enter_background_mode`），系统繁忙时让路给正在处理的
+    搜索请求。默认开——这是"后台重活不该让前台变卡"的默认姿态，
+    关掉是有意的例外操作（怀疑优先级调整导致某些机器上变慢时用）。
+    """
+    background_priority: bool = True
     """是否允许把内容送到云端（受隐私围栏二次约束）"""
     allow_cloud: bool = False
+    """
+    S6-B 是否允许云端通道的 `baseUrl` 指向厂商白名单之外的地址。
+
+    🔴 **默认 False。** `/cloud/synthesize` 会把整份研究简报（正文摘录、你的
+    查询词、来源清单）POST 到 `baseUrl`。这个字段原来完全没校验，
+    一次 `/api/cloud/configure` 就能把它改成攻击者的服务器 ——
+    之后每一份简报都照常生成、界面上没有任何异常，只是同时也发给了别人。
+    白名单挡住的正是这种"改一个字段就静默改变数据去向"的路径。
+    """
+    allow_custom_cloud_endpoint: bool = False
     """
     是否允许联网搜索出网。
 
@@ -275,6 +467,7 @@ class Runtime:
             concurrency=self.config.concurrency,
             on_progress=lambda p: self.events.publish("ingest.job", p),
             sensitive_guard_enabled=self.config.sensitive_guard_enabled,
+            background_priority=self.config.background_priority,
         )
         from .ingest.watcher import FolderWatcher
 
@@ -762,6 +955,114 @@ class Runtime:
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """记下事件循环，工作线程要靠它把事件安全地送回来。"""
         self._loop = loop
+        # D6：关闸时要从别的线程回到这个循环上去 aclose 掉在飞的 async client
+        NETWORK.attach_loop(loop)
+        NETWORK.set_allowed(bool(getattr(self.config, "allow_network", True)))
+        NETWORK.set_allowed(
+            bool(getattr(self.config, "allow_cloud", False)), kind="cloud"
+        )
+
+    # ── D6 联网总闸（热生效）────────────────────────────────
+
+    def set_allow_network(self, on: bool) -> dict[str, Any]:
+        """
+        翻联网总闸，**立刻生效，不用重启引擎**。
+
+        原来这个开关只在启动时读一次，用户点"断网"之后界面显示已断网、
+        引擎却照常出网 —— 这是隐私承诺失效，不是性能问题。
+
+        关的时候做三件事，缺一不可：
+          ① `NETWORK.set_allowed(False)`：新请求当场被拒，在飞的连接被掐断；
+          ② `self.web = None`：接口层据此返回明确的 503（见 routes 的 `_web`），
+             而不是让一个半死的搜索器去发一堆注定失败的请求；
+          ③ 推一条事件，界面上的状态不用等下一次轮询。
+
+        开回来的时候把 `web` 重新建起来。引擎健康档是落盘的
+        （`websearch-health.json`），所以重建不会把学到的排班信息丢掉。
+        """
+        on = bool(on)
+        before = bool(getattr(self.config, "allow_network", True))
+        self.config.allow_network = on
+        cut = NETWORK.set_allowed(on)
+
+        rebuilt = False
+        if not on:
+            self.web = None
+        elif self.web is None:
+            try:
+                from .websearch import MetaSearch
+
+                self.web = MetaSearch(
+                    enabled=getattr(self.config, "web_engines", None),
+                    keys=getattr(self.config, "web_keys", None),
+                    renderer=self.render_broker,
+                    state_path=self.config.data_dir / "websearch-health.json",
+                    lineup_size=getattr(self.config, "web_lineup_size", 0),
+                )
+                rebuilt = True
+            except Exception as e:  # noqa: BLE001
+                # 建不起来要说清楚，不能让界面显示"已联网"而实际没有搜索器
+                log.error("重新启用联网搜索失败：%s", e)
+                return {
+                    "allowNetwork": True,
+                    "changed": before != on,
+                    "ok": False,
+                    "error": f"总闸开了，但联网搜索器没建起来：{type(e).__name__}: {e}",
+                }
+
+        out = {
+            "allowNetwork": on,
+            "changed": before != on,
+            "ok": True,
+            "cutConnections": cut,
+            "webSearchRebuilt": rebuilt,
+            "note": (
+                f"已断网。掐断了 {cut} 个还在飞的连接，新的联网请求会立刻失败并说明原因。"
+                if not on
+                else "已允许联网。"
+            ),
+        }
+        self.events.publish("privacy.network", out)
+        return out
+
+    # ── B1 就绪状态（关键词 / 语义分开报）──────────────────
+
+    def readiness(self) -> dict[str, Any]:
+        """
+        B1 —— **如实**报"现在能搜什么"。
+
+        🔴 引擎起来之后有一段时间是"关键词能搜、语义还在加载"的。原来这段
+           时间里 `/health` 一律说 ok，界面照常显示就绪 —— 用户搜一个只有
+           语义能命中的问题，得到的是**空结果而不是"还在加载"**。
+           空结果和"没有这条内容"长得一模一样，用户会以为库里没有。
+           所以这两路必须分开报，界面据此显示"语义检索还在加载"。
+
+        三个字段各自的含义：
+          keyword  关键词/正文检索。HTTP 一起来就是 ready（它只依赖 SQLite）
+          semantic loading（模型在后台加载）/ ready / unavailable（没装模型）
+          ann      近似索引接管没接管。没接管不是故障，只是小库不需要
+        """
+        emb = self._embedder
+        installed = (self.config.model_dir / "bge-small-zh-v1.5" / "model.onnx").exists()
+        if not installed:
+            semantic = "unavailable"
+            why = "本地向量模型还没装（设置 → 体检 里可以装）。现在只有关键词检索。"
+        elif emb is not None and getattr(emb, "ready", False):
+            semantic = "ready"
+            why = ""
+        else:
+            semantic = "loading"
+            why = "语义检索的模型还在后台加载，这几秒里只有关键词检索能用 —— 不是没搜到。"
+
+        ann = self.repo.ann_index if self.repo is not None else None
+        return {
+            "keyword": "ready" if self.search is not None else "loading",
+            "semantic": semantic,
+            "ann": ("active" if getattr(ann, "active", False) else
+                    "loaded" if ann is not None else "off"),
+            "searchable": self.search is not None,
+            "note": why,
+        }
 
     # ── 端口发现 ────────────────────────────────────────────
     #

@@ -171,8 +171,30 @@ CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5 (
     tokenize = 'unicode61 remove_diacritics 2'
 );
 
+-- A4：**分场索引**。原来这张表只有一个 `text` 列，
+-- 也就是"命中在标题里"和"命中在正文第 80 页"对 BM25 完全一样重。
+-- 拆成三列之后，检索时用 BM25F 按场加权（见 `search/engine.py` 的
+-- `FTS_FIELD_WEIGHTS`）：标题命中 > 章节名命中 > 正文命中。
+--
+--   title    这一块所属**条目**的标题（冗余存一份，见下）
+--   section  这一块所在的章节名（`3.2 Experimental Method` 这种）
+--   text     块正文
+--
+-- 三列存的都是 jieba 分词后的空格分隔序列，不是原文。
+--
+-- 🔴 **title 是从 items 冗余过来的，不是块自己的属性。**
+--    FTS5 不能跨表 JOIN 打分，要让"标题命中"参与同一次 BM25 计算，
+--    标题就必须和正文在同一行里。代价是标题改了而没有重新分块时，
+--    索引里的标题是旧的 —— 重新分析（`write_chunks`）会连带刷新它。
+--
+-- 🔴 老库升级：`CREATE ... IF NOT EXISTS` 对已经存在的表**什么都不做**，
+--    所以老库里这张表仍然是一列的。检测和后台重建见 `db.py` 的
+--    `_fts_chunk_columns` / `migrate_chunks_fts`。**不迁移也能搜**
+--    （查询侧会退回单列 BM25），迁移完才有标题加权。
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5 (
-    text,       -- 同上，分词后的
+    title,
+    section,
+    text,
     content = '',
     contentless_delete = 1,
     tokenize = 'unicode61 remove_diacritics 2'

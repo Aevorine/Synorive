@@ -43,7 +43,22 @@ MAX_DOC_CHARS = 400
 
 #: 超过这个时间就放弃精排、用原顺序。
 #: 精排是"锦上添花"，让用户为它多等半秒是本末倒置。
+#:
+#: 🔴 **2026-08-27 之前这条注释是假的。** 实现是把 12 条一次性喂进模型、
+#:    **跑完之后**才量一次时间，超了只 `log.info` 一行，然后照样把结果返回去 ——
+#:    "超预算就放弃"一次都没发生过。用户该省下的那半秒一秒都没省到，
+#:    而日志里那行 info 让人以为熔断在工作。
+#:    现在改成真的熔断：分批跑，**每批开始前**先看还剩多少预算，
+#:    超了就当场返回 None（调用方据此保持融合排序的原顺序）。
 BUDGET_MS = 700
+
+#: 熔断的粒度：一次前向跑几条。
+#:
+#: 这个数是"熔断精度"和"吞吐"的折中：分批越小，超预算时浪费的算力越少，
+#: 但 ONNX 每次 run 都有固定开销，批太小会让正常情况整体变慢。
+#: 4 条 ≈ CPU 上 160ms，MAX_CANDIDATES=12 正好 3 批 —— 最坏情况下
+#: 多跑的那一批不会超过预算的 1/3。
+BUDGET_BATCH = 4
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -127,12 +142,37 @@ class Reranker:
 
     # ── 打分 ────────────────────────────────────────────────
 
-    def score(self, query: str, docs: list[str]) -> list[float] | None:
+    def _forward(self, query: str, docs: list[str]) -> np.ndarray:
+        """跑一批前向，返回 logits。调用方负责计时和熔断。"""
+        with self._lock:
+            enc = self._tokenizer.encode_batch([(query, d) for d in docs])
+            ids = np.array([e.ids for e in enc], dtype=np.int64)
+            mask = np.array([e.attention_mask for e in enc], dtype=np.int64)
+
+            feed: dict[str, Any] = {"input_ids": ids, "attention_mask": mask}
+            # 有的导出带 token_type_ids，有的不带 —— 按会话实际要什么给什么，
+            # 硬塞会报 "Unexpected input"，少给会报 "Missing input"
+            names = {i.name for i in self._session.get_inputs()}
+            if "token_type_ids" in names:
+                feed["token_type_ids"] = np.array([e.type_ids for e in enc], dtype=np.int64)
+            feed = {k: v for k, v in feed.items() if k in names}
+
+            out = self._session.run(None, feed)[0]
+        return np.asarray(out, dtype=np.float32).reshape(len(docs), -1)[:, 0]
+
+    def score(self, query: str, docs: list[str], budget_ms: int = BUDGET_MS) -> list[float] | None:
         """
         给每个 doc 打一个和 query 的相关度分（0~1，越大越相关）。
 
         返回 None 表示"这次没排成"，调用方保持原顺序。
         任何异常都吞掉转成 None —— 见模块头的说明。
+
+        🔴 **延迟熔断是真的会退回的**（见 BUDGET_MS 的注释）：
+           分 `BUDGET_BATCH` 条一批跑，每批开始前先看时间。
+           已经超预算就**丢掉已经算出来的那部分、返回 None**，
+           而不是"把算了一半的分数凑合用" —— 只排了前 4 条、后 8 条按原顺序，
+           那个顺序既不是融合排序也不是精排排序，是两者拼出来的第三种东西，
+           出了问题谁都解释不了它为什么是这个顺序。
         """
         if not docs or not query.strip():
             return None
@@ -141,29 +181,25 @@ class Reranker:
 
         t0 = time.perf_counter()
         try:
-            with self._lock:
-                enc = self._tokenizer.encode_batch([(query, d) for d in docs])
-                ids = np.array([e.ids for e in enc], dtype=np.int64)
-                mask = np.array([e.attention_mask for e in enc], dtype=np.int64)
-
-                feed: dict[str, Any] = {"input_ids": ids, "attention_mask": mask}
-                # 有的导出带 token_type_ids，有的不带 —— 按会话实际要什么给什么，
-                # 硬塞会报 "Unexpected input"，少给会报 "Missing input"
-                names = {i.name for i in self._session.get_inputs()}
-                if "token_type_ids" in names:
-                    feed["token_type_ids"] = np.array(
-                        [e.type_ids for e in enc], dtype=np.int64
+            chunks: list[np.ndarray] = []
+            for start in range(0, len(docs), BUDGET_BATCH):
+                elapsed = (time.perf_counter() - t0) * 1000
+                if start and elapsed > budget_ms:
+                    log.info(
+                        "精排已耗时 %.0fms 超过预算 %dms（做完 %d/%d 条），"
+                        "放弃精排、退回融合排序的原顺序",
+                        elapsed, budget_ms, start, len(docs),
                     )
-                feed = {k: v for k, v in feed.items() if k in names}
+                    return None
+                chunks.append(self._forward(query, docs[start : start + BUDGET_BATCH]))
 
-                out = self._session.run(None, feed)[0]
-
-            logits = np.asarray(out, dtype=np.float32).reshape(len(docs), -1)[:, 0]
+            logits = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
             elapsed = (time.perf_counter() - t0) * 1000
-            if elapsed > BUDGET_MS:
-                # 超预算的这次照常返回（活已经干完了），但记下来 ——
-                # 连续超说明候选数或机器配置需要调
-                log.info("精排耗时 %.0fms 超过预算 %dms（%d 条）", elapsed, BUDGET_MS, len(docs))
+            if elapsed > budget_ms:
+                # 最后一批跑完才超的：活已经全干完了，丢掉纯属浪费，照常返回。
+                # 但要记下来 —— 连续超说明候选数或机器配置需要调
+                log.info("精排耗时 %.0fms 超过预算 %dms（%d 条，最后一批跑完才超）",
+                         elapsed, budget_ms, len(docs))
             return [float(x) for x in _sigmoid(logits)]
         except Exception as e:
             log.warning("精排打分失败，保持原顺序：%s", e)

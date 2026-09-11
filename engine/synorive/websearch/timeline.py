@@ -261,8 +261,16 @@ def score_controversy(verdict: dict[str, Any]) -> Controversy:
     但那只是两条零散的结果，报 100 分会严重误导。乘上规模系数以后，
     这种情况只有 33 分，符合直觉。
     """
-    sup = len(verdict.get("support") or [])
-    ref = len(verdict.get("refute") or [])
+    # 🔴 **必须用 supportCount / refuteCount，不能用 len(support)。**
+    #    `ClaimVerdict.to_dict()`（verify.py）里 `support`/`refute` 两个列表是
+    #    **截断到前 5 条**给界面看的，真实条数另外放在 `supportCount`/`refuteCount`。
+    #    拿截断后的长度算，12 比 1 会被当成 5 比 1 —— 一个早有定论的说法
+    #    算出来的争议度从 15 分变成 33 分，翻了一倍还多，而且不报任何错。
+    #    （下面 `neu` 用的就是 `neutralCount`，这两行当时漏了。）
+    sup_list = verdict.get("support") or []
+    ref_list = verdict.get("refute") or []
+    sup = int(verdict.get("supportCount") or verdict.get("support_count") or len(sup_list))
+    ref = int(verdict.get("refuteCount") or verdict.get("refute_count") or len(ref_list))
     neu = int(verdict.get("neutralCount") or verdict.get("neutral_count") or 0)
     c = Controversy(support=sup, refute=ref, neutral=neu)
 
@@ -277,7 +285,7 @@ def score_controversy(verdict: dict[str, Any]) -> Controversy:
     c.score = int(round(balance * scale * 100))
 
     sites = set()
-    for s in (verdict.get("support") or []) + (verdict.get("refute") or []):
+    for s in list(sup_list) + list(ref_list):
         if isinstance(s, dict) and s.get("site"):
             sites.add(str(s["site"]))
     c.independent_sites = len(sites)

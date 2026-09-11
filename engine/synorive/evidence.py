@@ -34,6 +34,10 @@ log = logging.getLogger("synorive.evidence")
 FULL_HASH_LIMIT = 64 * 1024 * 1024
 SAMPLE_SPAN = 4 * 1024 * 1024
 
+#: 入库端 `ingest.pipeline.file_fingerprint` 的抽样长度。**必须和它一样**，
+#: 见下面 `ingest_fingerprint` 的说明。
+INGEST_SAMPLE = 1 << 20
+
 #: 状态取值。界面按这个上色，别改字面量。
 OK = "unchanged"
 CHANGED = "changed"
@@ -66,6 +70,32 @@ def file_digest(path: Path) -> tuple[str, bool]:
     return h.hexdigest(), False
 
 
+def ingest_fingerprint(path: Path) -> str:
+    """
+    按**入库当时那套算法**重算指纹，用来和 `items.fingerprint` 比对。
+
+    算法逐字节抄自 `ingest.pipeline.file_fingerprint`：
+    `sha256(文件长度 + 头 1MB + 尾 1MB)`，取十六进制的前 32 个字符。
+
+    🔴 **比对必须用同一套算法，这不是可以"差不多"的地方。**
+       原来这里拿 `file_digest()`（整份文件的 SHA-256，64 字符）去和入库存的
+       抽样指纹（32 字符）比前缀，两边算的根本不是一个东西，**永远对不上** ——
+       于是每一条来源都被判成「已改动」，而接口照样 200、清单照样生成、
+       Markdown 照样导出。一份把所有来源都标红的清单和一份全绿的一样没用，
+       它还会让用户去重新核对根本没动过的文件。
+       `file_digest()` 保留下来只作为"导出这一刻的强摘要"记录在案，不参与判定。
+    """
+    h = hashlib.sha256()
+    size = path.stat().st_size
+    h.update(str(size).encode())
+    with path.open("rb") as f:
+        h.update(f.read(INGEST_SAMPLE))
+        if size > INGEST_SAMPLE * 2:
+            f.seek(-INGEST_SAMPLE, 2)
+            h.update(f.read(INGEST_SAMPLE))
+    return h.hexdigest()[:32]
+
+
 def _verify_one(row: Any) -> dict[str, Any]:
     """核对一条来源。任何一步失败都返回一个说得清原因的结果，不抛异常。"""
     locator = str(row["locator"] or "")
@@ -93,16 +123,18 @@ def _verify_one(row: Any) -> dict[str, Any]:
             out["note"] = "源文件已经不在这个位置了，这段引用无法再复核"
             return out
         digest, full = file_digest(p)
+        recomputed = ingest_fingerprint(p)
     except OSError as e:
         out["status"] = UNVERIFIABLE
         out["note"] = f"读不了源文件：{e.__class__.__name__}"
         return out
 
-    out["recheckedFingerprint"] = digest
+    out["recheckedFingerprint"] = recomputed
+    out["strongDigest"] = digest
     out["fullFileHashed"] = full
     out["sizeBytes"] = p.stat().st_size
-    # 入库时存的是 SHA-256 前 16 字节的 hex（见 schema.sql），所以按前缀比
-    if stored and digest.startswith(stored[:32]) or (stored and stored.startswith(digest[:32])):
+    # 两边都是入库那套算法算出来的 32 位十六进制，直接整串比
+    if stored and recomputed == stored:
         out["status"] = OK
     elif not stored:
         out["status"] = UNVERIFIABLE

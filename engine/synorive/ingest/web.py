@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
 import re
 from dataclasses import dataclass, field
@@ -47,6 +48,24 @@ _BLOCKED_HOSTS = re.compile(
     r"^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|\[?::1\]?$)",
     re.I,
 )
+
+#: 每一节都是纯数字或 `0x` 十六进制的主机名。
+#: 真实域名的**最后一节（顶级域）永远不可能是纯数字**，所以这条不会误伤
+#: `163.com` / `4chan.org` 这类以数字开头的正常域名。
+_ALL_NUMERIC_HOST = re.compile(r"(0[xX][0-9a-fA-F]+|[0-9]+)(\.(0[xX][0-9a-fA-F]+|[0-9]+))*$")
+
+
+def _is_internal_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """这个 IP 是不是"不该从这里去访问"的地址。"""
+    # ::ffff:127.0.0.1 这种 v4 映射地址，v6 的 is_loopback 是 False，
+    # 必须先还原成 v4 再判，否则整类地址全部漏网
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    return bool(
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+    )
 
 
 @dataclass
@@ -89,6 +108,17 @@ def is_safe_url(s: str) -> tuple[bool, str]:
 
     用户手动粘的链接基本安全，但剪贴板哨兵是**自动**抓的 ——
     复制一个 http://192.168.1.1/admin 就会让这个工具替你去访问路由器后台。
+
+    🔴 **不能只拿主机名做字符串匹配。** 原来只有一条正则，实测这些全部放行：
+       `http://0.0.0.0/`、`http://2130706433/`（127.0.0.1 的十进制写法）、
+       `http://0177.0.0.1/`（八进制）、`http://[::ffff:127.0.0.1]/`（v4 映射）、
+       `http://[fd00::1]/`（v6 内网）、`http://[fe80::1]/`（v6 链路本地）、
+       `http://100.64.0.1/`（运营商级 NAT）。它们最后都会被解析成同一批内网地址，
+       而这个函数返回 True、抓取照常进行、日志里一个字都没有。
+       所以改成先按 IP 解析再判类别 —— `ipaddress` 认识全部这些写法。
+
+    ⚠️ **这里挡不住 DNS 重绑定**：一个解析到内网 IP 的公网域名照样能过。
+       真要堵那个口子得在连接建立后拿到 peer 地址再判，那是另一层的事。
     """
     try:
         u = urlparse(s)
@@ -101,6 +131,19 @@ def is_safe_url(s: str) -> tuple[bool, str]:
         return False, "没有主机名"
     if _BLOCKED_HOSTS.match(host):
         return False, f"不抓内网地址（{host}）—— 防止自动抓取访问到内网服务"
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # 不是 IP 字面量。但如果它每一节都是数字/十六进制，说明是
+        # `0177.0.0.1` 这类 ipaddress 不收、而系统解析器会当成 IP 的写法 ——
+        # 我们判不出它指向哪儿，就不放行（失败关闭）
+        if _ALL_NUMERIC_HOST.fullmatch(host):
+            return False, f"主机名写成了非标准的数字地址（{host}），无法判定是不是内网，不抓"
+        return True, ""
+
+    if _is_internal_ip(ip):
+        return False, f"不抓内网/保留地址（{host}）—— 防止自动抓取访问到内网服务"
     return True, ""
 
 
@@ -145,8 +188,15 @@ def fetch(
     if not ok:
         return FetchedPage(url=url, final_url=url, status=0, title="", text="", warnings=[why])
 
+    # D6：client 从统一的出网闸拿，不再自己 `httpx.Client(...)`。
+    # 这样"联网总闸"关掉的那一刻就真的断了 —— 以前它只在引擎启动时读一次，
+    # 用户点了断网、界面显示已断网，而这个函数照常出网，要重启才生效。
+    # 闸关着时 `sync_client()` 直接抛 NetworkBlocked，下面按普通失败处理：
+    # 返回一个带人话原因的 FetchedPage，而不是让调用方吃一个裸异常。
+    from ..runtime import NETWORK, NetworkBlocked
+
     try:
-        with httpx.Client(
+        with NETWORK.sync_client(
             timeout=TIMEOUT,
             follow_redirects=True,
             headers={
@@ -157,6 +207,21 @@ def fetch(
         ) as client:
             with client.stream("GET", url) as r:
                 status = r.status_code
+                # 🔴 **跳转之后必须再查一次。** `follow_redirects=True` 会自动跟完
+                #    整条重定向链，而上面那次 `is_safe_url` 只查了用户给的第一跳。
+                #    一个公网域名回一句 `302 → http://192.168.1.1/admin`，
+                #    内网页面就会被当成正文抓回来、入库、变成可搜索内容 ——
+                #    全程 200、没有任何告警。这里在**读正文之前**拦住。
+                #    （请求本身已经发出去了，堵不住"盲打"式 SSRF；要彻底堵
+                #      得关掉自动跳转、自己一跳一跳地查，那是更大的改动。）
+                redirected = str(r.url)
+                if redirected != url:
+                    ok2, why2 = is_safe_url(redirected)
+                    if not ok2:
+                        return FetchedPage(
+                            url=url, final_url=redirected, status=status, title="", text="",
+                            warnings=[f"跳转到了不允许抓取的地址（{redirected}）：{why2}"],
+                        )
                 ctype = r.headers.get("content-type", "")
                 if "html" not in ctype and "xml" not in ctype and "text" not in ctype:
                     return FetchedPage(
@@ -170,6 +235,12 @@ def fetch(
                         break
                 final_url = str(r.url)
                 encoding = r.encoding or "utf-8"
+    except NetworkBlocked as e:
+        # 🔴 这条要和"网络故障"区分开。写成"抓取失败"的话，用户会去检查网线，
+        #    而真实原因是他自己十秒前把联网关了 —— 原样把那句话给出去
+        return FetchedPage(
+            url=url, final_url=url, status=0, title="", text="", warnings=[str(e)],
+        )
     except httpx.HTTPError as e:
         return FetchedPage(
             url=url, final_url=url, status=0, title="", text="",
