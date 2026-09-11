@@ -96,7 +96,7 @@ function fail(e: unknown) {
 
 const server = new McpServer({
   name: 'synorive',
-  version: '0.1.8',
+  version: '0.1.9',
 });
 
 // ① 检索

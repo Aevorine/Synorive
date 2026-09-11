@@ -144,3 +144,10 @@ apps/desktop/resources/pyruntime/
 /g-series.json
 /g2.json
 /x3.json
+
+# 🔴 智能体工作目录：会话记忆、日志、临时审计脚本。
+#    它以前只在本机的 `.git/info/exclude` 里挡着 —— 那是个**不进仓库**的文件，
+#    换一台机器、换一个人克隆下来就没有这层保护了，一次 `git add -A`
+#    就会把带本机绝对路径的记忆文件一起提交上去。放这里才是全仓库生效。
+.workbuddy-ai/
+.tmp-audit/

@@ -55,6 +55,26 @@ const CLI_PKG = join(ROOT, 'cli', 'package.json');
 const PACKAGE_LOCK = join(ROOT, 'package-lock.json');
 
 /**
+ * 🔴 **MCP 源码里那个 `version` 一直漏着**（2026-09-11 自检发现）。
+ *
+ *     new McpServer({ name: 'synorive', version: '0.1.8' })
+ *
+ * 这个字符串是**硬编码**的，而 `mcp/package.json` 由本脚本改 —— 两边各走各的，
+ * 发一百次版它还是 0.1.8。实测就是这样：仓库里 `mcp/package.json` 已经是
+ * 0.1.9，源码里还写着 0.1.8。
+ *
+ * 后果不是"显示一个旧数字"这么轻。MCP 客户端（Claude Code 等）把
+ * `serverInfo.version` 当作判断服务端能力的依据之一；版本是假的时候，
+ * 排查问题的人会拿着一份错误的版本去对照文档和 changelog，
+ * 而**没有任何一处会提示这两者不一致** —— 这正是本轮在查的那类 bug。
+ *
+ * 判据还是那条：**全仓 grep 得到的每一处版本号都必须在这份名单里。**
+ */
+const MCP_SRC = join(ROOT, 'mcp', 'src', 'index.ts');
+/** 只认 `new McpServer({ ... version: 'x.y.z' })` 里的那一个，避免误伤别处的版本字面量 */
+const MCP_SRC_RE = /(new McpServer\(\{[\s\S]{0,200}?version:\s*')[^']+(')/;
+
+/**
  * 🔴 **README 一直不在这份名单里**，而它恰恰是用户第一眼看到版本号的地方。
  *
  * 后果不是"少改一个数"，是**发出去的公告页指着旧文件名**：
@@ -122,6 +142,8 @@ function currentVersions() {
       readFileSync(ENGINE_PYPROJECT, 'utf8').match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? '(没找到)',
     engineInit:
       readFileSync(ENGINE_INIT, 'utf8').match(/__version__\s*=\s*"([^"]+)"/)?.[1] ?? '(没找到)',
+    mcpSrc:
+      readFileSync(MCP_SRC, 'utf8').match(MCP_SRC_RE)?.[0].match(/\d+\.\d+\.\d+/)?.[0] ?? null,
   };
 }
 
@@ -150,6 +172,15 @@ function check() {
   if (v.engineInit !== want) {
     problems.push(`engine/synorive/__init__.py __version__ = ${v.engineInit}，应为 ${want}`
       + '（它会被 /health 返回，桌面端状态栏显示的就是它）');
+  }
+
+  // MCP 源码里 McpServer 的 version —— MCP 客户端读的就是它
+  if (v.mcpSrc == null) {
+    problems.push('mcp/src/index.ts 里找不到 McpServer 的 version 字段'
+      + '（写法改过就要同步改 set-version.mjs 的 MCP_SRC_RE）');
+  } else if (v.mcpSrc !== want) {
+    problems.push(`mcp/src/index.ts 里 McpServer 的 version = ${v.mcpSrc}，应为 ${want}`
+      + '（MCP 客户端读 serverInfo.version 判断服务端能力，写错会让人拿着假版本号排查）');
   }
 
   // README（含 5 份 i18n）—— 用户第一眼看到版本号的地方
@@ -183,6 +214,7 @@ function check() {
   console.log(`  安卓 versionCode     ${v.androidCode}（由 versionName 推导，应为 ${wantCode}）`);
   console.log(`  引擎 pyproject       ${v.enginePyproject}`);
   console.log(`  引擎 __version__     ${v.engineInit}  ← /health 报的就是它`);
+  console.log(`  MCP 源码 serverInfo  ${v.mcpSrc ?? '（没找到）'}  ← MCP 客户端读的就是它`);
 
   if (problems.length) {
     console.error('\n✗ 版本号不一致：');
@@ -241,6 +273,18 @@ function setVersion(next) {
     writeFileSync(path, before.replace(re, make()), 'utf8');
   }
 
+  // MCP 源码里 McpServer 的 version。同样是"先判正则命中再写"——
+  // 命不中就说明源码写法变了，这时宁可整个脚本失败，也不能悄悄不改。
+  {
+    const before = readFileSync(MCP_SRC, 'utf8');
+    if (!MCP_SRC_RE.test(before)) {
+      console.error(`✗ 在 ${relative(ROOT, MCP_SRC)} 里没找到 McpServer 的 version，没有改动它`);
+      console.error('  改过那段的写法就要同步改 set-version.mjs 的 MCP_SRC_RE。');
+      process.exit(1);
+    }
+    writeFileSync(MCP_SRC, before.replace(MCP_SRC_RE, `$1${next}$2`), 'utf8');
+  }
+
   // README（含 5 份 i18n）。四条规则全部命中才写盘 ——
   // 缺一条就说明 README 的写法变了，这时**宁可整个脚本失败**，
   // 也不能"改了三处、第四处悄悄不动"。
@@ -281,6 +325,7 @@ function setVersion(next) {
   console.log('          cli/package.json / package-lock.json /');
   console.log('          apps/mobile/app/build.gradle.kts /');
   console.log('          engine/pyproject.toml / engine/synorive/__init__.py /');
+  console.log('          mcp/src/index.ts（McpServer 的 serverInfo.version）/');
   console.log(`          README.md + docs/i18n/README.*.md（共 ${README_FILES.length} 份）`);
   console.log(`\n下一步：git commit 后打 tag —— git tag v${next}`);
 }
