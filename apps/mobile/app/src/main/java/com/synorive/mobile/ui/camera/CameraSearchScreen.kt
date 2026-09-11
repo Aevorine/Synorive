@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -61,10 +62,21 @@ fun CameraSearchScreen(onBack: () -> Unit) {
 
     var pendingUri by remember { mutableStateOf<Uri?>(null) }
 
+    /**
+     * 🔴 **取消拍照和拒绝权限这两条路，原来都是静默 return。**
+     *    界面会永远停在"正在打开相机…"这句话上 —— 相机早就关了，
+     *    用户既不知道发生了什么，也没有任何重来的入口，只能按返回键退出去。
+     *    这不是异常，所以没有任何日志或崩溃能指向它。
+     */
+    var notice by remember { mutableStateOf<String?>(null) }
+
     val takePicture = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         val uri = pendingUri
         if (success && uri != null) {
+            notice = null
             viewModel.reverseSearch(context, uri)
+        } else {
+            notice = "这次没拍成（取消了，或者相机没把照片交回来）。点下面再来一次。"
         }
     }
 
@@ -75,14 +87,24 @@ fun CameraSearchScreen(onBack: () -> Unit) {
     }
 
     val requestPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) launchCamera()
+        if (granted) {
+            notice = null
+            launchCamera()
+        } else {
+            notice = "没有相机权限就没法拍照反查。到「设置 → 应用 → Synorive → 权限」里打开相机，" +
+                "再回来点重试。"
+        }
     }
 
-    LaunchedEffect(Unit) {
+    /** 每次都重新查一遍权限 —— 用户可能刚从设置页把权限打开又回来 */
+    fun startCapture() {
+        notice = null
         val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
         if (granted) launchCamera() else requestPermission.launch(Manifest.permission.CAMERA)
     }
+
+    LaunchedEffect(Unit) { startCapture() }
 
     Scaffold(
         topBar = {
@@ -98,7 +120,23 @@ fun CameraSearchScreen(onBack: () -> Unit) {
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
             when (val state = uiState) {
-                is ReverseImageUiState.Idle -> Text("正在打开相机…")
+                is ReverseImageUiState.Idle -> Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    val msg = notice
+                    if (msg == null) {
+                        Text("正在打开相机…")
+                    } else {
+                        Text(msg, color = MaterialTheme.colorScheme.error)
+                        Button(
+                            onClick = { startCapture() },
+                            modifier = Modifier.padding(top = 14.dp),
+                        ) {
+                            Text("重试")
+                        }
+                    }
+                }
                 is ReverseImageUiState.Loading -> CircularProgressIndicator()
                 is ReverseImageUiState.Failed -> Text(state.message, color = MaterialTheme.colorScheme.error)
                 is ReverseImageUiState.Ok -> {

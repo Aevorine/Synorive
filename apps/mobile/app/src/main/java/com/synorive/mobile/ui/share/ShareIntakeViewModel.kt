@@ -78,8 +78,21 @@ class ShareIntakeViewModel(private val repository: EngineRepository) : ViewModel
  */
 private fun receipt(job: IngestJob): String = when {
     job.totalItems > 0 -> "已存入 ${job.totalItems} 条，回电脑上就能搜到。"
-    // 🔴 0 条要明说。引擎接了任务但没解析出内容是很常见的一类结果
-    //    （登录墙、纯图片页、格式不支持），而它**不是错误**，所以不能报成失败
+
+    // 🔴 **`status == "running"` 时 totalItems 恒为 0，这不代表"没解析出内容"。**
+    //    引擎的 POST /api/ingest 是"接单即返回"：
+    //      engine/synorive/api/routes.py:198
+    //      return {"jobId": job_id, "status": "running", "totalItems": 0}
+    //    真正的条数要事后轮询 GET /api/ingest/{jobId} 才拿得到。
+    //    这里原来把 0 一律解释成"没解析出可索引的内容"，
+    //    结果是**每一次成功投喂都会显示那句失败味道的话** ——
+    //    不报错、不崩溃，只是用户以为自己白存了。
+    job.status == "running" || job.status == "queued" ->
+        "已经交给电脑了，它正在后台处理（jobId ${job.jobId.take(8)}）。" +
+            "处理要多久取决于内容大小，回电脑上「分析中心」能看到进度和结果。"
+
+    // 引擎明确报完成但一条都没进去，才是真的没解析出内容
+    //    （登录墙、纯图片页、格式不支持）。它**不是错误**，所以不能报成失败
     else -> "引擎收下了，但这一份没解析出可索引的内容（常见于要登录的网页、纯图片页）。" +
         "回电脑上看「分析中心」能看到它的处理结果。"
 }

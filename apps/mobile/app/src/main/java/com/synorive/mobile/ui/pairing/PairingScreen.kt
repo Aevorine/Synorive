@@ -33,7 +33,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel as composeViewModel
@@ -55,6 +54,7 @@ import androidx.core.content.FileProvider
 import com.synorive.mobile.LocalAppContainer
 import com.synorive.mobile.data.pairing.QrPayload
 import java.io.File
+import com.synorive.mobile.ui.theme.SynSuccess
 import com.synorive.mobile.ui.update.UpdateCard
 
 /**
@@ -211,7 +211,7 @@ fun PairingScreen() {
                 when (val status = probeStatus) {
                     is ProbeStatus.Probing -> CircularProgressIndicator(modifier = Modifier.size(18.dp))
                     is ProbeStatus.Ok -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Color(0xFF2FA86B))
+                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = SynSuccess)
                         Text(
                             " 连通了 · 库里 ${status.health.indexedItems} 条内容",
                             style = MaterialTheme.typography.bodySmall,

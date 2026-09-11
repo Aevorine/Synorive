@@ -5,7 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -25,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel as composeViewModel
@@ -87,8 +88,16 @@ fun ShareIntakeScreen(content: SharedContent, onDone: () -> Unit) {
                 content.uri != null && isImage -> {
                     AsyncImage(
                         model = content.uri,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxWidth().height(220.dp).padding(bottom = 16.dp),
+                        // 这张图是这一屏的主体内容，不是装饰 —— 读屏软件必须能念出来
+                        contentDescription = "要投喂的图片预览",
+                        contentScale = ContentScale.Fit,
+                        // 🔴 原来写死 220.dp。平板上宽度是手机的两三倍而高度不变，
+                        //    Fit 之下图片两侧留出大片空白，看起来就是"内容填不满"。
+                        //    给一个区间：大屏长高、手机不喧宾夺主。
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 200.dp, max = 360.dp)
+                            .padding(bottom = 16.dp),
                     )
                 }
                 content.uri != null && isVideo -> {

@@ -57,10 +57,15 @@ fun UpdateCard(modifier: Modifier = Modifier) {
     }
 
     val openUrl: (String) -> Unit = { url ->
+        // 🔴 没浏览器 / 被设备策略挡住时 startActivity 抛 ActivityNotFoundException。
+        //    原来 runCatching 把它整个吞掉 —— 用户点了"发布页"什么都不发生，
+        //    也拿不到那个可以手抄的网址。
         runCatching {
             context.startActivity(
                 Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
+        }.onFailure {
+            installError = "这台设备打不开浏览器。可以手动访问：$url"
         }
     }
 
@@ -155,9 +160,6 @@ fun UpdateCard(modifier: Modifier = Modifier) {
                     ) {
                         Text("立即安装")
                     }
-                    installError?.let {
-                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                    }
                 }
 
                 is UpdateUiState.Problem -> {
@@ -172,11 +174,22 @@ fun UpdateCard(modifier: Modifier = Modifier) {
                 }
             }
 
+            // 🔴 失败信息要**在整张卡片里都看得见**。原来它只画在 Ready 分支内，
+            //    Problem 状态下点「打开发布页」失败时完全没有任何反馈。
+            installError?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = {
                         installError = null
-                        vm.dismissProblem()
+                        // 🔴 只在"上一次真的出了问题"时才清状态。原来是无条件清 ——
+                        //    已经下载完成（Ready）的状态被打回 Idle，
+                        //    UpdateViewModel.check() 里那道"Ready 就别重查"的闸
+                        //    等于被绕过去了，「立即安装」凭空变回「下载并安装」，
+                        //    正是它自己注释里写着要避免的那件事。
+                        if (state is UpdateUiState.Problem) vm.dismissProblem()
                         vm.check()
                     },
                     enabled = state !is UpdateUiState.Checking && state !is UpdateUiState.Downloading,
