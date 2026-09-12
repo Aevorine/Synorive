@@ -152,3 +152,7 @@ apps/desktop/resources/pyruntime/
 #    就会把带本机绝对路径的记忆文件一起提交上去。放这里才是全仓库生效。
 .workbuddy-ai/
 .tmp-audit/
+
+# Kotlin 编译器会话目录 —— 纯构建产物，Gradle 跑完自己会删。
+# 之前有一个 .salive 文件被提交进来，每次构建都让工作区变脏。
+apps/mobile/.kotlin/
