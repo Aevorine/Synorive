@@ -59,6 +59,15 @@ claude mcp add synorive -- node <repo>/mcp/dist/index.js
 
 Then just ask: *"search my library for why vector search gets slow, and cross-check what you find."*
 
+## If the tools stop working after you enable LAN pairing
+
+Fixed in **0.1.11**. Enabling LAN pairing switches the engine to HTTPS, and every client —
+this MCP server included — still spoke plain HTTP, so `synorive_*` tools would report the engine
+as unreachable while the engine itself was perfectly healthy.
+
+The engine now writes the scheme and its self-signed certificate path into `data/engine.json`,
+and this client reads both. Nothing to configure; just make sure the engine is 0.1.11 or newer.
+
 ## Requires
 
 The Synorive engine running locally — it ships inside the
