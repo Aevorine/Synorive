@@ -92,7 +92,7 @@ function MainApp() {
       setEngine(eng);
       recordEngineState(eng?.lifecycle);
       // 引擎端口是启动时动态分配的，不能写死
-      setEnginePort(eng?.port ?? null);
+      setEnginePort(eng?.port ?? null, eng?.secure ?? false);
       setReady(true);
     })();
 
@@ -103,7 +103,10 @@ function MainApp() {
       // E3 冷启动 / E8 掉线次数都从这里出。放在 setEngine 之后是为了
       // 让"界面已经知道它 ready 了"这一刻和记录的时刻对齐
       recordEngineState(s.lifecycle);
-      setEnginePort(s.lifecycle === 'ready' || s.lifecycle === 'degraded' ? s.port : null);
+      setEnginePort(
+        s.lifecycle === 'ready' || s.lifecycle === 'degraded' ? s.port : null,
+        s.secure,
+      );
     });
 
     const offEvent = window.synorive.engine.onEvent((raw) => {

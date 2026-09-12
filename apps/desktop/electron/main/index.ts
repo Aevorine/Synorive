@@ -2,9 +2,9 @@
  * Synorive 桌面端 · 主进程入口
  */
 
-import { BrowserWindow, app, dialog, globalShortcut, ipcMain, nativeTheme, shell } from 'electron';
-import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { BrowserWindow, app, dialog, globalShortcut, ipcMain, nativeTheme, session, shell } from 'electron';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AppSettings, LibraryEntry } from '@synorive/shared-types';
@@ -34,7 +34,8 @@ import { EngineManager } from './engine.js';
 import { exportPdf, saveText } from './pdf.js';
 import { teardown as teardownRenderer } from './render.js';
 import { ensureDataDirs, loadSettings, patchSettings } from './settings.js';
-import { TrayController, setLaunchAtLogin } from './tray.js';
+import { TrayController, setLaunchAtLogin, getLaunchAtLogin } from './tray.js';
+import { engineFetch } from './engine-origin.js';
 import { UpdateManager } from './updater.js';
 import { createMainWindow } from './window.js';
 
@@ -245,7 +246,7 @@ async function archiveClip(e: ClipEntry): Promise<boolean> {
     ? { targets: [e.content], source: 'link' as const, recursive: false }
     : { targets: [e.content], source: 'clipboard' as const, recursive: false, inline: true };
   try {
-    const r = await fetch(`http://127.0.0.1:${port}/api/ingest`, {
+    const r = await engineFetch(`/api/ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -328,7 +329,7 @@ async function pushCloudConfig(): Promise<void> {
   const apiKey = settings.cloud.enabled ? (loadCloudKey() ?? '') : '';
   const provider = settings.cloud.enabled ? settings.cloud.provider : 'none';
   try {
-    await fetch(`http://127.0.0.1:${port}/api/cloud/configure`, {
+    await engineFetch(`/api/cloud/configure`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -352,7 +353,7 @@ async function pushWatchedFolders(): Promise<void> {
   const port = engine?.getState().port;
   if (!port) return;
   try {
-    await fetch(`http://127.0.0.1:${port}/api/watch/folders`, {
+    await engineFetch(`/api/watch/folders`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ folders: settings.watchedFolders }),
@@ -525,7 +526,7 @@ function registerIpc(): void {
     let encrypted = false;
     if (port) {
       try {
-        const r = await fetch(`http://127.0.0.1:${port}/api/security/db`);
+        const r = await engineFetch(`/api/security/db`);
         if (r.ok) {
           const j = (await r.json()) as { cipherAvailable?: boolean; encrypted?: boolean };
           cipherAvailable = !!j.cipherAvailable;
@@ -551,7 +552,7 @@ function registerIpc(): void {
     const port = engine?.getState().port;
     if (!port) return { ok: false, error: '引擎还没就绪，等它起来再试' };
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/security/db/encrypt`, {
+      const r = await engineFetch(`/api/security/db/encrypt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ passphrase: pw }),
@@ -577,7 +578,7 @@ function registerIpc(): void {
     const port = engine?.getState().port;
     if (!port) return { ok: false, error: '引擎还没就绪，等它起来再试' };
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/security/db/decrypt`, {
+      const r = await engineFetch(`/api/security/db/decrypt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ passphrase: String(passphrase ?? '') }),
@@ -984,12 +985,12 @@ function registerIpc(): void {
         if (target.baseUrl && !/^https?:\/\//i.test(target.baseUrl)) {
           return { ok: false, error: '接口地址必须以 http:// 或 https:// 开头' };
         }
-        await fetch(`http://127.0.0.1:${port}/api/cloud/configure`, {
+        await engineFetch(`/api/cloud/configure`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(target),
         });
-        const r = await fetch(`http://127.0.0.1:${port}/api/cloud/test`, { method: 'POST' });
+        const r = await engineFetch(`/api/cloud/test`, { method: 'POST' });
         const body = (await r.json().catch(() => ({}))) as { detail?: string; reply?: string };
         if (!r.ok) return { ok: false, error: body.detail ?? `HTTP ${r.status}` };
         return { ok: true, reply: body.reply };
@@ -1055,8 +1056,54 @@ function applyHotkeys(): void {
 
 // ── 生命周期 ─────────────────────────────────────────────────
 
+/**
+ * 让 Chromium 认我们自己那张局域网自签证书 —— **只认这一张，只认回环**。
+ *
+ * 开了局域网配对，引擎就带 `--lan-tls` 起，整个监听口变成 HTTPS，回环也不例外。
+ * 渲染层的 fetch 和主进程的 net.fetch 都走 Chromium 网络栈，撞上自签证书会被
+ * 直接拒掉 —— 表现是界面上每一次请求都失败，而引擎其实好好的。
+ *
+ * 🔴 **不能图省事整个 `callback(0)` 放行。** 那等于把这个应用里所有 HTTPS 的
+ *    证书校验一起关掉：研究工作台要抓公网页面、云端增强要连第三方接口，
+ *    它们全都会变成"任何证书都接受"。而这道 TLS 本来就是为了防中间人才加的，
+ *    为了自己这一张证书把所有人的那道闸一起拆了，是把小问题换成大问题。
+ *
+ * 所以判据卡死三条，缺一条就交回 Chromium 默认校验（`callback(-3)`）：
+ *   ① 主机名必须是回环 —— 局域网那一端由手机按指纹固定，不归这里管
+ *   ② 指纹必须等于 `data/lan-cert.pem` 那张证书的指纹
+ *   ③ 证书文件读不到就什么都不放行
+ */
+function trustOwnLanCert(): void {
+  const certPath = join(settings.dataDir, 'lan-cert.pem');
+
+  /** 每次校验都重读文件：证书会在引擎首次启用 TLS 时才生成，也可能被重签 */
+  const ownFingerprints = (): string[] => {
+    try {
+      const pem = readFileSync(certPath, 'utf8');
+      const der = Buffer.from(
+        pem.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/\s+/g, ''),
+        'base64',
+      );
+      // Chromium 的 verificationResult.fingerprint 形如 "sha256/BASE64"
+      return [`sha256/${createHash('sha256').update(der).digest('base64')}`];
+    } catch {
+      return [];
+    }
+  };
+
+  session.defaultSession.setCertificateVerifyProc((req, callback) => {
+    const isLoopback = req.hostname === '127.0.0.1' || req.hostname === 'localhost';
+    if (isLoopback && ownFingerprints().includes(req.certificate.fingerprint)) {
+      callback(0); // 就是我们自己那张
+      return;
+    }
+    callback(-3); // 其余一律走 Chromium 默认校验，不放水
+  });
+}
+
 app.whenReady().then(() => {
   ensureDataDirs(settings);
+  trustOwnLanCert();
   registerIpc();
 
   tray = new TrayController({
@@ -1106,6 +1153,26 @@ app.whenReady().then(() => {
     console.log('[tray] 不创建托盘图标：托盘常驻关着，且这一趟会弹出窗口');
   }
   setLaunchAtLogin(settings.launchAtLogin);
+  /**
+   * 🔴 **设完必须回读核对。**
+   *
+   * 「设置里开关明明开着，开机却什么也不发生」是这条链路最典型的失效，
+   * 而它平时一点声音都没有：设置界面读的是我们自己那个 settings.json，
+   * 不是系统里登录项的真实状态。两者脱节的路子还不少 ——
+   * 安全软件清过启动项、用户在任务管理器里把它禁用了、
+   * 便携版被挪了位置于是注册的路径成了死的。
+   *
+   * 回读一次就能把这类"开关在说谎"的情况变成日志里的一行。
+   */
+  if (settings.launchAtLogin && !getLaunchAtLogin()) {
+    console.warn(
+      '[autostart] 请求了开机自启，但回读登录项没生效 —— '
+      + '可能被安全软件清掉、在任务管理器里被禁用，或注册的路径已失效。'
+      + `本次尝试注册的是：${process.env.PORTABLE_EXECUTABLE_FILE || process.execPath}`,
+    );
+  } else if (settings.launchAtLogin) {
+    console.log('[autostart] 开机自启已生效，下次开机静默进托盘（--tray-only）');
+  }
 
   startEngine();
   startClipboard();

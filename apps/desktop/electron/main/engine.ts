@@ -20,6 +20,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { EngineProcessState } from '../shared/ipc-contract.js';
 import { startRegistering, stopRegistering } from './render.js';
+import { engineFetch, engineWsOrigin, setEngineEndpoint } from './engine-origin.js';
 
 const isDev = !app.isPackaged;
 
@@ -127,6 +128,7 @@ export class EngineManager {
     lifecycle: 'stopped',
     pid: null,
     port: null,
+    secure: false,
     bootMs: null,
     restartCount: 0,
     lastError: null,
@@ -572,11 +574,28 @@ ${this.diagnose(py, cwd)}`,
     }
 
     this.patch({ lifecycle: 'ready', bootMs: Date.now() - t0 });
-    console.log(`[engine] 就绪，耗时 ${Date.now() - t0}ms，端口 ${port}`);
+    console.log(
+      `[engine] 就绪，耗时 ${Date.now() - t0}ms，端口 ${port}（${this.secure() ? 'HTTPS' : 'HTTP'}）`,
+    );
+    // 登记给 engine-origin：主进程其余地方的 engineFetch 靠它拿协议和端口
+    setEngineEndpoint({ port, secure: this.secure() });
+    this.patch({ secure: this.secure() });
     this.connectEvents(port);
     // 端口每次启动都会变，必须重新告诉引擎渲染服务在哪 ——
     // 这一步失败不影响引擎其余功能，Google/Yandex 会老实报"渲染不可用"
     startRegistering(port);
+  }
+
+  /**
+   * 这一趟引擎是不是跑在 HTTPS 上。
+   *
+   * 🔴 **判据必须和 buildArgs 里推 `--lan-tls` 的条件是同一个。**
+   *    那边是 `if (this.opts.lanPairingEnabled) args.push('--lan-tls')`。
+   *    两处各写各的，就会出现"以为是明文、实际是 TLS"——而这种不一致
+   *    的表现不是报错，是探活静默失败到超时，最难往协议上想。
+   */
+  private secure(): boolean {
+    return this.opts.lanPairingEnabled;
   }
 
   private async waitHealthy(port: number): Promise<boolean> {
@@ -584,9 +603,9 @@ ${this.diagnose(py, cwd)}`,
     while (Date.now() < deadline) {
       if (this.stopping) return false;
       try {
-        const r = await fetch(`http://127.0.0.1:${port}/health`, {
-          signal: AbortSignal.timeout(1500),
-        });
+        // 协议跟着 --lan-tls 走。用 http 去打 HTTPS 口永远拿不到 200，
+        // 表现是"引擎日志说就绪、桌面端说启动超时"，然后把它 SIGKILL 掉重启
+        const r = await engineFetch('/health', { signal: AbortSignal.timeout(1500) }, port, this.secure());
         if (r.ok) {
           this.patch({ detail: await r.json().catch(() => null) });
           return true;
@@ -602,7 +621,7 @@ ${this.diagnose(py, cwd)}`,
   /** 用 WebSocket 接引擎推来的实时事件（Node 22+ 自带 WebSocket，不用装 ws） */
   private connectEvents(port: number): void {
     try {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/events`);
+      const ws = new WebSocket(`${engineWsOrigin(port, this.secure())}/events`);
       this.ws = ws;
 
       ws.addEventListener('message', (ev) => {

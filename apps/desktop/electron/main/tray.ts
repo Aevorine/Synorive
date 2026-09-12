@@ -198,15 +198,67 @@ export class TrayController {
   }
 }
 
-/** 开机自启：Windows 走登录项，不写注册表 Run 键（更规范、卸载时系统自己清） */
+/**
+ * 登录项在任务管理器「启动」页里显示的名字。
+ *
+ * 🔴 **不写这一项，Electron 会用默认的 `electron.app.Synorive`。**
+ * 用户在任务管理器里看到的就是这么一行 —— 不像个应用名，像残留的开发痕迹，
+ * 而「这是什么？要不要禁用？」的判断就是在那一页做的。
+ */
+const LOGIN_ITEM_NAME = 'Synorive';
+
+/** Electron 没指定 name 时用的默认键名。改名之后要把它清掉，否则旧的赖在注册表里。 */
+const LEGACY_LOGIN_ITEM_NAME = `electron.app.${LOGIN_ITEM_NAME}`;
+
+/**
+ * 这一趟该注册哪个可执行文件。
+ *
+ * 🔴 **便携版不能注册 `process.execPath`。** portable 目标是单文件自解压：
+ * 运行时先把自己摊到 `%TEMP%\<随机>\` 再从那儿启动，于是 `process.execPath`
+ * 指向一个**临时目录**。拿它去写开机自启，下次开机那个路径早就没了 ——
+ * 表现是「设置里开关明明开着，开机就是不启动」，而注册表里躺着一条
+ * 指向 Temp 的死路径，没人会往那儿看。
+ *
+ * electron-builder 的 portable 目标会把用户真正双击的那个 exe 路径放进
+ * `PORTABLE_EXECUTABLE_FILE`，那个是稳定的，注册它才有意义。
+ */
+function launchTarget(): string {
+  return process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+}
+
+/** 开机自启：Windows 走登录项，不手写注册表 Run 键（更规范、卸载时系统自己清） */
 export function setLaunchAtLogin(enabled: boolean): void {
+  // 早期版本用的是 Electron 默认键名，升级上来的用户注册表里还留着那一条。
+  // 不清掉的话会变成两条登录项：旧的那条指向老路径，可能起第二个实例。
+  app.setLoginItemSettings({ openAtLogin: false, name: LEGACY_LOGIN_ITEM_NAME });
+
   app.setLoginItemSettings({
     openAtLogin: enabled,
+    name: LOGIN_ITEM_NAME,
+    path: launchTarget(),
     // 自启时静默进托盘，不弹窗口打扰
     args: enabled ? ['--tray-only'] : [],
   });
 }
 
+/**
+ * 界面上那个开关该显示"开"还是"关"。
+ *
+ * 🔴 **只看 `openAtLogin` 不够 —— 还要核对它指向的是不是这一个 exe。**
+ * 用户把便携版挪了个位置、或者装过又重装到别的盘之后，注册表里那条路径
+ * 就成了死的：系统照样报 `openAtLogin: true`，界面显示"已开启"，
+ * 而实际开机什么也不会发生。这种"开关说开着、功能是死的"比直接显示关闭
+ * 更难查，因为用户不会去怀疑一个看起来正常的开关。
+ * 路径对不上就当没开 —— 用户重新拨一次开关，顺手就把路径修正了。
+ */
 export function getLaunchAtLogin(): boolean {
-  return app.getLoginItemSettings().openAtLogin;
+  const got = app.getLoginItemSettings({
+    path: launchTarget(),
+    args: ['--tray-only'],
+  });
+  if (!got.openAtLogin) return false;
+  const registered = (got.launchItems ?? []).find((i) => i.name === LOGIN_ITEM_NAME);
+  // 拿不到 launchItems（非 Windows）时就按系统说的算
+  if (!registered) return true;
+  return registered.path?.toLowerCase() === launchTarget().toLowerCase();
 }

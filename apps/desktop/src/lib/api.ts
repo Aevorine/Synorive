@@ -17,13 +17,29 @@ import type {
 } from '@synorive/shared-types';
 
 let basePort: number | null = null;
+/**
+ * 引擎是不是跑在 HTTPS 上。
+ *
+ * 🔴 **不能假定 http。** 开了局域网配对，引擎就带 `--lan-tls` 起，
+ *    那时候连回环口也是 HTTPS。渲染层写死 http 的表现是每一次搜索都失败，
+ *    而引擎日志里一切正常 —— 排查方向会一路跑偏到"是不是端口没拿对"。
+ *    主进程在引擎就绪时把 secure 一起发过来（EngineProcessState.secure）。
+ */
+let baseSecure = false;
 
-export function setEnginePort(port: number | null): void {
+export function setEnginePort(port: number | null, secure = false): void {
   basePort = port;
+  baseSecure = secure;
 }
 
 export function enginePort(): number | null {
   return basePort;
+}
+
+/** `https://127.0.0.1:44954` —— 渲染层所有打引擎的请求都从这儿起头 */
+export function engineOrigin(): string {
+  if (basePort == null) throw new EngineUnavailable();
+  return `${baseSecure ? 'https' : 'http'}://127.0.0.1:${basePort}`;
 }
 
 class EngineUnavailable extends Error {
@@ -37,7 +53,7 @@ class EngineUnavailable extends Error {
 // 但走的是同一个"引擎端口从哪拿""怎么拼错误信息"的逻辑，不用另写一份
 export async function call<T>(path: string, init?: RequestInit, signal?: AbortSignal): Promise<T> {
   if (basePort == null) throw new EngineUnavailable();
-  const r = await fetch(`http://127.0.0.1:${basePort}${path}`, {
+  const r = await fetch(`${engineOrigin()}${path}`, {
     ...init,
     signal,
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
@@ -226,7 +242,7 @@ export const api = {
       if (port == null) throw new EngineUnavailable();
       const fd = new FormData();
       fd.append('file', wav, 'q.wav');
-      const r = await fetch(`http://127.0.0.1:${port}/api/voice/transcribe`, {
+      const r = await fetch(`${engineOrigin()}/api/voice/transcribe`, {
         method: 'POST',
         body: fd,
       });

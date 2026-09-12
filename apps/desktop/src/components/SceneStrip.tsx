@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Film, Loader2, Play } from 'lucide-react';
-import { api, enginePort, type SceneRow } from '../lib/api';
+import { api, enginePort, type SceneRow, engineOrigin } from '../lib/api';
 
 /**
  * 视频场景缩略条 —— N3
@@ -131,7 +131,7 @@ export function SceneStrip({
           >
             {s.keyframePath && port ? (
               <img
-                src={`http://127.0.0.1:${port}/api/media/thumb/${encodeURIComponent(s.keyframePath)}`}
+                src={`${engineOrigin()}/api/media/thumb/${encodeURIComponent(s.keyframePath)}`}
                 alt={`${fmt(s.startSec)} 的画面`}
                 loading="lazy"
               />

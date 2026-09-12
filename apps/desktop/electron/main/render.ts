@@ -17,6 +17,7 @@
  */
 import { BrowserWindow } from 'electron';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { engineFetch } from './engine-origin.js';
 
 /** 单次渲染的硬上限。搜索结果页正常几秒内加载完，超过这个时长基本是卡死了 */
 const MAX_RENDER_MS = 15_000;
@@ -387,10 +388,12 @@ function ensureRenderServer(): Promise<number> {
   return serverStarting;
 }
 
-async function registerOnce(enginePort: number): Promise<void> {
+// enginePort 不再需要：地址统一由 engine-origin 决定（协议也是）。
+// 签名保留一个参数是为了不动调用方，值本身用不上。
+async function registerOnce(_enginePort: number): Promise<void> {
   try {
     const port = await ensureRenderServer();
-    await fetch(`http://127.0.0.1:${enginePort}/api/render/register`, {
+    await engineFetch(`/api/render/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port }),

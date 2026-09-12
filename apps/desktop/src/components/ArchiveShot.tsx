@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle, Camera, KeyRound, Loader2 } from 'lucide-react';
 import { labApi, type ArchiveShot as Shot } from '../lib/labApi';
-import { enginePort } from '../lib/api';
+import { enginePort, engineOrigin } from '../lib/api';
 
 /**
  * C12 整页截图归档 ｜ C13 登录态抓取
@@ -121,7 +121,7 @@ export function ArchiveShot() {
           {port != null && (
             <img
               className="ash__img"
-              src={`http://127.0.0.1:${port}/api/web/archive-shot/${encodeURIComponent(out.shot)}`}
+              src={`${engineOrigin()}/api/web/archive-shot/${encodeURIComponent(out.shot)}`}
               alt="整页截图"
               loading="lazy"
             />

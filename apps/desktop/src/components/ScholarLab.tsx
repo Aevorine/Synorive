@@ -1,3 +1,4 @@
+import { engineOrigin } from '../lib/api';
 import { useState } from 'react';
 import {
   BookOpen,
@@ -102,7 +103,7 @@ export function ScholarLab({
       const { enginePort } = await import('../lib/api');
       const port = enginePort();
       if (port == null) throw new Error('引擎还没就绪');
-      const resp = await fetch(`http://127.0.0.1:${port}/api/scholar/citations/export`, {
+      const resp = await fetch(`${engineOrigin()}/api/scholar/citations/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ entries: working, format }),

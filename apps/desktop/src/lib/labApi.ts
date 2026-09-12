@@ -10,7 +10,7 @@
  * "单一来源不代表是假的"），把它吞掉等于把最要紧的限定条件删掉了。
  */
 
-import { call } from './api';
+import { call , engineOrigin } from './api';
 
 /**
  * E17/6.5 —— 同步状态。
@@ -302,7 +302,7 @@ export async function streamSearch(
   const port = enginePort();
   if (port == null) throw new Error('引擎还没就绪');
 
-  const resp = await fetch(`http://127.0.0.1:${port}/api/web/search/stream`, {
+  const resp = await fetch(`${engineOrigin()}/api/web/search/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),

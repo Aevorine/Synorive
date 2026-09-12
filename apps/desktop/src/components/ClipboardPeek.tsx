@@ -43,10 +43,13 @@ export function ClipboardPeek() {
   useEffect(() => {
     let alive = true;
     void window.synorive.engine.getState().then((s) => {
-      if (alive) setEnginePort(s?.port ?? null);
+      if (alive) setEnginePort(s?.port ?? null, s?.secure ?? false);
     });
     const off = window.synorive.engine.onStateChanged((s) => {
-      setEnginePort(s.lifecycle === 'ready' || s.lifecycle === 'degraded' ? s.port : null);
+      setEnginePort(
+        s.lifecycle === 'ready' || s.lifecycle === 'degraded' ? s.port : null,
+        s.secure,
+      );
     });
     return () => {
       alive = false;

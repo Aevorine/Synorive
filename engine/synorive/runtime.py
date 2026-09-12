@@ -1086,17 +1086,32 @@ class Runtime:
         import os
 
         try:
+            # 🔴 **协议必须写进来。**
+            #
+            # `--lan-tls` 开着时 uvicorn 是带证书起的，**整个监听口都是 HTTPS**，
+            # 回环也不例外。而桌面端、MCP、CLI 三边都把 `http://` 写死在代码里 ——
+            # 于是开了局域网配对之后，本机所有客户端一个都连不上自己的引擎：
+            # 桌面端探活超时 45 秒把引擎 SIGKILL 掉再重启，无限循环。
+            #
+            # 端口都靠这个文件发现了，协议没有理由让各家去猜。
+            # 自签证书的路径也一并给出来，客户端拿它当 CA 校验即可，
+            # 不需要任何一方去关掉证书验证 —— 证书的 SAN 里有 127.0.0.1。
+            payload = {
+                "port": self.config.port,
+                "host": self.config.host,
+                "scheme": "https" if self.config.lan_tls else "http",
+                "pid": os.getpid(),
+                "dataDir": str(self.config.data_dir),
+                "startedAt": time.time(),
+            }
+            if self.config.lan_tls:
+                from .lan_tls import CERT_NAME
+
+                cert = self.config.data_dir / CERT_NAME
+                if cert.exists():
+                    payload["cert"] = str(cert)
             self.endpoint_file.write_text(
-                json.dumps(
-                    {
-                        "port": self.config.port,
-                        "host": self.config.host,
-                        "pid": os.getpid(),
-                        "dataDir": str(self.config.data_dir),
-                        "startedAt": time.time(),
-                    },
-                    ensure_ascii=False,
-                ),
+                json.dumps(payload, ensure_ascii=False),
                 encoding="utf-8",
             )
         except OSError as e:

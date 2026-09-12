@@ -21,6 +21,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 interface Endpoint {
   port: number;
   host: string;
+  /** 引擎开了 --lan-tls 时是 "https" —— 那时候连回环口也是 HTTPS */
+  scheme?: 'http' | 'https';
+  /** 自签证书路径（https 时才有）。当 CA 用，不是用来跳过校验的 */
+  cert?: string;
   pid: number;
   dataDir: string;
   startedAt: number;
@@ -51,9 +55,89 @@ function readEndpoint(): Endpoint | null {
   return null;
 }
 
-async function isAlive(url: string, timeoutMs = 2000): Promise<boolean> {
+/**
+ * 自签证书下的 fetch —— 只给本机引擎用。
+ *
+ * 🔴 **为什么不能直接用全局 fetch。**
+ *    引擎开了 `--lan-tls` 之后整个监听口都是 HTTPS，回环也不例外，而证书是
+ *    自签的。Node 的 fetch（undici）不接受 `ca` 选项，也没有不引新依赖就能
+ *    塞 CA 的口子 —— `NODE_EXTRA_CA_CERTS` 只在进程启动那一刻读一次。
+ *    所以 https 这一路改走 node:https，把 engine.json 里给出的证书当 CA 传进去。
+ *
+ * 🔴 **不用 `rejectUnauthorized: false`。** 那样等于谁的证书都认，
+ *    而这道 TLS 加上来本来就是为了防中间人。证书的 SAN 里有 127.0.0.1
+ *    和 localhost（见 engine/synorive/lan_tls.py），按 CA 正常校验就能过。
+ *
+ * 只实现调用点真正用到的那几个成员：ok / status / text() / json()。
+ */
+/** 读 engine.json 指出来的自签证书，读不到就返回 undefined（那时走明文那一路） */
+function readCert(ep: Endpoint | null): string | undefined {
+  if (!ep?.cert) return undefined;
   try {
-    const r = await fetch(`${url}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    return readFileSync(ep.cert, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+async function engineFetch(
+  url: string,
+  init: RequestInit | undefined,
+  ca: string | undefined,
+): Promise<{ ok: boolean; status: number; text(): Promise<string>; json(): Promise<unknown> }> {
+  if (!url.startsWith('https:') || !ca) {
+    return fetch(url, init);
+  }
+  const { request } = await import('node:https');
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const headers: Record<string, string> = {};
+    const h = init?.headers as Record<string, string> | undefined;
+    if (h) for (const [k, v] of Object.entries(h)) headers[k] = v;
+    const body = init?.body as string | undefined;
+    if (body !== undefined) headers['Content-Length'] = String(Buffer.byteLength(body));
+    const req = request(
+      {
+        hostname: u.hostname,
+        port: u.port,
+        path: u.pathname + u.search,
+        method: (init?.method as string) || 'GET',
+        headers,
+        ca,
+        // 证书 CN 是 "Synorive LAN"，匹配靠 SAN。servername 给 localhost，
+        // 因为 SAN 里 DNS 项就是它（IP 项另有 127.0.0.1，两条都在）
+        servername: 'localhost',
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          const status = res.statusCode ?? 0;
+          resolve({
+            ok: status >= 200 && status < 300,
+            status,
+            text: async () => text,
+            json: async () => JSON.parse(text) as unknown,
+          });
+        });
+      },
+    );
+    req.on('error', reject);
+    const signal = init?.signal;
+    if (signal) signal.addEventListener('abort', () => req.destroy(new Error('超时')), { once: true });
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+async function isAlive(url: string, timeoutMs = 2000, ca?: string): Promise<boolean> {
+  try {
+    const r = await engineFetch(
+      `${url}/health`,
+      { signal: AbortSignal.timeout(timeoutMs) },
+      ca,
+    );
     return r.ok;
   } catch {
     return false;
@@ -62,6 +146,8 @@ async function isAlive(url: string, timeoutMs = 2000): Promise<boolean> {
 
 export class EngineClient {
   private baseUrl: string | null = null;
+  /** 自签证书内容（https 时才有）。发现引擎那一刻一起记下来 */
+  private ca: string | undefined;
   private child: ChildProcess | null = null;
   private connecting: Promise<string> | null = null;
 
@@ -91,9 +177,14 @@ export class EngineClient {
     // ② 桌面端已经拉起来的引擎
     const ep = readEndpoint();
     if (ep) {
-      const url = `http://${ep.host || '127.0.0.1'}:${ep.port}`;
-      if (await isAlive(url)) {
+      // 协议由引擎写在 engine.json 里 —— 写死 http 的话，
+      // 开了局域网配对之后这里永远连不上桌面端已经起好的那个引擎，
+      // 于是每次都去另起一个，两个进程抢同一个库文件
+      const url = `${ep.scheme ?? 'http'}://${ep.host || '127.0.0.1'}:${ep.port}`;
+      const ca = readCert(ep);
+      if (await isAlive(url, 2000, ca)) {
         this.baseUrl = url;
+        this.ca = ca;
         return url;
       }
     }
@@ -164,11 +255,15 @@ export class EngineClient {
 
   async call<T>(path: string, init?: RequestInit): Promise<T> {
     const base = await this.url();
-    const r = await fetch(`${base}${path}`, {
-      ...init,
-      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-      signal: AbortSignal.timeout(120_000),
-    });
+    const r = await engineFetch(
+      `${base}${path}`,
+      {
+        ...init,
+        headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+        signal: AbortSignal.timeout(120_000),
+      },
+      this.ca,
+    );
     if (!r.ok) {
       const text = await r.text().catch(() => '');
       throw new Error(`引擎返回 ${r.status}：${text.slice(0, 400)}`);

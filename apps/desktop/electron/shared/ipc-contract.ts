@@ -162,6 +162,14 @@ export interface EngineProcessState {
   lifecycle: EngineLifecycle;
   pid: number | null;
   port: number | null;
+  /**
+   * 这一趟引擎是不是 HTTPS。
+   *
+   * 🔴 **渲染层必须知道协议，不能假定 http。** 开了局域网配对就会带
+   *    `--lan-tls`，那时候连回环口都是 HTTPS —— 渲染层写死 http 的后果是
+   *    界面上每一次搜索都失败，而引擎其实好好的。
+   */
+  secure: boolean;
   /** 启动到就绪耗时，毫秒 */
   bootMs: number | null;
   restartCount: number;
