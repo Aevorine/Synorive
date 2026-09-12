@@ -269,7 +269,7 @@ async def ingest(req: IngestRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(400, "没有可处理的目标")
 
     job_id = rt.start_ingest(targets, recursive=req.recursive, source=req.source, tags=req.tags)
-    return {"jobId": job_id, "status": "running", "totalItems": 0}
+    return {"jobId": job_id, "status": "queued", "totalItems": 0}
 
 
 @router.get("/ingest/{job_id}")

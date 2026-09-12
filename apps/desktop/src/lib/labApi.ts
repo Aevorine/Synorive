@@ -226,7 +226,7 @@ export interface MediaPreview {
  */
 export interface IngestJob {
   jobId: string;
-  status: 'running' | 'done' | 'failed' | 'cancelled';
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
   total: number;
   done: number;
   failed: number;

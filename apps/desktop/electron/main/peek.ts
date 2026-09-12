@@ -75,6 +75,9 @@ export class PeekWindow {
     }
 
     this.place(win);
+    // 浮窗在可见的这 12 秒里要立即把结果渲染出来；隐藏后由 hide()
+    // 恢复默认节流，避免一个已消失的 React 页面继续占 CPU。
+    win.webContents.setBackgroundThrottling(false);
     // 🔴 showInactive 而不是 show —— 后者会抢焦点
     win.showInactive();
 
@@ -122,6 +125,8 @@ export class PeekWindow {
     }
 
     this.place(win);
+    // 图片检索同样只在浮窗实际可见时取消节流。
+    win.webContents.setBackgroundThrottling(false);
     win.showInactive();
 
     if (this.hideTimer) clearTimeout(this.hideTimer);
@@ -160,7 +165,12 @@ export class PeekWindow {
       clearTimeout(this.hideTimer);
       this.hideTimer = null;
     }
-    this.win?.hide();
+    if (this.win && !this.win.isDestroyed()) {
+      // Electron 官方 API：页面进入后台时重新允许动画与定时器节流。
+      // 这不影响独立的 Python 引擎，只回收不可见浮窗的渲染资源。
+      this.win.webContents.setBackgroundThrottling(true);
+      this.win.hide();
+    }
   }
 
   destroy(): void {
@@ -209,7 +219,8 @@ export class PeekWindow {
         // 同 window.ts：这份 preload 不碰 Node 内置模块，沙箱模式够用
         sandbox: true,
         spellcheck: false,
-        backgroundThrottling: false,
+        // 默认允许节流；show()/showImage() 仅在窗口可见的短时间内解除它。
+        backgroundThrottling: true,
       },
     });
 

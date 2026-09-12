@@ -102,13 +102,10 @@ export function createMainWindow(opts: CreateWindowOptions): BrowserWindow {
       // 沙箱模式完全够用——渲染进程被攻破时少一层能直接碰 Node 的可能性。
       sandbox: true,
       spellcheck: false,
-      // 窗口被挡住或最小化时不要节流渲染进程。
-      //
-      // 默认行为下 Chromium 会把被遮挡窗口的 requestAnimationFrame 和定时器
-      // 降频甚至停掉 —— 对这个应用是错的：状态栏要实时显示后台索引进度，
-      // 用户把窗口切到后面正是"让它慢慢索引"的典型场景，那时候进度停更新
-      // 会让人以为卡死了。
-      backgroundThrottling: false,
+      // 主窗口在托盘中不可见时允许 Chromium 节流。摄取/搜索跑在独立引擎
+      // 进程，不能为了更新一块不可见的状态栏而让 React 动画和定时器持续
+      // 占用 CPU；窗口重新显示时 Chromium 会恢复正常帧率并接收最新引擎事件。
+      backgroundThrottling: true,
     },
   });
 

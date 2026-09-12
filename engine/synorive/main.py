@@ -335,7 +335,7 @@ def build_app(runtime: Runtime) -> FastAPI:
             "concurrency": runtime.config.concurrency,
             "cpuPercent": round(cpu, 1),
             "memoryMb": round(mem, 1),
-            "queueDepth": 0,
+            "queueDepth": sum(1 for j in runtime._jobs.values() if j.get("status") == "queued"),
             "activeJobs": sum(1 for j in runtime._jobs.values() if j.get("status") == "running"),
             "indexedItems": runtime.db.count_items(),
             "dbSizeMb": round(runtime.db.size_mb(), 2),

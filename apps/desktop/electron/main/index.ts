@@ -84,12 +84,13 @@ if (!app.requestSingleInstanceLock()) {
 // 关闭 Windows 上烦人的 GPU 沙箱告警，同时保留硬件加速
 app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling');
 
-// 后台不节流。和 window.ts 里的 backgroundThrottling: false 是一对 ——
-// 那个管渲染进程，这几个管 Chromium 自己的遮挡检测和定时器降频。
-// 少任何一半，窗口被挡住时状态栏就会停止更新。
-app.commandLine.appendSwitch('disable-background-timer-throttling');
-app.commandLine.appendSwitch('disable-renderer-backgrounding');
-app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+// 主窗口被隐藏到托盘后，不需要继续高频绘制状态栏。
+//
+// 以前这里关闭了 Chromium 的全部后台节流，window.ts 又把渲染器的
+// backgroundThrottling 设为 false。结果是用户把窗口收进托盘后，React
+// 动画、定时器和绘制仍持续占用 CPU；真正需要后台继续运行的摄取/搜索
+// 引擎是独立的 Python 子进程，并不依赖这些开关。保留 Chromium 的默认
+// 节流，前台窗口仍照常即时响应，隐藏窗口则不再为不可见 UI 消耗资源。
 
 /**
  * 🔴 **全局兜底：任何 webContents 默认都不许弹新窗口。**

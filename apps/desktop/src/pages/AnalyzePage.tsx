@@ -86,7 +86,7 @@ export function AnalyzePage() {
         if (!alive) return;
         setJob(d);
         setJobErr(null);
-        if (d.status === 'running') timer = window.setTimeout(tick, 1000);
+        if (d.status === 'queued' || d.status === 'running') timer = window.setTimeout(tick, 1000);
       } catch (e) {
         if (!alive) return;
         // 引擎重启过 → 任务表清空 → 404。这是正常情况，
@@ -157,7 +157,7 @@ export function AnalyzePage() {
         done: job.done,
         failed: job.failed,
         skipped: job.skipped,
-        running: job.status === 'running',
+        running: job.status === 'queued' || job.status === 'running',
         paused: job.paused,
         current: job.current ?? undefined,
         startedAt: job.startedAt > 0 ? job.startedAt * 1000 : Date.now(),

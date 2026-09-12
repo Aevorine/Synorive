@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -424,6 +425,11 @@ class Runtime:
         self._reranker: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._jobs: dict[str, dict[str, Any]] = {}
+        # 每次摄取本身已经会创建一个受 concurrency 限制的线程池。过去每条
+        # 请求还能再起一条完整流水线，多个请求会把 worker 数相加，造成 CPU
+        # 抢占、内存重复持有模型会话，并让其他应用卡顿。只串行流水线；一个
+        # 已运行任务内部仍保留已调优的文件级并发。
+        self._ingest_gate = threading.Lock()
         #: 回收站过期清理上次跑的时间，见 deferred_jobs_loop() 里的节流判断
         self._last_trash_purge = 0.0
         #: 后台补跑循环的轮询间隔。有活干就勤快（3s），没活干就歇着（15s）——
@@ -858,7 +864,7 @@ class Runtime:
             "concurrency": self.config.concurrency,
             "cpuPercent": round(cpu, 1),
             "memoryMb": round(mem, 1),
-            "queueDepth": 0,
+            "queueDepth": sum(1 for j in self._jobs.values() if j.get("status") == "queued"),
             "activeJobs": sum(1 for j in self._jobs.values() if j.get("status") == "running"),
             "indexedItems": st["items"],
             "chunkCount": st.get("chunks", 0),
@@ -1160,7 +1166,7 @@ class Runtime:
     def _flush_active_jobs(self) -> None:
         """`status_loop()` 每 2 秒调一次——只落盘还在跑/暂停的任务。"""
         for job_id, job in list(self._jobs.items()):
-            if job.get("status") not in ("running", "paused"):
+            if job.get("status") not in ("queued", "running", "paused"):
                 continue
             try:
                 self._persist_job(job_id, job)
@@ -1273,7 +1279,6 @@ class Runtime:
         这是「分析时界面不卡」的最后一环：引擎自己也不能被自己的分析卡住，
         否则 /health 和 WebSocket 都会超时，界面会以为引擎挂了。
         """
-        import threading
         import uuid
 
         from .ingest.pipeline import JobControl
@@ -1284,7 +1289,9 @@ class Runtime:
         # `items` 只留**失败和跳过**的明细 —— 成功的那几万条留着毫无用处，
         # 却能把一个后台任务的内存吃到几十兆
         self._jobs[job_id] = {
-            "status": "running",
+            # 直到拿到唯一的流水线令牌才进入 running。这样 UI 与状态接口能
+            # 区分“真正占用资源”和“零 worker 排队等待”。
+            "status": "queued",
             "total": 0,
             "done": 0,
             "failed": 0,
@@ -1340,55 +1347,74 @@ class Runtime:
                         job["itemsTruncated"] = True
 
         def run() -> None:
-            try:
-                stats = self.pipeline.ingest_paths(
-                    paths,
-                    recursive=recursive,
-                    source=source,
-                    tags=tags,
-                    control=control,
-                    on_item=note_item,
-                    on_total=note_total,
-                )
-                job = self._jobs.get(job_id, {})
-                self._jobs[job_id] = {
-                    **job,
-                    "status": "cancelled" if stats.cancelled else "done",
-                    "total": stats.total,
-                    "done": stats.done,
-                    "failed": stats.failed,
-                    "skipped": stats.skipped,
-                    "current": None,
-                }
-                self.events.publish(
-                    "ingest.job",
-                    {
-                        "jobId": job_id,
-                        "status": "cancelled" if stats.cancelled else "done",
-                        "totalItems": stats.total,
-                        "doneItems": stats.done,
-                        "failedItems": stats.failed,
-                        "skippedItems": stats.skipped,
-                        "elapsedSec": round(stats.elapsed, 1),
-                    },
-                )
+            # 等待锁的线程不会创建 ThreadPoolExecutor、模型会话或忙轮询。
+            # 这把锁避免同时提交两批文件时并发度翻倍，反而拖慢所有程序。
+            with self._ingest_gate:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    return
+                if control.cancelled:
+                    self._jobs[job_id] = {**job, "status": "cancelled", "current": None}
+                    try:
+                        self._persist_job(job_id, self._jobs[job_id])
+                    except Exception as e:  # noqa: BLE001
+                        log.debug("排队任务取消态落盘失败：%s", e)
+                    self.events.publish("ingest.job", {"jobId": job_id, "status": "cancelled"})
+                    return
+
+                # 队列等待不能混入执行耗时，否则会把资源保护误报成任务变慢。
+                job["status"] = "running"
+                job["startedAt"] = time.time()
                 try:
-                    self._persist_job(job_id, self._jobs[job_id])
+                    self._persist_job(job_id, job)
                 except Exception as e:  # noqa: BLE001
-                    log.debug("任务终态落盘失败：%s", e)
-            except Exception as e:  # noqa: BLE001
-                # 🔴 **这里以前整个字典替换成 `{"status": "failed", "error": ...}`** ——
-                # 把 `items`（失败清单）、`total/done`、`startedAt`、`control` 全丢了。
-                # 后果是任务崩掉时驾驶舱显示「失败，0 条问题」，而真相是
-                # 前面可能已经有几十条失败明细，全被这一行擦掉了。
-                # **出错的时候恰恰是最需要那份明细的时候。**
-                job = self._jobs.get(job_id, {})
-                self._jobs[job_id] = {**job, "status": "failed", "error": str(e), "current": None}
-                self.events.publish("toast", {"level": "error", "message": f"摄取失败：{e}"})
+                    log.debug("任务开始态落盘失败（不影响任务本身跑）：%s", e)
+
                 try:
-                    self._persist_job(job_id, self._jobs[job_id])
-                except Exception as persist_err:  # noqa: BLE001
-                    log.debug("任务失败态落盘失败：%s", persist_err)
+                    stats = self.pipeline.ingest_paths(
+                        paths,
+                        recursive=recursive,
+                        source=source,
+                        tags=tags,
+                        control=control,
+                        on_item=note_item,
+                        on_total=note_total,
+                    )
+                    job = self._jobs.get(job_id, {})
+                    self._jobs[job_id] = {
+                        **job,
+                        "status": "cancelled" if stats.cancelled else "done",
+                        "total": stats.total,
+                        "done": stats.done,
+                        "failed": stats.failed,
+                        "skipped": stats.skipped,
+                        "current": None,
+                    }
+                    self.events.publish(
+                        "ingest.job",
+                        {
+                            "jobId": job_id,
+                            "status": "cancelled" if stats.cancelled else "done",
+                            "totalItems": stats.total,
+                            "doneItems": stats.done,
+                            "failedItems": stats.failed,
+                            "skippedItems": stats.skipped,
+                            "elapsedSec": round(stats.elapsed, 1),
+                        },
+                    )
+                    try:
+                        self._persist_job(job_id, self._jobs[job_id])
+                    except Exception as e:  # noqa: BLE001
+                        log.debug("任务终态落盘失败：%s", e)
+                except Exception as e:  # noqa: BLE001
+                    # 失败时保留已有进度与失败明细，不能用一张新字典覆盖。
+                    job = self._jobs.get(job_id, {})
+                    self._jobs[job_id] = {**job, "status": "failed", "error": str(e), "current": None}
+                    self.events.publish("toast", {"level": "error", "message": f"摄取失败：{e}"})
+                    try:
+                        self._persist_job(job_id, self._jobs[job_id])
+                    except Exception as persist_err:  # noqa: BLE001
+                        log.debug("任务失败态落盘失败：%s", persist_err)
 
         threading.Thread(target=run, daemon=True, name=f"ingest-{job_id}").start()
         return job_id
@@ -1444,7 +1470,7 @@ class Runtime:
         control = job.get("control")
         if control is None:
             return {"ok": False, "note": "这个任务不支持暂停（它是旧版本起的）"}
-        if job.get("status") != "running":
+        if job.get("status") not in ("queued", "running"):
             return {"ok": False, "note": f"任务已经{job.get('status')}了，控制不了", "status": job.get("status")}
         if action == "pause":
             control.pause()
@@ -1454,6 +1480,15 @@ class Runtime:
             control.cancel()
         else:
             return {"ok": False, "note": f"不认识的动作：{action}"}
+        # 排队任务没有“当前文件”需要收尾，取消应当立即对 UI 和持久化状态
+        # 生效；等待 _ingest_gate 的轻量线程随后只会确认状态并退出。
+        if action == "cancel" and job.get("status") == "queued":
+            self._jobs[job_id] = {**job, "status": "cancelled", "current": None}
+            try:
+                self._persist_job(job_id, self._jobs[job_id])
+            except Exception as e:  # noqa: BLE001
+                log.debug("排队任务即时取消态落盘失败：%s", e)
+            self.events.publish("ingest.job", {"jobId": job_id, "status": "cancelled"})
         return {
             "ok": True,
             "paused": control.paused,
@@ -1461,11 +1496,11 @@ class Runtime:
             # 取消是「当前这批文件做完就停」，不是立刻断在半路 ——
             # 半路断会留下写了一半的索引记录。这句必须让用户看见，
             # 否则点了取消进度还在动，会以为没生效
-            "note": "已暂停（正在处理的那个文件会做完）"
+            "note": "排队任务已暂停" if action == "pause" and job.get("status") == "queued" else "已暂停（正在处理的那个文件会做完）"
             if action == "pause"
             else "已继续"
             if action == "resume"
-            else "已取消（正在处理的那批文件会做完再停）",
+            else "排队任务已取消" if job.get("status") == "queued" else "已取消（正在处理的那批文件会做完再停）",
         }
 
     async def install_dependency(self, dep_id: str) -> None:
