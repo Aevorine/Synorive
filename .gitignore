@@ -100,6 +100,7 @@ apps/desktop/src/styles/fonts.css
 #    （.claude/settings.json 和 skills/ 这类**该共享的**配置不受影响）
 .claude/.pv-*.json
 .claude/settings.local.json
+.claude/memory/
 # 🔴 `.claude/pv/` 是同一批东西的**新落点**（intake.json 收原始需求、
 #    ledger.jsonl 是逐轮台账、round.json 是当前轮次）。只忽略 `.pv-*.json`
 #    这一条老规则盖不住它 —— 2026-09-11 发版前扫描时才发现它一直裸露在
