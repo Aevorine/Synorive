@@ -1,11 +1,18 @@
 {
   "name": "@synorive/desktop",
   "version": "0.1.10",
+  "description": "Synorive —— 多模态并发分析与极速内容检索",
   "license": "AGPL-3.0-or-later",
+  "author": "Synorive",
+  "homepage": "https://github.com/Aevorine/Synorive#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aevorine/Synorive.git",
+    "directory": "apps/desktop"
+  },
+  "bugs": "https://github.com/Aevorine/Synorive/issues",
   "private": true,
   "type": "module",
-  "description": "Synorive —— 多模态并发分析与极速内容检索",
-  "author": "Synorive",
   "main": "./out/main/index.js",
   "scripts": {
     "predev": "node ../../scripts/ensure-fonts.mjs",

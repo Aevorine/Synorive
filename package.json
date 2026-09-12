@@ -1,18 +1,42 @@
 {
   "name": "synorive",
   "version": "0.1.10",
-  "license": "AGPL-3.0-or-later",
-  "private": true,
   "description": "Synorive — 多模态并发分析与极速内容检索平台",
+  "keywords": [
+    "semantic-search",
+    "local-first",
+    "offline",
+    "multimodal",
+    "rag",
+    "vector-search",
+    "hybrid-search",
+    "ocr",
+    "mcp",
+    "mcp-server",
+    "claude-code",
+    "electron",
+    "fastapi",
+    "sqlite",
+    "privacy"
+  ],
+  "license": "AGPL-3.0-or-later",
+  "author": "Aevorine",
+  "homepage": "https://github.com/Aevorine/Synorive#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aevorine/Synorive.git"
+  },
+  "bugs": "https://github.com/Aevorine/Synorive/issues",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "workspaces": [
     "packages/*",
     "apps/desktop",
     "mcp",
     "cli"
   ],
-  "engines": {
-    "node": ">=20"
-  },
   "scripts": {
     "dev": "npm run dev --workspace=@synorive/desktop",
     "build": "npm run build --workspaces --if-present",

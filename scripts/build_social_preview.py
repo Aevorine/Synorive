@@ -148,7 +148,7 @@ def main() -> int:
     chips = [
         ("Multimodal RAG", NAVY),
         ("Verbatim citations", GREEN),
-        ("24 MCP tools", GOLD),
+        ("26 MCP tools", GOLD),
         ("Windows + Android", NAVY),
     ]
     x = PAD

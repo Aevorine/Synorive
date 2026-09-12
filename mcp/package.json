@@ -1,9 +1,7 @@
 {
   "name": "@aevorine/synorive-mcp",
   "version": "0.1.10",
-  "license": "AGPL-3.0-or-later",
-  "type": "module",
-  "description": "MCP server for Synorive — let Claude Code search your local multimodal library (documents, code, images, video) and fact-check claims against the open web. 24 tools, fully offline-capable.",
+  "description": "MCP server for Synorive — let Claude Code search your local multimodal library (documents, code, images, video) and fact-check claims against the open web. 26 tools, fully offline-capable.",
   "keywords": [
     "mcp",
     "mcp-server",
@@ -20,26 +18,29 @@
     "multimodal",
     "fact-checking"
   ],
+  "license": "AGPL-3.0-or-later",
+  "author": "Aevorine",
   "homepage": "https://github.com/Aevorine/Synorive#readme",
-  "bugs": "https://github.com/Aevorine/Synorive/issues",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Aevorine/Synorive.git",
     "directory": "mcp"
   },
+  "bugs": "https://github.com/Aevorine/Synorive/issues",
+  "type": "module",
+  "main": "./dist/index.js",
   "bin": {
     "synorive-mcp": "./dist/index.js"
   },
-  "main": "./dist/index.js",
   "files": [
     "dist",
     "README.md"
   ],
-  "engines": {
-    "node": ">=20"
-  },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

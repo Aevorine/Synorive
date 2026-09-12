@@ -1,14 +1,29 @@
 {
   "name": "@synorive/cli",
   "version": "0.1.10",
+  "description": "synorive 命令行 —— 脚本、定时任务、其他 AI 工具都能调",
+  "keywords": [
+    "cli",
+    "semantic-search",
+    "local-first",
+    "offline",
+    "synorive"
+  ],
   "license": "AGPL-3.0-or-later",
+  "author": "Aevorine",
+  "homepage": "https://github.com/Aevorine/Synorive#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aevorine/Synorive.git",
+    "directory": "cli"
+  },
+  "bugs": "https://github.com/Aevorine/Synorive/issues",
   "private": true,
   "type": "module",
-  "description": "synorive 命令行 —— 脚本、定时任务、其他 AI 工具都能调",
+  "main": "./dist/index.js",
   "bin": {
     "synorive": "./dist/index.js"
   },
-  "main": "./dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"

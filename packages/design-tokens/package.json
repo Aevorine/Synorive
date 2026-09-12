@@ -1,11 +1,19 @@
 {
   "name": "@synorive/design-tokens",
   "version": "0.1.0",
+  "description": "Synorive 设计令牌 —— 颜色 / 字阶 / 间距的唯一来源，同时产出 TS 与 CSS 变量",
   "license": "AGPL-3.0-or-later",
+  "author": "Aevorine",
+  "homepage": "https://github.com/Aevorine/Synorive#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aevorine/Synorive.git",
+    "directory": "packages/design-tokens"
+  },
+  "bugs": "https://github.com/Aevorine/Synorive/issues",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -22,5 +30,6 @@
   },
   "devDependencies": {
     "typescript": "^5.7.2"
-  }
+  },
+  "types": "./dist/index.d.ts"
 }
