@@ -179,8 +179,15 @@ export class EngineClient {
     if (ep) {
       // 协议由引擎写在 engine.json 里 —— 写死 http 的话，
       // 开了局域网配对之后这里永远连不上桌面端已经起好的那个引擎，
-      // 于是每次都去另起一个，两个进程抢同一个库文件
-      const url = `${ep.scheme ?? 'http'}://${ep.host || '127.0.0.1'}:${ep.port}`;
+      // 于是每次都去另起一个，两个进程抢同一个库文件。
+      //
+      // 🔴 **host 存的是绑定地址，不能直接拿来连。** 开了局域网配对时它是
+      //    `0.0.0.0`（"所有网卡"），那是给 bind 用的，不是一个可连的目标。
+      //    Windows 上连 0.0.0.0 碰巧会落到回环，换个网络栈就是 EADDRNOTAVAIL；
+      //    而且自签证书的 SAN 里也没有 0.0.0.0。引擎和我们本来就在同一台机器上，
+      //    直接走回环最准。
+      const host = !ep.host || ep.host === '0.0.0.0' || ep.host === '::' ? '127.0.0.1' : ep.host;
+      const url = `${ep.scheme ?? 'http'}://${host}:${ep.port}`;
       const ca = readCert(ep);
       if (await isAlive(url, 2000, ca)) {
         this.baseUrl = url;
