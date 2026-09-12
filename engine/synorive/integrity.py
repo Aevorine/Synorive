@@ -98,7 +98,11 @@ def check(package_dir: Path | None = None) -> IntegrityReport:
             rep.missing.append(rel)
             continue
         try:
-            got = hashlib.sha256(p.read_bytes()).hexdigest()
+            # 🔴 按 LF 归一化后再算。仓库里一部分 .py 以 CRLF 提交、一部分以 LF 提交，
+            #    直接哈希原始字节的话，同一份源码在 Windows 检出（core.autocrlf=true）
+            #    和 Linux 检出处会算出两个不同的值 —— 那就是凭空报"源码被改过"。
+            #    生成端 scripts/build-integrity.mjs 用的是同一套归一化，两边必须一致。
+            got = hashlib.sha256(p.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
         except OSError as e:
             log.warning("算不了 %s 的哈希：%s", rel, e)
             continue

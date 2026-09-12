@@ -40,6 +40,23 @@ function walk(dir) {
   return out;
 }
 
+/**
+ * 🔴 按 LF 归一化后再哈希。仓库里一部分 .py 以 CRLF 提交、一部分以 LF 提交，
+ * 直接哈希原始字节的话，同一份源码在 Windows 检出（core.autocrlf=true）和
+ * Linux 检出处会算出两个不同的值 —— 装到用户机器上就是凭空报"源码被改过"。
+ * 引擎端 engine/synorive/integrity.py 用的是同一套归一化，两边必须一致。
+ *
+ * 逐字节处理，不经任何字符编码，保证和 Python 的 bytes.replace 完全等价。
+ */
+function normalizeNewlines(buf) {
+  const out = [];
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0x0d && buf[i + 1] === 0x0a) continue; // 丢掉 CRLF 里的 CR
+    out.push(buf[i]);
+  }
+  return Buffer.from(out);
+}
+
 const files = walk(PKG).sort();
 const manifest = {};
 for (const f of files) {
@@ -47,7 +64,9 @@ for (const f of files) {
   //    引擎在别的平台上核对时一条都对不上 —— 而"全部对不上"会被
   //    当成"整个包被改过"，直接拒绝启动。
   const key = relative(PKG, f).split(sep).join('/');
-  manifest[key] = createHash('sha256').update(readFileSync(f)).digest('hex');
+  manifest[key] = createHash('sha256')
+    .update(normalizeNewlines(readFileSync(f)))
+    .digest('hex');
 }
 
 writeFileSync(
