@@ -107,12 +107,37 @@ function log(s) {
 }
 
 /** 跑一条命令，**把退出码当真**。 */
+/**
+ * 🔴 **每一次调随包 python 都必须带 `PYTHONNOUSERSITE=1`。**
+ *
+ * embeddable 版的 `._pth` 里有 `import site`（pip 要靠它才跑得起来），
+ * 于是 `%APPDATA%\Python\Python313\site-packages` —— 也就是开发者历史上
+ * `pip install --user` 装的一大堆东西 —— 会被挂进 sys.path。
+ *
+ * 而 engine.ts 起引擎时是**设了**这个变量的（那边是对的：独立应用只该用
+ * 自己带的东西）。两边口径不一致，后果不是"稍微不严谨"，是发出去一个
+ * 装完打不开的包：
+ *
+ *   ① pip 看到 click 在用户目录里已经有了 → **判定已满足，不装进包里**
+ *   ② 下面那个「必须真的 import 一遍」的自检，也从用户目录 import 到了
+ *      → **自检照样通过**
+ *   ③ 用户机器上没有那个目录，引擎启动 `import uvicorn` → `import click`
+ *      → ModuleNotFoundError，进程退出码 1，无限重启
+ *
+ * 症状是"应用能开、托盘有图标、就是永远连不上引擎"，而真正的原因
+ * 在打包机的一个跟本项目毫不相干的全局目录里。2026-09-12 实测踩到，
+ * 已发的 0.1.9 / 0.1.10 两个版本都中招。
+ *
+ * 所以：**打包时的 sys.path 必须和运行时的 sys.path 一模一样**，
+ * 否则自检验的就不是用户将要跑的那个环境。
+ */
 function run(exe, argv, opts = {}) {
   return execFileSync(exe, argv, {
     stdio: opts.quiet ? ['ignore', 'pipe', 'pipe'] : 'inherit',
     encoding: 'utf8',
     windowsHide: true,
     ...opts,
+    env: { ...process.env, PYTHONNOUSERSITE: '1', ...(opts.env || {}) },
   });
 }
 
@@ -175,6 +200,104 @@ function patchPth() {
   ].join('\r\n');
   writeFileSync(pth, body, 'utf8');
   log(`已重写 ${TAG}._pth（site-packages + ..\\engine + import site）`);
+}
+
+/**
+ * 真的 import 一遍，确认这个运行时能跑。
+ *
+ * 🔴 **这个清单漏一个，就会发出去一个"装完打开才炸"的包。**
+ *
+ * 2026-08-03 实测教训：`tokenizers` 和 `lxml` 一直没被声明在 pyproject 里
+ * （开发机上作为传递依赖凑巧装着），而这个探针清单也没有它们 ——
+ * 于是**自检通过、包发出去、语义检索在装机版里整个是死的**，
+ * 界面只显示「向量模型不可用」，谁也看不出是打包漏了一个包。
+ *
+ * 判据不是"我觉得重要的都写上"，而是：**凡是引擎代码里硬 import 的
+ * 第三方模块，都必须在这里出现**。改依赖时同步改这里。
+ */
+function probeModules(slim, extras) {
+  const mods = [
+    'fastapi', 'uvicorn', 'pydantic', 'httpx', 'jieba', 'PIL', 'sqlite_vec',
+    // uvicorn 的硬依赖。**单列出来是有原因的**：它是传递依赖，pip 只要
+    // 觉得"已经有了"就不装，而 import uvicorn 的报错指向 uvicorn/main.py，
+    // 没人会想到是 click 没打进来。直接点名，缺了就说缺 click。
+    'click', 'h11',
+    // 语义检索的地基：embedder / reranker 的 load() 里是硬导入，缺了它
+    // 向量模型加载不了，检索静默退化成只有关键词
+    'tokenizers',
+    // 多引擎搜索的 HTML 解析（websearch/engines.py 的 _doc()），硬导入无兜底
+    'lxml',
+    // 2026-09-12 补。判据不是拍脑袋，是拿 ast 把 engine/synorive/**.py 里
+    // 所有第三方顶层 import 扫了一遍，再和这张清单对差集扫出来的五个。
+    // watchdog 尤其要紧：ingest/watcher.py 第 27 行是**模块顶层**的
+    // `from watchdog.observers import Observer`，没有任何兜底 —— 缺了它
+    // 整个 watcher 模块 import 失败，目录自动监控静默消失。
+    'watchdog',
+    // 拼音纠错（search/recovery.py）、EPUB 解析（ingest/parsers.py）、
+    // 整库加密（store/db.py）、内存水位（analyze/embedder.py 等）。
+    // 后四个源码里都带 try 兜底，但"有兜底"只意味着不崩，不意味着功能还在 ——
+    // 它们全是声明过的依赖，本来就该在包里，缺了就是打包出了问题。
+    'pypinyin', 'ebooklib', 'sqlcipher3', 'psutil',
+  ];
+  if (!slim) mods.push('numpy', 'onnxruntime');
+  // extra 装了就必须 import 得到 —— 每个 extra 挑一个最有代表性的模块名。
+  // **模块名和包名经常不一样**（python-docx→docx、python-pptx→pptx、
+  // opencv-python→cv2），只查包名等于没查。
+  // pymupdf 的老别名 `fitz` 别再用了 —— 1.28 起它每次导入都往 stdout
+  // 打一行 warning，会把"输出必须正好是 ok"的自检直接判死
+  const EXTRA_PROBE = {
+    docs: ['pymupdf', 'docx', 'openpyxl', 'pptx', 'trafilatura'],
+    sync: ['cryptography'],
+    // sherpa_onnx 是语音转写。2026-08-03 才被声明进 media —— 在那之前
+    // 它一直只是"碰巧装在开发机上"，探针里当然也没有
+    media: ['rapidocr', 'av', 'sherpa_onnx'],
+    ann: ['usearch'],
+    face: ['insightface', 'cv2'],
+  };
+  for (const e of extras) mods.push(...(EXTRA_PROBE[e] || []));
+  return mods;
+}
+
+/**
+ * 逐个 import，缺哪个就报哪个。
+ *
+ * 🔴 **一次性 `import a,b,c` 只会告诉你第一个失败的**，而缺包往往不止一个，
+ *    于是变成"修一个、重打一次包、再发现下一个"的循环。逐个试，一次列全。
+ *
+ * run() 已经统一带上 PYTHONNOUSERSITE=1，所以这里验的就是用户机器上
+ * 真实的 sys.path，不会再从打包机的全局目录里蒙混过关。
+ */
+function verifyRuntime(pyExe, slim, extras) {
+  const mods = probeModules(slim, extras);
+  const code = [
+    'import importlib,json,sys',
+    `mods=${JSON.stringify(mods)}`,
+    'bad=[]',
+    'for m in mods:',
+    '    try: importlib.import_module(m)',
+    '    except Exception as e: bad.append(f"{m}: {type(e).__name__}: {e}")',
+    'print(json.dumps({"bad":bad,"paths":[p for p in sys.path if "Roaming" in p or "AppData" in p]}))',
+  ].join('\n');
+  const out = run(pyExe, ['-c', code], { quiet: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  let res;
+  try {
+    res = JSON.parse(out);
+  } catch {
+    throw new Error(`自检脚本没返回 JSON，原始输出：${out}`);
+  }
+  if (res.paths.length) {
+    // 到这一步还能看到用户目录，说明 PYTHONNOUSERSITE 没生效 ——
+    // 那么下面就算全绿也不算数，验的不是用户将要跑的环境
+    throw new Error(
+      `sys.path 里仍然有打包机的用户目录，自检不可信：\n  ${res.paths.join('\n  ')}`,
+    );
+  }
+  if (res.bad.length) {
+    throw new Error(
+      `运行时缺 ${res.bad.length} 个模块（用户机器上会直接起不来）：\n  ${res.bad.join('\n  ')}`,
+    );
+  }
+  log(`自检：${mods.length} 个模块全部 import 成功，且没有用户目录混入 ✅`);
 }
 
 /**
@@ -258,8 +381,25 @@ async function main() {
     const meta = JSON.parse(readFileSync(stamp, 'utf8'));
     const sameExtras = JSON.stringify(meta.extras || []) === JSON.stringify(EXTRAS);
     if (meta.python === PY && meta.slim === SLIM && sameExtras) {
-      log(`已有 ${PY}${SLIM ? '（slim）' : ''} + [${EXTRAS.join(',')}] 运行时，跳过。要重来加 --force`);
-      return;
+      /**
+       * 🔴 **跳过安装可以，跳过自检不行。**
+       *
+       * 戳文件只说明"当时装完了"，不说明现在这个目录还是好的。它可能被
+       * 手工 pip uninstall 过、被清理脚本扫过、或者当初就是在一个
+       * sys.path 被污染的环境下通过的自检（见 run() 上面那段）。
+       * 原来这里直接 return —— 于是一个坏掉的运行时会被**无限次跳过**，
+       * 每次打包都原样打进安装包，谁也不会再看它一眼。
+       *
+       * 验一遍只要一秒多，换的是"绝不会把起不来的引擎发出去"。
+       * 验不过就当场重建，不需要人来判断。
+       */
+      try {
+        verifyRuntime(join(OUT, 'python.exe'), SLIM, EXTRAS);
+        log(`已有 ${PY}${SLIM ? '（slim）' : ''} + [${EXTRAS.join(',')}] 运行时，自检通过，跳过重建`);
+        return;
+      } catch (e) {
+        log(`⚠ 已有运行时没通过自检 → 重建。原因：${e?.message || e}`);
+      }
     }
     log(`已有的是 ${meta.python}${meta.slim ? '（slim）' : ''} + [${(meta.extras || []).join(',')}]，和这次要的不一样 → 重建`);
   }
@@ -340,44 +480,9 @@ async function main() {
   // 🔴 **必须真的 import 一遍才算装好。**
   // pip 报 Successfully installed 只说明文件落地了，不说明这个解释器
   // 能不能 import 到它 —— 而 `._pth` 写错正是「装完了但 import 不到」
-  // 的典型，且这种失败要等到用户点开应用才暴露
-  // 🔴 **这个清单漏一个，就会发出去一个"装完打开才炸"的包。**
-  //
-  // 2026-08-03 实测教训：`tokenizers` 和 `lxml` 一直没被声明在 pyproject 里
-  // （开发机上作为传递依赖凑巧装着），而这个探针清单也没有它们 ——
-  // 于是**自检通过、包发出去、语义检索在装机版里整个是死的**，
-  // 界面只显示「向量模型不可用」，谁也看不出是打包漏了一个包。
-  //
-  // 判据不是"我觉得重要的都写上"，而是：**凡是引擎代码里硬 import 的
-  // 第三方模块，都必须在这里出现**。改依赖时同步改这里。
-  const mods = [
-    'fastapi', 'uvicorn', 'pydantic', 'httpx', 'jieba', 'PIL', 'sqlite_vec',
-    // 语义检索的地基：embedder / reranker 的 load() 里是硬导入，缺了它
-    // 向量模型加载不了，检索静默退化成只有关键词
-    'tokenizers',
-    // 多引擎搜索的 HTML 解析（websearch/engines.py 的 _doc()），硬导入无兜底
-    'lxml',
-  ];
-  if (!SLIM) mods.push('numpy', 'onnxruntime');
-  // extra 装了就必须 import 得到 —— 每个 extra 挑一个最有代表性的模块名。
-  // **模块名和包名经常不一样**（python-docx→docx、python-pptx→pptx、
-  // opencv-python→cv2），只查包名等于没查。
-  // pymupdf 的老别名 `fitz` 别再用了 —— 1.28 起它每次导入都往 stdout
-  // 打一行 warning，会把下面这个"输出必须正好是 ok"的自检直接判死
-  const EXTRA_PROBE = {
-    docs: ['pymupdf', 'docx', 'openpyxl', 'pptx', 'trafilatura'],
-    sync: ['cryptography'],
-    // sherpa_onnx 是语音转写。2026-08-03 才被声明进 media —— 在那之前
-    // 它一直只是"碰巧装在开发机上"，探针里当然也没有
-    media: ['rapidocr', 'av', 'sherpa_onnx'],
-    ann: ['usearch'],
-    face: ['insightface', 'cv2'],
-  };
-  for (const e of EXTRAS) mods.push(...(EXTRA_PROBE[e] || []));
-  const probe = `import ${mods.join(',')};print("ok")`;
-  const got = run(pyExe, ['-c', probe], { quiet: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  if (got !== 'ok') throw new Error(`自检没通过，import 输出是：${got}`);
-  log(`自检：${mods.length} 个包全部 import 成功 ✅`);
+  // 的典型，且这种失败要等到用户点开应用才暴露。
+  // 清单和判据见 verifyRuntime() / probeModules()。
+  verifyRuntime(pyExe, SLIM, EXTRAS);
 
   const total = await dirSize(OUT);
   writeFileSync(
