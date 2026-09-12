@@ -1626,7 +1626,12 @@ def _highlight(text: str, terms: list[str], window: int = 160) -> str:
     if not text:
         return ""
     if not terms:
-        return text[:window] + ("…" if len(text) > window else "")
+        # 🔴 这里**必须**转义。返回值被前端 dangerouslySetInnerHTML 直接塞进 DOM，
+        #    而 terms 为空是**常态**不是边界：文件管理器页空查询、纯筛选查询
+        #    （`type:pdf`）、纯排除查询（`-草稿`）都会走到这条分支。
+        #    漏了转义 = 库里任何一个含 <img onerror> 的网页/HTML/Markdown 文件，
+        #    一打开默认列表就在渲染进程里执行脚本，能顺着 preload 的 IPC 往外捅。
+        return html.escape(text[:window]) + ("…" if len(text) > window else "")
 
     pos = -1
     for t in terms:

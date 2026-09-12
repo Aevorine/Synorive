@@ -109,8 +109,18 @@ class ArxivSource(BaseEngine):
     def parse(self, resp):
         from lxml import etree
 
+        # 🔴 **必须显式关掉实体解析**，不能用 lxml 的默认解析器。
+        #    lxml 默认 resolve_entities=True，内部 DTD 子集里写一句
+        #    `<!ENTITY x SYSTEM "file:///C:/Users/…/settings.json">` 就能把
+        #    本机文件读出来塞进搜索结果（XXE）；再配一串嵌套实体就是
+        #    「十亿次笑」内存爆破。这条响应来自公网、不是我们能担保的内容，
+        #    HTTPS 只保证没人中途改包，不保证对端本身没被换掉。
+        #    no_network 断掉外部实体回连，huge_tree 保持关闭防超大树。
+        parser = etree.XMLParser(
+            resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False
+        )
         try:
-            root = etree.fromstring(resp.content)
+            root = etree.fromstring(resp.content, parser=parser)
         except etree.XMLSyntaxError:
             return ParseOutcome.BROKEN, []
         ns = {"a": "http://www.w3.org/2005/Atom"}

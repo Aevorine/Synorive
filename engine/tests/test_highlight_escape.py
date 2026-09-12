@@ -75,6 +75,36 @@ def test_empty_and_no_terms() -> None:
     assert _highlight("纯文本没有命中词", terms=[]) == "纯文本没有命中词"
 
 
+def test_dangerous_html_with_no_terms_at_all() -> None:
+    """
+    🔴 **terms 为空不是边界情况，是常态。**
+
+    以前这条分支直接 `return text[:window]`，原文一个字符都没转义。而走到这条
+    分支的恰恰是最常用的几条路：文件管理器页的空查询（默认视图，一进去就是它）、
+    纯筛选查询 `type:pdf date:last7days`、纯排除查询 `-草稿`。
+    也就是说库里只要存进一个含 `<img onerror>` 的网页/HTML/Markdown，
+    默认列表一渲染就在 Electron 渲染进程里执行了。
+
+    上面那个 test_empty_and_no_terms 用的是纯文本样本，转不转义结果都一样，
+    所以它一直是绿的 —— 用危险样本重测这条分支。
+    """
+    for snippet in _DANGEROUS_SNIPPETS:
+        out = _highlight(f"正常内容 {snippet} 收尾", terms=[])
+        _assert_no_raw_tags_except_em(out, f"no-terms::{snippet}")
+
+    # 同一条分支上的截断路径：截断后的那一段也必须是转义过的
+    long_text = "<script>alert(1)</script>" + "填充" * 300
+    out = _highlight(long_text, terms=[])
+    assert out.endswith("…"), "超长文本应带省略号"
+    _assert_no_raw_tags_except_em(out, "no-terms::truncated")
+
+
+def test_all_terms_too_short() -> None:
+    """命中词全短于 2 个字符时 escaped_terms 也会空 —— 另一条会退化的路。"""
+    out = _highlight('前缀 <svg onload=alert(1)> 后缀', terms=["a", "b"])
+    _assert_no_raw_tags_except_em(out, "short-terms")
+
+
 def _run_all() -> None:
     tests = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
     for t in tests:
