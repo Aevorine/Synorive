@@ -8,7 +8,20 @@
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * 🔴 同 uitest.mjs：索引目标按本文件位置推，不写死绝对路径。
+ *    写死的后果是别人克隆下来跑，索引一个不存在的目录，页面全是空状态，
+ *    而脚本照常跑完不报错 —— 巡检脚本失去意义，还看不出来。
+ */
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const ingestTargets = [
+  'docs',
+  join('engine', 'synorive'),
+  join('apps', 'desktop', 'resources', 'icons'),
+].map((r) => join(ROOT, r));
 
 const outDir = process.argv[2] ?? '.';
 const port = Number(process.argv[3] ?? 9222);
@@ -106,11 +119,7 @@ console.log('索引语料…');
 await cdp.js(`
   fetch('http://127.0.0.1:${engine?.port}/api/ingest', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ targets: [
-      'D:\\\\Documents\\\\WorkDocuments\\\\Github\\\\Synorive\\\\docs',
-      'D:\\\\Documents\\\\WorkDocuments\\\\Github\\\\Synorive\\\\engine\\\\synorive',
-      'D:\\\\Documents\\\\WorkDocuments\\\\Github\\\\Synorive\\\\apps\\\\desktop\\\\resources\\\\icons'
-    ], source:'file', recursive:true })
+    body: JSON.stringify({ targets: ${JSON.stringify(ingestTargets)}, source:'file', recursive:true })
   }).then(r=>r.json())
 `);
 for (let i = 0; i < 50; i++) {

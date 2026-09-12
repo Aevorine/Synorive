@@ -7,7 +7,19 @@
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * 🔴 索引目标按本文件位置推出来，不写死绝对路径。
+ *    写死等于把作者这台机器的目录结构提交进公开仓库；而且别人克隆下来跑，
+ *    索引的是一个他机器上并不存在的目录 —— 脚本照常跑完、什么都没索引到、
+ *    也不报错，是最难查的那种空转。
+ */
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const ingestTargets = ['docs', join('engine', 'synorive'), 'README.md'].map((r) =>
+  join(ROOT, r),
+);
 
 const outDir = process.argv[2] ?? '.';
 const port = Number(process.argv[3] ?? 9222);
@@ -108,11 +120,7 @@ const ingest = await cdp.js(`
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        targets: [
-          'D:\\\\Documents\\\\WorkDocuments\\\\Github\\\\Synorive\\\\docs',
-          'D:\\\\Documents\\\\WorkDocuments\\\\Github\\\\Synorive\\\\engine\\\\synorive',
-          'D:\\\\Documents\\\\WorkDocuments\\\\Github\\\\Synorive\\\\README.md'
-        ],
+        targets: ${JSON.stringify(ingestTargets)},
         source: 'file', recursive: true
       })
     });

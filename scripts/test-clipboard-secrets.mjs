@@ -61,7 +61,7 @@ const MUST_PASS = [
   ['一句英文', 'The quick brown fox jumps over the lazy dog'],
   ['网址', 'https://github.com/Aevorine/Synorive'],
   ['带查询串的网址', 'https://www.example.com/search?q=%E5%90%91%E9%87%8F%E6%A3%80%E7%B4%A2&page=2'],
-  ['Windows 路径', 'D:\\Documents\\WorkDocuments\\Github\\Synorive\\README.md'],
+  ['Windows 路径', 'D:\\Projects\\Synorive\\README.md'],
   ['Unix 路径', '/usr/local/share/fonts/NotoSerifSC-Regular.otf'],
   ['代码片段', 'const total = items.reduce((a, b) => a + b.size, 0);'],
   ['句子里含 6 位数', '这个季度营收 482915 元，比上季度增长了两成'],
