@@ -1,6 +1,6 @@
 {
   "name": "@synorive/cli",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "synorive 命令行 —— 脚本、定时任务、其他 AI 工具都能调",
   "keywords": [
     "cli",

@@ -1,6 +1,6 @@
 {
   "name": "@aevorine/synorive-mcp",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "MCP server for Synorive — let Claude Code search your local multimodal library (documents, code, images, video) and fact-check claims against the open web. 26 tools, fully offline-capable.",
   "keywords": [
     "mcp",
