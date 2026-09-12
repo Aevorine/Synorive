@@ -62,6 +62,7 @@ Dark theme: [screenshot](docs/screenshots/research-dark.png)
 | ⚡ | **Searchable in seconds** — a new file is keyword-searchable the moment it is chunked; semantic indexing backfills in the background instead of making you wait |
 | 🎚 | **Ranking you control** — eight sliders (semantic, keyword, recency, source trust, popularity, title hits, result diversity, short-fragment penalty), five presets, and you can save your own |
 | 📖 | **Reading comfort** — a paper theme, three density scales, and a main input area big enough for a long question |
+| 🚀 | **Starts with Windows, silently** — launches into the system tray with no window, so the engine and the vector model are already warm by the time you press the hotkey. Both switches are yours to turn off |
 
 **Keywords:** local semantic search · offline AI search engine · multimodal RAG · personal knowledge base ·
 document search · vector search · hybrid search · fact checking · misinformation detection ·
@@ -91,6 +92,18 @@ fluent summary you cannot verify. Synorive refuses both:
 ## What works today
 
 Phases 1–3, 5 and 8 are complete. **The application is genuinely usable right now.**
+
+> ### ⚠️ If you installed 0.1.9 or 0.1.10, please update
+>
+> Those two builds shipped a Python runtime that was **missing `click`**, a hard dependency of
+> uvicorn. The engine could not start at all — the app opened, the tray icon appeared, and the
+> engine restarted in a loop forever. On top of that, enabling LAN pairing switched the engine to
+> HTTPS while every client still spoke HTTP, so the desktop app, the MCP tools and the CLI all lost
+> the engine.
+>
+> Both are fixed in **0.1.11**, and the packaging self-check now runs with the same `sys.path` the
+> shipped app uses — which is the only reason the missing package was invisible before. The full
+> story is in the 0.1.11 release notes.
 
 ### Searching your own files
 
